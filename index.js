@@ -23,7 +23,7 @@ const PORT = process.env.PORT || 5001;
 const allowedOrigins = [
   'http://localhost:3000',
   'https://bothellselect.com',
-  'https://bothellselect.vercel.app/',
+  'https://bothellselect.vercel.app',
 ];
 
 app.use(
@@ -261,10 +261,12 @@ app.post('/api/check-email', async (req, res) => {
   res.status(200).json({ message: 'Email is available' });
 });
 
-const path = require('path');
-
-app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, 'client/build', 'index.html'));
+app.use((req, res) => {
+  res.status(404).json({
+    status: 'error',
+    message: 'Endpoint not found',
+    requestedUrl: req.originalUrl,
+  });
 });
 
 // Error handling middleware
