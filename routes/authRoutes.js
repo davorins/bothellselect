@@ -10,6 +10,7 @@ const {
   authenticate,
 } = require('../utils/auth');
 const { sendResetEmail } = require('../services/emailService');
+const nodemailer = require('nodemailer');
 const mongoose = require('mongoose');
 
 const registrationSchema = new mongoose.Schema({
@@ -1458,6 +1459,65 @@ router.get('/all', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Search error:', error);
     res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+router.post('/contact', async (req, res) => {
+  const { fullName, email, subject, message } = req.body;
+
+  if (!fullName || !email || !subject || !message) {
+    return res.status(400).json({ error: 'All fields are required.' });
+  }
+
+  try {
+    const transporter = nodemailer.createTransport({
+      service: 'Gmail',
+      auth: {
+        user: process.env.EMAIL_USER, // your email address for sending
+        pass: process.env.EMAIL_PASS, // your email password or app password
+      },
+    });
+
+    const mailOptions = {
+      from: email, // The email address that submitted the form
+      to: process.env.EMAIL_USER, // The email address you want to receive the form submission (your email)
+      subject: `[Contact Form] ${subject}`,
+      text: `
+        Name: ${fullName}
+        Email: ${email}
+
+        Message:
+        ${message}
+      `,
+    };
+
+    // Send email to you (the website admin)
+    await transporter.sendMail(mailOptions);
+
+    // Send a confirmation email to the user who submitted the form
+    const confirmationMailOptions = {
+      from: process.env.EMAIL_USER, // Your email address
+      to: email, // The user's email address
+      subject: 'Thank you for contacting us!',
+      text: `
+        Hi ${fullName},
+
+        Thank you for reaching out to us. We have received your message and will get back to you shortly.
+
+        Your message:
+        ${message}
+
+        Best regards,
+        Bothell Select Team
+      `,
+    };
+
+    await transporter.sendMail(confirmationMailOptions);
+
+    res.status(200).json({ message: 'Email sent successfully.' });
+  } catch (error) {
+    console.error('Error sending email:', error);
+    res.status(500).json({ error: 'Failed to send email.' });
   }
 });
 
