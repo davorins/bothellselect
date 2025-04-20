@@ -1,5 +1,7 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const path = require('path');
+const fs = require('fs');
 
 const parentSchema = new mongoose.Schema(
   {
@@ -55,7 +57,56 @@ const parentSchema = new mongoose.Schema(
         minlength: 2,
         maxlength: 2,
         enum: [
-          // ... keep your existing state enum values
+          'AL',
+          'AK',
+          'AZ',
+          'AR',
+          'CA',
+          'CO',
+          'CT',
+          'DE',
+          'FL',
+          'GA',
+          'HI',
+          'ID',
+          'IL',
+          'IN',
+          'IA',
+          'KS',
+          'KY',
+          'LA',
+          'ME',
+          'MD',
+          'MA',
+          'MI',
+          'MN',
+          'MS',
+          'MO',
+          'MT',
+          'NE',
+          'NV',
+          'NH',
+          'NJ',
+          'NM',
+          'NY',
+          'NC',
+          'ND',
+          'OH',
+          'OK',
+          'OR',
+          'PA',
+          'RI',
+          'SC',
+          'SD',
+          'TN',
+          'TX',
+          'UT',
+          'VT',
+          'VA',
+          'WA',
+          'WV',
+          'WI',
+          'WY',
         ],
       },
       zip: {
@@ -78,16 +129,13 @@ const parentSchema = new mongoose.Schema(
     agreeToTerms: {
       type: Boolean,
       required: function () {
-        // Only require agreeToTerms for self-registration (registerMethod === 'self')
         return this.registerMethod === 'self';
       },
       default: function () {
-        // Default to true for admin-created accounts
         return this.registerMethod === 'adminCreate';
       },
       validate: {
         validator: function (v) {
-          // Only validate if this is a self-registration
           return this.registerMethod !== 'self' || v === true;
         },
         message: 'You must agree to the terms and conditions',
@@ -103,6 +151,12 @@ const parentSchema = new mongoose.Schema(
       type: String,
       default: 'user',
       enum: ['user', 'admin', 'coach'],
+    },
+    registrationComplete: { type: Boolean, default: false },
+    paymentComplete: { type: Boolean, default: false },
+    avatar: {
+      type: String,
+      default: null,
     },
     players: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Player' }],
     additionalGuardians: [
@@ -128,8 +182,10 @@ const parentSchema = new mongoose.Schema(
             ref: 'Parent',
           },
         ],
-        registrationComplete: { type: Boolean, default: false },
-        paymentComplete: { type: Boolean, default: false },
+        avatar: {
+          type: String,
+          default: null,
+        },
       },
     ],
     isGuardian: Boolean,
@@ -150,19 +206,71 @@ parentSchema.pre('save', async function (next) {
   if (!this.isModified('password')) return next();
 
   try {
-    const trimmedPassword = this.password.trim();
-    const saltRounds = 12;
-    const hashedPassword = await bcrypt.hash(trimmedPassword, saltRounds);
-    this.password = hashedPassword;
+    const salt = await bcrypt.genSalt(12);
+    this.password = await bcrypt.hash(this.password, salt);
     next();
   } catch (err) {
     next(err);
   }
 });
 
-// Compare raw password with hashed one
-parentSchema.methods.comparePassword = function (candidatePassword) {
-  return bcrypt.compare(candidatePassword.trim(), this.password);
+// Compare password method
+parentSchema.methods.comparePassword = async function (candidatePassword) {
+  return await bcrypt.compare(candidatePassword, this.password);
+};
+
+// Avatar management methods
+parentSchema.statics.updateAvatar = async function (parentId, file) {
+  if (!file) throw new Error('No file provided');
+
+  const parent = await this.findById(parentId);
+  if (!parent) throw new Error('Parent not found');
+
+  // Delete old avatar if exists
+  if (parent.avatar) {
+    const oldPath = path.join(__dirname, '..', parent.avatar);
+    if (fs.existsSync(oldPath)) {
+      fs.unlinkSync(oldPath);
+    }
+  }
+
+  // Create uploads directory if it doesn't exist
+  const uploadDir = path.join(__dirname, '../uploads/avatars');
+  if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  }
+
+  // Generate unique filename
+  const filename = `${parentId}-${Date.now()}${path.extname(
+    file.originalname
+  )}`;
+  const filePath = path.join(uploadDir, filename);
+  const relativePath = `/uploads/avatars/${filename}`;
+
+  // Save file
+  await fs.promises.writeFile(filePath, file.buffer);
+
+  // Update parent
+  parent.avatar = relativePath;
+  await parent.save();
+
+  return relativePath;
+};
+
+parentSchema.statics.deleteAvatar = async function (parentId) {
+  const parent = await this.findById(parentId);
+  if (!parent) throw new Error('Parent not found');
+
+  if (parent.avatar) {
+    const filePath = path.join(__dirname, '..', parent.avatar);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+    parent.avatar = null;
+    await parent.save();
+  }
+
+  return true;
 };
 
 module.exports = mongoose.model('Parent', parentSchema);

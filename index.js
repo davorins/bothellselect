@@ -15,6 +15,7 @@ const unpaidRoutes = require('./routes/unpaidRoutes');
 const paymentProcessRoutes = require('./routes/paymentProcessRoutes');
 const squareWebhooksRouter = require('./routes/squareWebhooks');
 const { authenticate, isAdmin, isCoach, isUser } = require('./utils/auth');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -58,6 +59,7 @@ app.use('/api/payment', paymentRoutes);
 app.use('/api/payments', unpaidRoutes);
 app.use('/api/payments', paymentProcessRoutes);
 app.use('/api/square', squareWebhooksRouter);
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Player Registration Routes
 

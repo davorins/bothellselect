@@ -12,6 +12,9 @@ const {
 const { sendResetEmail } = require('../services/emailService');
 const nodemailer = require('nodemailer');
 const mongoose = require('mongoose');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
 const registrationSchema = new mongoose.Schema({
   player: {
@@ -1518,6 +1521,115 @@ router.post('/contact', async (req, res) => {
   } catch (error) {
     console.error('Error sending email:', error);
     res.status(500).json({ error: 'Failed to send email.' });
+  }
+});
+
+//AVATAR
+
+// Configure storage for avatar uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const uploadDir = path.join(__dirname, '../uploads/avatars');
+    // Create directory if it doesn't exist
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    }
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
+    cb(
+      null,
+      req.params.id + '-' + uniqueSuffix + path.extname(file.originalname)
+    );
+  },
+});
+
+const upload = multer({
+  storage: storage,
+  limits: { fileSize: 2 * 1024 * 1024 }, // 2MB limit
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed!'), false);
+    }
+  },
+});
+
+// Avatar upload endpoint
+// Update the avatar upload endpoint
+router.put(
+  '/parent/:id/avatar',
+  authenticate,
+  upload.single('avatar'),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'No file uploaded' });
+      }
+
+      // Construct the relative path to store in DB
+      const avatarPath = `/uploads/avatars/${req.file.filename}`;
+
+      // Update parent with avatar path
+      const parent = await Parent.findByIdAndUpdate(
+        req.params.id,
+        { avatar: avatarPath },
+        { new: true }
+      );
+
+      if (!parent) {
+        // Clean up the uploaded file if parent not found
+        fs.unlinkSync(req.file.path);
+        return res.status(404).json({ error: 'Parent not found' });
+      }
+
+      res.json({
+        message: 'Avatar updated successfully',
+        avatarUrl: avatarPath,
+        parent, // Return the updated parent document
+      });
+    } catch (error) {
+      console.error('Avatar upload error:', error);
+      if (req.file) {
+        fs.unlinkSync(req.file.path); // Clean up on error
+      }
+      res.status(500).json({ error: 'Failed to update avatar' });
+    }
+  }
+);
+
+// Avatar deletion endpoint
+router.delete('/parent/:id/avatar', authenticate, async (req, res) => {
+  try {
+    const parent = await Parent.findById(req.params.id);
+    if (!parent) {
+      return res.status(404).json({ error: 'Parent not found' });
+    }
+
+    // Remove old avatar file if it exists
+    if (parent.avatar) {
+      const avatarPath = path.join(__dirname, '../', parent.avatar);
+      if (fs.existsSync(avatarPath)) {
+        fs.unlinkSync(avatarPath);
+      }
+    }
+
+    // Update parent to remove avatar reference
+    const updatedParent = await Parent.findByIdAndUpdate(
+      req.params.id,
+      { $unset: { avatar: 1 } },
+      { new: true }
+    );
+
+    res.json({
+      message: 'Avatar removed successfully',
+      parent: updatedParent,
+    });
+  } catch (error) {
+    console.error('Avatar deletion error:', error);
+    res.status(500).json({ error: 'Failed to remove avatar' });
   }
 });
 
