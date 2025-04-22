@@ -25,7 +25,6 @@ const allowedOrigins = [
   'http://localhost:3000',
   'https://bothellselect.com',
   'https://bothellselect.vercel.app',
-  'bothellselect-6w6qkxadq-my-names-projects-470ba488.vercel.app',
 ];
 
 app.use(
