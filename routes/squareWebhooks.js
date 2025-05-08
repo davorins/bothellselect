@@ -9,8 +9,10 @@ const mongoose = require('mongoose');
 // Verify Square webhook signature
 const verifyWebhook = (req) => {
   const signature = req.headers['x-square-hmacsha256'];
-  const notificationUrl = 'https://bothellselect.com/api/square/webhook';
-  const body = JSON.stringify(req.body);
+  const notificationUrl =
+    'https://bothell-select.onrender.com/api/square/webhook';
+
+  const body = req.body.toString('utf8');
 
   const hmac = crypto.createHmac(
     'sha256',
