@@ -48,20 +48,57 @@ router.get('/all', async (req, res) => {
       ]),
     ]);
 
+    const getPlayerAvatar = (player) => {
+      // If player has a custom avatar (Cloudinary or local)
+      if (player.avatar) {
+        // Cloudinary URL
+        if (player.avatar.includes('res.cloudinary.com')) {
+          return player.avatar;
+        }
+        // Local URL - ensure it's the full URL
+        if (player.avatar.startsWith('/uploads/avatars/')) {
+          return `https://bothell-select.onrender.com${player.avatar}`;
+        }
+        // If it's already a full URL but missing protocol
+        if (player.avatar.startsWith('//')) {
+          return `https:${player.avatar}`;
+        }
+        // If it's a relative path without leading slash
+        if (player.avatar.startsWith('uploads/avatars/')) {
+          return `https://bothell-select.onrender.com/${player.avatar}`;
+        }
+        return player.avatar; // Fallback for absolute URLs
+      }
+      // Default avatar based on gender
+      return player.gender?.toLowerCase() === 'female'
+        ? 'https://bothell-select.onrender.com/uploads/avatars/girl.png'
+        : 'https://bothell-select.onrender.com/uploads/avatars/boy.png';
+    };
+
     // Format results
     const results = [
-      ...players.map((p) => ({
-        id: p._id,
-        type: 'player',
-        name: p.fullName,
-        dob: p.dob ? p.dob.toISOString().split('T')[0] : 'N/A',
-        grade: p.grade || 'N/A',
-        gender: p.gender || 'N/A',
-        aauNumber: p.aauNumber || 'N/A',
-        image: p.profileImage || 'assets/img/profiles/avatar-27.jpg',
-        additionalInfo: p.schoolName,
-        createdAt: p.createdAt,
-      })),
+      ...players.map((p) => {
+        // Debug log to verify status is present in the raw data
+        console.log(`Player ${p._id} raw status:`, p.status);
+
+        return {
+          id: p._id,
+          type: 'player',
+          name: p.fullName,
+          dob: p.dob ? p.dob.toISOString().split('T')[0] : 'N/A',
+          grade: p.grade || 'N/A',
+          gender: p.gender || 'N/A',
+          aauNumber: p.aauNumber || 'N/A',
+          status: p.status || '',
+          season: p.season || '',
+          registrationYear: p.registrationYear || null,
+          image: getPlayerAvatar(p),
+          additionalInfo: p.schoolName || '',
+          createdAt: p.createdAt,
+          isActive: p.status === 'active',
+          playerStatus: p.status,
+        };
+      }),
 
       ...parents.map((p) => ({
         id: p._id,
@@ -71,7 +108,9 @@ router.get('/all', async (req, res) => {
         phone: p.phone,
         address: p.address,
         aauNumber: p.aauNumber,
-        image: p.profileImage || 'assets/img/profiles/avatar-27.jpg',
+        image:
+          p.profileImage ||
+          'https://bothell-select.onrender.com/uploads/avatars/parents.png',
       })),
 
       ...coaches.map((c) => ({
@@ -79,7 +118,9 @@ router.get('/all', async (req, res) => {
         type: 'coach',
         name: c.fullName,
         email: c.email,
-        image: c.profileImage || 'assets/img/profiles/avatar-27.jpg',
+        image:
+          c.profileImage ||
+          'https://bothell-select.onrender.com/uploads/avatars/coach.png',
       })),
 
       ...schoolNames.map((s) => ({

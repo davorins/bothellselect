@@ -2,6 +2,7 @@ const { Client, Environment } = require('square');
 const { randomUUID } = require('crypto');
 const Payment = require('../models/Payment');
 require('dotenv').config();
+const { sendEmail } = require('../utils/email');
 
 // Initialize Square Client
 const client = new Client({
@@ -14,7 +15,14 @@ const paymentsApi = client.paymentsApi;
 async function submitPayment(
   sourceId,
   amount,
-  { parentId, playerId, cardDetails, locationId }
+  {
+    parentId,
+    playerId,
+    cardDetails,
+    locationId,
+    buyerEmailAddress,
+    squarePayment,
+  }
 ) {
   try {
     // Validate minimum requirements
@@ -39,6 +47,7 @@ async function submitPayment(
       note: playerId
         ? `Payment for player ${playerId}`
         : 'Registration payment',
+      buyerEmailAddress,
     };
 
     // Process payment with Square
@@ -48,6 +57,20 @@ async function submitPayment(
       throw new Error('Payment not completed successfully');
     }
 
+    const squarePayment = result.payment;
+
+    await sendEmail({
+      to: buyerEmailAddress,
+      subject: 'Your Basketball Camp Payment Receipt',
+      html: `
+        <h2>Thank you for your payment!</h2>
+        <p>Payment ID: ${result.payment.id}</p>
+        <p>Amount: $${(amountInCents / 100).toFixed(2)}</p>
+        <p>Status: ${result.payment.status}</p>
+        <p><a href="${result.payment.receiptUrl}">View your receipt</a></p>
+      `,
+    });
+
     // Store payment details
     const paymentRecord = {
       playerId: playerId || null,
@@ -56,11 +79,12 @@ async function submitPayment(
       amount: amountInCents,
       status: result.payment.status.toLowerCase(),
       receiptUrl: result.payment.receiptUrl,
-      cardLastFour: cardDetails?.last_4 || '****',
-      cardBrand: cardDetails?.card_brand || 'UNKNOWN',
+      cardLastFour: squarePayment.cardDetails?.last_4 || '****',
+      cardBrand: squarePayment.cardDetails?.card_brand || 'UNKNOWN',
       cardExpMonth: cardDetails?.exp_month || '00',
       cardExpYear: cardDetails?.exp_year || '00',
       locationId: result.payment.locationId,
+      buyerEmail: buyerEmailAddress,
     };
 
     const payment = new Payment(paymentRecord);
@@ -73,6 +97,7 @@ async function submitPayment(
         squareId: result.payment.id,
         amount: amountInCents,
         status: result.payment.status,
+        receiptUrl: result.payment.receiptUrl,
       },
     };
   } catch (error) {

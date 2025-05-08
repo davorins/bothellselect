@@ -3,18 +3,19 @@ const bcrypt = require('bcryptjs');
 const { body, validationResult, query } = require('express-validator');
 const Parent = require('../models/Parent');
 const Player = require('../models/Player');
+const Payment = require('../models/Payment');
+const Notification = require('../models/Notification');
 const {
   comparePasswords,
   hashPassword,
   generateToken,
   authenticate,
 } = require('../utils/auth');
-const { sendResetEmail } = require('../services/emailService');
-const nodemailer = require('nodemailer');
 const mongoose = require('mongoose');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
+const crypto = require('crypto');
+const { sendResetEmail } = require('../services/emailService');
+const cloudinary = require('cloudinary').v2;
+const { sendEmail } = require('../utils/email');
 
 const registrationSchema = new mongoose.Schema({
   player: {
@@ -135,7 +136,7 @@ const { parseAddress, ensureAddress } = addressUtils;
 router.post(
   '/register',
   [
-    body('email').isEmail().withMessage('Invalid email').normalizeEmail(),
+    body('email').isEmail().withMessage('Invalid email'),
     body('password')
       .if((value, { req }) => req.body.registerType !== 'adminCreate')
       .notEmpty()
@@ -159,7 +160,6 @@ router.post(
     body('relationship').notEmpty().withMessage('Relationship is required'),
     body('isCoach').isBoolean().withMessage('isCoach must be boolean'),
     body('registerType').optional().isIn(['self', 'adminCreate']),
-    // Only validate agreeToTerms for self-registration
     body('agreeToTerms')
       .if((value, { req }) => req.body.registerType === 'self')
       .isBoolean()
@@ -195,21 +195,12 @@ router.post(
         return res.status(400).json({ error: 'Email already registered' });
       }
 
-      // Handle password properly based on registration type
-      let passwordHash;
       let tempPassword;
+      const plainPassword =
+        registerType === 'adminCreate'
+          ? (tempPassword = generateRandomPassword()).trim()
+          : password.trim();
 
-      if (registerType === 'adminCreate') {
-        tempPassword = generateRandomPassword();
-        passwordHash = tempPassword.trim();
-      } else {
-        if (!password) {
-          return res.status(400).json({ error: 'Password is required' });
-        }
-        passwordHash = password.trim();
-      }
-
-      // Validate coach requirements
       if (isCoach && (!aauNumber || aauNumber.trim() === '')) {
         return res
           .status(400)
@@ -218,7 +209,7 @@ router.post(
 
       const parentData = {
         email: normalizedEmail,
-        password: passwordHash,
+        password: plainPassword, // <-- Only raw, never hash here
         fullName: fullName.trim(),
         phone: phone.replace(/\D/g, ''),
         address: {
@@ -262,7 +253,7 @@ router.post(
       }
 
       const token = generateToken({
-        id: parent._id,
+        id: parent._id.toString(),
         role: parent.role,
         email: parent.email,
         players: parent.players || [],
@@ -396,7 +387,7 @@ router.post(
   '/register/basketball-camp',
   [
     // Parent validation
-    body('email').isEmail().withMessage('Invalid email').normalizeEmail(),
+    body('email').isEmail().withMessage('Invalid email'),
     body('password')
       .optional()
       .isLength({ min: 6 })
@@ -487,7 +478,6 @@ router.post(
       if (!rawPassword) {
         throw new Error('Password is required');
       }
-      const passwordHash = await hashPassword(rawPassword);
 
       // Create player documents with registration status
       const playerDocs = players.map((player) => ({
@@ -511,7 +501,7 @@ router.post(
       // Create parent with registration status
       const parent = new Parent({
         email: normalizedEmail,
-        password: passwordHash,
+        password: rawPassword,
         fullName: fullName.trim(),
         relationship: relationship.trim(),
         phone: phone.replace(/\D/g, ''),
@@ -630,7 +620,7 @@ router.post(
 router.post(
   '/login',
   [
-    body('email').isEmail().withMessage('Invalid email').normalizeEmail(),
+    body('email').isEmail().withMessage('Invalid email'),
     body('password').notEmpty().withMessage('Password is required'),
   ],
   async (req, res) => {
@@ -639,62 +629,56 @@ router.post(
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const trimmedPassword = req.body.password.trim();
-
-    // Check if password is provided after trimming
-    if (!trimmedPassword) {
-      return res.status(400).json({ error: 'Password is required' });
-    }
-
     try {
-      const normalizedEmail = req.body.email.toLowerCase().trim();
-      const rawPassword = req.body.password;
-      const trimmedPassword = String(rawPassword).trim();
+      const { email, password } = req.body;
+      const normalizedEmail = email.toLowerCase().trim();
 
-      console.log('Login attempt details:', {
-        email: normalizedEmail,
-        rawPasswordLength: rawPassword.length,
-        trimmedPasswordLength: trimmedPassword.length,
-      });
-
+      // Find parent by email with password field included
       const parent = await Parent.findOne({ email: normalizedEmail }).select(
         '+password'
       );
 
       if (!parent) {
-        return res.status(401).json({ error: 'Invalid email or password' });
+        return res.status(401).json({
+          success: false,
+          error: 'Invalid email or password',
+        });
       }
 
-      console.log(
-        'Stored password hash:',
-        parent.password.substring(0, 10) + '...'
-      );
+      // Compare passwords
+      const isMatch = await bcrypt.compare(password.trim(), parent.password);
+      console.log('Comparing password:', password);
+      console.log('With stored hash:', parent.password);
+      console.log('Password match result:', isMatch);
 
-      const isMatch = await comparePasswords(trimmedPassword, parent.password);
-      console.log('Comparison result:', isMatch);
+      if (!isMatch) {
+        return res.status(401).json({
+          success: false,
+          error: 'Invalid email or password',
+        });
+      }
 
+      // Generate token
       const token = generateToken({
         id: parent._id.toString(),
         role: parent.role,
         email: parent.email,
       });
 
+      // Return response without password
+      const parentData = parent.toObject();
+      delete parentData.password;
+
       res.json({
         success: true,
         token,
-        parent: {
-          _id: parent._id.toString(),
-          email: parent.email,
-          fullName: parent.fullName,
-          role: parent.role,
-        },
+        parent: parentData,
       });
     } catch (error) {
-      console.error('Login error:', error.message, error.stack);
+      console.error('Login error:', error);
       res.status(500).json({
-        error: 'Server error',
-        message:
-          process.env.NODE_ENV === 'development' ? error.message : undefined,
+        success: false,
+        error: 'Server error during login',
       });
     }
   }
@@ -703,50 +687,151 @@ router.post(
 router.post('/request-password-reset', async (req, res) => {
   try {
     const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
     const parent = await Parent.findOne({ email: email.toLowerCase().trim() });
 
+    // Always return success to prevent email enumeration
     if (!parent) {
-      return res.status(404).json({ error: 'Email not found' });
+      return res.json({
+        message: 'If an account exists, a reset link has been sent',
+      });
     }
 
     // Generate reset token (expires in 1 hour)
     const resetToken = crypto.randomBytes(20).toString('hex');
     parent.resetPasswordToken = resetToken;
     parent.resetPasswordExpires = Date.now() + 3600000; // 1 hour
+
     await parent.save();
 
     // Send email with reset link
-    await sendResetEmail(parent.email, resetToken);
+    try {
+      await sendResetEmail(parent.email, resetToken);
+    } catch (emailError) {
+      console.error('Failed to send reset email:', emailError);
+      return res.status(500).json({
+        error: 'Failed to send reset email',
+      });
+    }
 
-    res.json({ message: 'Password reset email sent' });
+    res.json({
+      message: 'If an account exists, a reset link has been sent',
+    });
   } catch (error) {
-    console.error('Password reset error:', error);
-    res.status(500).json({ error: 'Password reset failed' });
+    console.error('Password reset request error:', error);
+    res.status(500).json({
+      error: 'Password reset request failed',
+      details:
+        process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
   }
 });
 
-router.post('/reset-password', async (req, res) => {
-  try {
-    const { token, newPassword } = req.body;
-    const parent = await Parent.findOne({
-      resetPasswordToken: token,
-      resetPasswordExpires: { $gt: Date.now() },
-    });
-
-    if (!parent) {
-      return res.status(400).json({ error: 'Invalid or expired token' });
+router.post(
+  '/reset-password',
+  [
+    body('token').notEmpty().withMessage('Token is required'),
+    body('newPassword')
+      .isLength({ min: 8 })
+      .withMessage('Password must be at least 8 characters')
+      .matches(/[A-Z]/)
+      .withMessage('Password must contain at least one uppercase letter')
+      .matches(/\d/)
+      .withMessage('Password must contain at least one number')
+      .matches(/[@$!%*?&]/)
+      .withMessage('Password must contain at least one special character')
+      .not()
+      .isIn(['12345678', 'password', 'qwertyui'])
+      .withMessage('Password is too common'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
     }
 
-    // Update password
-    parent.password = await hashPassword(newPassword.trim());
-    parent.resetPasswordToken = undefined;
-    parent.resetPasswordExpires = undefined;
+    try {
+      const token = req.body.token.trim();
+      const newPassword = req.body.newPassword.trim();
+
+      const parent = await Parent.findOne({
+        resetPasswordToken: token,
+        resetPasswordExpires: { $gt: Date.now() },
+      });
+
+      if (!parent) {
+        return res.status(400).json({ error: 'Invalid or expired token' });
+      }
+
+      parent.password = newPassword; // ✅ Let the pre-save hook hash it
+      parent.resetPasswordToken = undefined;
+      parent.resetPasswordExpires = undefined;
+
+      await parent.save();
+
+      return res.json({
+        success: true,
+        message: 'Password updated successfully',
+      });
+    } catch (error) {
+      console.error('Password reset error:', error);
+      return res.status(500).json({
+        error: 'Password reset failed',
+        details:
+          process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    }
+  }
+);
+
+router.post('/change-password', authenticate, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+
+    // Validate input
+    if (!currentPassword || !newPassword) {
+      return res
+        .status(400)
+        .json({ error: 'Current and new password are required' });
+    }
+
+    if (newPassword.length < 8) {
+      return res
+        .status(400)
+        .json({ error: 'New password must be at least 8 characters' });
+    }
+
+    // Get parent
+    const parent = await Parent.findById(req.user.id).select('+password');
+    if (!parent) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Verify current password
+    const isMatch = await bcrypt.compare(currentPassword, parent.password);
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    // ✅ Assign plain new password, let the pre-save hook hash it
+    parent.password = newPassword;
     await parent.save();
 
-    res.json({ message: 'Password updated successfully' });
+    res.json({
+      success: true,
+      message: 'Password updated successfully',
+    });
   } catch (error) {
-    console.error('Password reset error:', error);
-    res.status(500).json({ error: 'Password reset failed' });
+    console.error('Password change error:', error);
+    res.status(500).json({
+      error: 'Password change failed',
+      details:
+        process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
   }
 });
 
@@ -783,7 +868,6 @@ router.patch(
 );
 
 // Fetch Parent data by ID - Enhanced version
-// In authRoutes.js - Update the parent detail endpoint
 router.get('/parent/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -931,6 +1015,8 @@ router.get(
       .optional()
       .isString()
       .withMessage('IDs must be a comma-separated string'),
+    query('season').optional().isString(),
+    query('year').optional().isInt(),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -939,26 +1025,48 @@ router.get(
     }
 
     try {
-      const { ids } = req.query;
-      let players;
+      const { ids, season, year } = req.query;
+      let query = {};
 
+      // Handle IDs filter
       if (ids) {
         const playerIds = ids.split(',');
-        players = await Player.find({ _id: { $in: playerIds } });
-      } else {
-        players = await Player.find({});
+        query._id = { $in: playerIds };
       }
+
+      // Handle season/year filter
+      if (season && year) {
+        query.season = season;
+        query.registrationYear = parseInt(year);
+      }
+
+      const players = await Player.find(query).lean();
 
       if (!players || players.length === 0) {
         return res.status(404).json({ error: 'No players found' });
       }
 
-      res.json(players);
+      // Transform response to ensure consistent avatar URLs
+      const response = players.map((player) => ({
+        ...player,
+        // Preserve raw avatar URL exactly as stored
+        avatar: player.avatar || null,
+        // Add additional fields that might be needed by frontend
+        imgSrc: player.avatar
+          ? `${player.avatar}${player.avatar.includes('?') ? '&' : '?'}ts=${Date.now()}`
+          : player.gender === 'Female'
+            ? 'https://bothell-select.onrender.com/uploads/avatars/girl.png'
+            : 'https://bothell-select.onrender.com/uploads/avatars/boy.png',
+      }));
+
+      res.json(response);
     } catch (error) {
       console.error('Error fetching players:', error.message, error.stack);
-      res
-        .status(500)
-        .json({ error: 'Failed to fetch players', details: error.message });
+      res.status(500).json({
+        error: 'Failed to fetch players',
+        details:
+          process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
     }
   }
 );
@@ -1374,262 +1482,341 @@ router.get('/past-seasons', (req, res) => {
   res.json(pastSeasons);
 });
 
-router.get('/all', authenticate, async (req, res) => {
-  try {
-    const searchTerm = req.query.q;
-    if (!searchTerm) return res.json([]);
-
-    const [players, parents, coaches, schoolNames] = await Promise.all([
-      Player.find({
-        $or: [{ fullName: { $regex: searchTerm, $options: 'i' } }],
-      })
-        .select('fullName gender dob grade schoolName profileImage')
-        .limit(5),
-      Parent.find({
-        isCoach: false,
-        $or: [
-          { fullName: { $regex: searchTerm, $options: 'i' } },
-          { email: { $regex: searchTerm, $options: 'i' } },
-        ],
-      }).limit(5),
-      Parent.find({
-        isCoach: true,
-        $or: [
-          { fullName: { $regex: searchTerm, $options: 'i' } },
-          { email: { $regex: searchTerm, $options: 'i' } },
-        ],
-      }).limit(5),
-      Player.aggregate([
-        {
-          $match: {
-            schoolName: {
-              $regex: searchTerm,
-              $options: 'i',
-              $exists: true,
-              $ne: null,
-            },
-          },
-        },
-        { $group: { _id: '$schoolName', playerCount: { $sum: 1 } } },
-        { $sort: { playerCount: -1 } },
-        { $limit: 5 },
-      ]),
-    ]);
-
-    // Format results directly in the backend
-    const results = [
-      ...players.map((p) => ({
-        id: p._id,
-        type: 'player',
-        name: p.fullName,
-        dob: p.dob ? p.dob.toISOString().split('T')[0] : 'N/A',
-        grade: p.grade || 'N/A',
-        gender: p.gender || 'N/A',
-        aauNumber: p.aauNumber || 'N/A',
-        email: p.email || '',
-        image: p.profileImage || 'assets/img/profiles/avatar-27.jpg',
-        additionalInfo: p.schoolName || 'No school specified',
-        createdAt: p.createdAt,
-      })),
-
-      ...parents.map((p) => ({
-        id: p._id,
-        type: 'parent',
-        name: p.fullName,
-        email: p.email || '',
-        image: p.profileImage || 'assets/img/profiles/avatar-27.jpg',
-      })),
-
-      ...coaches.map((c) => ({
-        id: c._id,
-        type: 'coach',
-        name: c.fullName,
-        email: c.email || '',
-        image: c.profileImage || 'assets/img/profiles/avatar-27.jpg',
-      })),
-
-      ...schoolNames.map((s) => ({
-        id: s._id,
-        type: 'school',
-        name: s._id,
-        additionalInfo: `${s.playerCount} player${
-          s.playerCount !== 1 ? 's' : ''
-        }`,
-      })),
-    ];
-
-    res.json(results);
-  } catch (error) {
-    console.error('Search error:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
 router.post('/contact', async (req, res) => {
   const { fullName, email, subject, message } = req.body;
 
-  if (!fullName || !email || !subject || !message) {
-    return res.status(400).json({ error: 'All fields are required.' });
-  }
+  const html = `
+    <p><strong>Name:</strong> ${fullName}</p>
+    <p><strong>Email:</strong> ${email}</p>
+    <p><strong>Message:</strong></p>
+    <p>${message}</p>
+  `;
 
   try {
-    const transporter = nodemailer.createTransport({
-      service: 'Gmail',
-      auth: {
-        user: process.env.EMAIL_USER, // your email address for sending
-        pass: process.env.EMAIL_PASS, // your email password or app password
-      },
+    await sendEmail({
+      to: 'bothellselect@proton.me',
+      subject: subject || 'New Inquiry from Contact Form',
+      html,
     });
 
-    const mailOptions = {
-      from: email, // The email address that submitted the form
-      to: process.env.EMAIL_USER, // The email address you want to receive the form submission (your email)
-      subject: `[Contact Form] ${subject}`,
-      text: `
-        Name: ${fullName}
-        Email: ${email}
-
-        Message:
-        ${message}
-      `,
-    };
-
-    // Send email to you (the website admin)
-    await transporter.sendMail(mailOptions);
-
-    // Send a confirmation email to the user who submitted the form
-    const confirmationMailOptions = {
-      from: process.env.EMAIL_USER, // Your email address
-      to: email, // The user's email address
-      subject: 'Thank you for contacting us!',
-      text: `
-        Hi ${fullName},
-
-        Thank you for reaching out to us. We have received your message and will get back to you shortly.
-
-        Your message:
-        ${message}
-
-        Best regards,
-        Bothell Select Team
-      `,
-    };
-
-    await transporter.sendMail(confirmationMailOptions);
-
-    res.status(200).json({ message: 'Email sent successfully.' });
-  } catch (error) {
-    console.error('Error sending email:', error);
-    res.status(500).json({ error: 'Failed to send email.' });
+    res.status(200).json({ message: 'Inquiry sent successfully.' });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to send inquiry.' });
   }
 });
 
-//AVATAR
+//RESEND
+router.post('/send-reset-email', async (req, res) => {
+  const { email, token } = req.body;
+  const resetLink = `https://yourfrontend.com/reset-password/${token}`;
 
-// Configure storage for avatar uploads
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    const uploadDir = path.join(__dirname, '../uploads/avatars');
-    // Create directory if it doesn't exist
-    if (!fs.existsSync(uploadDir)) {
-      fs.mkdirSync(uploadDir, { recursive: true });
+  try {
+    await sendEmail({
+      to: email,
+      subject: 'Reset your password',
+      html: `<p>Click <a href="${resetLink}">here</a> to reset your password.</p>`,
+    });
+    res.status(200).send('Reset email sent');
+  } catch (err) {
+    res.status(500).send('Failed to send email');
+  }
+});
+
+// AVATAR UPDATE ENDPOINT (Cloudinary URL)
+router.put('/parent/:id/avatar', authenticate, async (req, res) => {
+  try {
+    const { avatarUrl } = req.body;
+
+    // Validate URL format
+    if (!avatarUrl || !avatarUrl.includes('res.cloudinary.com')) {
+      return res.status(400).json({ error: 'Invalid avatar URL format' });
     }
-    cb(null, uploadDir);
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(
-      null,
-      req.params.id + '-' + uniqueSuffix + path.extname(file.originalname)
+
+    const parent = await Parent.findByIdAndUpdate(
+      req.params.id,
+      { avatar: avatarUrl },
+      { new: true }
     );
-  },
-});
 
-const upload = multer({
-  storage: storage,
-  limits: { fileSize: 2 * 1024 * 1024 }, // 2MB limit
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only image files are allowed!'), false);
+    if (!parent) {
+      return res.status(404).json({ error: 'Parent not found' });
     }
-  },
-});
 
-// Avatar upload endpoint
-// Update the avatar upload endpoint
-router.put(
-  '/parent/:id/avatar',
-  authenticate,
-  upload.single('avatar'),
-  async (req, res) => {
-    try {
-      if (!req.file) {
-        return res.status(400).json({ error: 'No file uploaded' });
-      }
-
-      // Construct the relative path to store in DB
-      const avatarPath = `/uploads/avatars/${req.file.filename}`;
-
-      // Update parent with avatar path
-      const parent = await Parent.findByIdAndUpdate(
-        req.params.id,
-        { avatar: avatarPath },
-        { new: true }
-      );
-
-      if (!parent) {
-        // Clean up the uploaded file if parent not found
-        fs.unlinkSync(req.file.path);
-        return res.status(404).json({ error: 'Parent not found' });
-      }
-
-      res.json({
-        message: 'Avatar updated successfully',
-        avatarUrl: avatarPath,
-        parent, // Return the updated parent document
-      });
-    } catch (error) {
-      console.error('Avatar upload error:', error);
-      if (req.file) {
-        fs.unlinkSync(req.file.path); // Clean up on error
-      }
-      res.status(500).json({ error: 'Failed to update avatar' });
-    }
+    res.json({
+      success: true,
+      parent, // Return full parent object
+    });
+  } catch (error) {
+    console.error('Avatar update error:', error);
+    res.status(500).json({ error: 'Failed to update avatar' });
   }
-);
+});
 
-// Avatar deletion endpoint
-router.delete('/parent/:id/avatar', authenticate, async (req, res) => {
+router.get('/parent/:id', async (req, res) => {
   try {
     const parent = await Parent.findById(req.params.id);
     if (!parent) {
       return res.status(404).json({ error: 'Parent not found' });
     }
 
-    // Remove old avatar file if it exists
-    if (parent.avatar) {
-      const avatarPath = path.join(__dirname, '../', parent.avatar);
-      if (fs.existsSync(avatarPath)) {
-        fs.unlinkSync(avatarPath);
-      }
+    res.json({ parent });
+  } catch (error) {
+    console.error('Error fetching parent:', error);
+    res.status(500).json({ error: 'Failed to fetch parent info' });
+  }
+});
+
+// AVATAR DELETION ENDPOINT
+router.delete('/parent/:id/avatar', authenticate, async (req, res) => {
+  try {
+    const parent = await Parent.findById(req.params.id);
+
+    if (!parent) {
+      return res.status(404).json({ error: 'Parent not found' });
     }
 
-    // Update parent to remove avatar reference
-    const updatedParent = await Parent.findByIdAndUpdate(
-      req.params.id,
-      { $unset: { avatar: 1 } },
-      { new: true }
-    );
+    // If the parent has an avatar with a Cloudinary URL, delete it from Cloudinary
+    const avatarUrl = parent.avatar;
+    if (avatarUrl && avatarUrl.includes('res.cloudinary.com')) {
+      const publicId = avatarUrl.split('/').pop().split('.')[0]; // Assumes no folder structure
+      await cloudinary.uploader.destroy(publicId); // Delete the image from Cloudinary
+    }
+
+    // Remove avatar from MongoDB
+    parent.avatar = null; // or use `$unset: { avatar: 1 }` if you prefer
+    await parent.save();
 
     res.json({
-      message: 'Avatar removed successfully',
-      parent: updatedParent,
+      success: true,
+      parent,
     });
   } catch (error) {
     console.error('Avatar deletion error:', error);
-    res.status(500).json({ error: 'Failed to remove avatar' });
+    res.status(500).json({ error: 'Failed to delete avatar' });
+  }
+});
+
+// Add these routes to your authRoutes.js file
+
+// PLAYER AVATAR UPDATE ENDPOINT (Cloudinary URL)
+router.put('/player/:id/avatar', authenticate, async (req, res) => {
+  try {
+    const { avatarUrl } = req.body;
+
+    // Validate URL format
+    if (!avatarUrl) {
+      return res.status(400).json({ error: 'Avatar URL is required' });
+    }
+
+    const player = await Player.findByIdAndUpdate(
+      req.params.id,
+      { avatar: avatarUrl },
+      { new: true }
+    );
+
+    if (!player) {
+      return res.status(404).json({ error: 'Player not found' });
+    }
+
+    res.json({
+      success: true,
+      player, // Return full player object
+    });
+  } catch (error) {
+    console.error('Player avatar update error:', error);
+    res.status(500).json({ error: 'Failed to update player avatar' });
+  }
+});
+
+// PLAYER AVATAR DELETION ENDPOINT
+router.delete('/player/:id/avatar', authenticate, async (req, res) => {
+  try {
+    const player = await Player.findById(req.params.id);
+
+    if (!player) {
+      return res.status(404).json({ error: 'Player not found' });
+    }
+
+    // If the player has an avatar with a Cloudinary URL, delete it from Cloudinary
+    const avatarUrl = player.avatar;
+    if (avatarUrl && avatarUrl.includes('res.cloudinary.com')) {
+      const publicId = avatarUrl.split('/').pop().split('.')[0]; // Assumes no folder structure
+      await cloudinary.uploader.destroy(publicId); // Delete the image from Cloudinary
+    }
+
+    // Remove avatar from MongoDB and set to default based on gender
+    const defaultAvatar =
+      player.gender === 'Female'
+        ? 'https://bothell-select.onrender.com/uploads/avatars/girl.png'
+        : 'https://bothell-select.onrender.com/uploads/avatars/boy.png';
+
+    player.avatar = defaultAvatar;
+    await player.save();
+
+    res.json({
+      success: true,
+      player,
+    });
+  } catch (error) {
+    console.error('Player avatar deletion error:', error);
+    res.status(500).json({ error: 'Failed to delete player avatar' });
+  }
+});
+
+router.get('/payments/parent/:parentId', authenticate, async (req, res) => {
+  const { parentId } = req.params;
+
+  try {
+    const payments = await Payment.find({ parentId }).sort({ createdAt: -1 });
+    res.json(payments);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch payments.' });
+  }
+});
+
+router.get('/notifications', async (req, res) => {
+  try {
+    const notifications = await Notification.find().sort({ createdAt: -1 });
+    res.json(notifications);
+  } catch (err) {
+    console.error('Error fetching notifications:', err);
+    res.status(500).json({ error: 'Failed to fetch notifications' });
+  }
+});
+
+// ✅ GET: Notifications visible to a specific user (excluding dismissed)
+router.get('/notifications/user/:userId', async (req, res) => {
+  try {
+    const user = await Parent.findById(req.params.userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const notifications = await Notification.find({
+      _id: { $nin: user.dismissedNotifications || [] },
+    }).sort({ createdAt: -1 });
+
+    res.json(notifications);
+  } catch (err) {
+    console.error('Error fetching user-specific notifications:', err);
+    res.status(500).json({ error: 'Failed to fetch notifications' });
+  }
+});
+
+// ✅ PATCH: Dismiss a single notification for a specific user
+router.patch('/notifications/dismiss/:id', async (req, res) => {
+  const { userId } = req.body;
+  try {
+    const user = await Parent.findById(userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const notificationId = req.params.id;
+    if (!user.dismissedNotifications.includes(notificationId)) {
+      user.dismissedNotifications.push(notificationId);
+      await user.save();
+    }
+
+    res.status(200).json({ message: 'Notification dismissed for user' });
+  } catch (err) {
+    console.error('Error dismissing notification:', err);
+    res.status(500).json({ error: 'Failed to dismiss notification' });
+  }
+});
+
+// ✅ (Optional) GET: Fetch dismissed notifications (for debugging)
+router.get('/notifications/dismissed/:userId', async (req, res) => {
+  try {
+    const user = await Parent.findById(req.params.userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.status(200).json(user.dismissedNotifications || []);
+  } catch (err) {
+    console.error('Error fetching dismissed notifications:', err);
+    res.status(500).json({ error: 'Failed to fetch dismissed notifications' });
+  }
+});
+
+// ✅ POST: New notification
+router.post('/notifications', async (req, res) => {
+  try {
+    const { user, message, avatar } = req.body;
+    if (!user || !message) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const newNotification = new Notification({
+      user,
+      message,
+      avatar,
+    });
+
+    const saved = await newNotification.save();
+    res.status(201).json(saved);
+  } catch (err) {
+    console.error('Error posting notification:', err);
+    res.status(500).json({ error: 'Failed to post notification' });
+  }
+});
+
+// ✅ DELETE: Individual notification
+router.delete('/notifications/:id', async (req, res) => {
+  try {
+    const notification = await Notification.findByIdAndDelete(req.params.id);
+
+    if (!notification) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+
+    res.status(200).json({
+      message: 'Notification deleted successfully',
+      notification,
+    });
+  } catch (err) {
+    console.error('Error deleting notification:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ✅ DELETE: All notifications
+router.delete('/notifications', async (req, res) => {
+  try {
+    await Notification.deleteMany({});
+    res.status(200).json({ message: 'All notifications deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting all notifications:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ✅ PATCH: Mark a single notification as read/unread
+router.patch('/notifications/read/:id', async (req, res) => {
+  try {
+    const { read } = req.body;
+    const notification = await Notification.findByIdAndUpdate(
+      req.params.id,
+      { read },
+      { new: true }
+    );
+    if (!notification) return res.status(404).json({ error: 'Not found' });
+    res.json(notification);
+  } catch (err) {
+    console.error('Error updating read state:', err);
+    res.status(500).json({ error: 'Failed to update notification' });
+  }
+});
+
+// ✅ PATCH: Mark all notifications as read
+router.patch('/notifications/read-all', async (req, res) => {
+  try {
+    await Notification.updateMany({}, { read: true });
+    res.json({ message: 'All notifications marked as read' });
+  } catch (err) {
+    console.error('Error marking all as read:', err);
+    res.status(500).json({ error: 'Failed to mark all as read' });
   }
 });
 

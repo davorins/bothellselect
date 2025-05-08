@@ -11,10 +11,13 @@ const parentSchema = new mongoose.Schema(
       unique: true,
       lowercase: true,
       trim: true,
-      match: [
-        /^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/,
-        'Please enter a valid email',
-      ],
+      validate: {
+        validator: function (v) {
+          // Simple email regex that allows dots
+          return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+        },
+        message: 'Please enter a valid email',
+      },
     },
     password: {
       type: String,
@@ -22,6 +25,8 @@ const parentSchema = new mongoose.Schema(
       minlength: [6, 'Password must be at least 6 characters'],
       select: false,
     },
+    resetPasswordToken: { type: String },
+    resetPasswordExpires: { type: Date },
     fullName: {
       type: String,
       required: [true, 'Full name is required'],
@@ -189,6 +194,13 @@ const parentSchema = new mongoose.Schema(
       },
     ],
     isGuardian: Boolean,
+    dismissedNotifications: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Notification',
+        default: [],
+      },
+    ],
   },
   {
     timestamps: true,
@@ -203,11 +215,18 @@ const parentSchema = new mongoose.Schema(
 
 // Hash password before saving
 parentSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) return next();
-
   try {
-    const salt = await bcrypt.genSalt(12);
-    this.password = await bcrypt.hash(this.password, salt);
+    // Normalize email
+    if (this.email) {
+      this.email = this.email.toLowerCase().trim();
+    }
+
+    // Hash password if it's new or changed
+    if (this.isModified('password')) {
+      const salt = await bcrypt.genSalt(12);
+      this.password = await bcrypt.hash(this.password, salt);
+    }
+
     next();
   } catch (err) {
     next(err);
@@ -217,60 +236,6 @@ parentSchema.pre('save', async function (next) {
 // Compare password method
 parentSchema.methods.comparePassword = async function (candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
-};
-
-// Avatar management methods
-parentSchema.statics.updateAvatar = async function (parentId, file) {
-  if (!file) throw new Error('No file provided');
-
-  const parent = await this.findById(parentId);
-  if (!parent) throw new Error('Parent not found');
-
-  // Delete old avatar if exists
-  if (parent.avatar) {
-    const oldPath = path.join(__dirname, '..', parent.avatar);
-    if (fs.existsSync(oldPath)) {
-      fs.unlinkSync(oldPath);
-    }
-  }
-
-  // Create uploads directory if it doesn't exist
-  const uploadDir = path.join(__dirname, '../uploads/avatars');
-  if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-  }
-
-  // Generate unique filename
-  const filename = `${parentId}-${Date.now()}${path.extname(
-    file.originalname
-  )}`;
-  const filePath = path.join(uploadDir, filename);
-  const relativePath = `/uploads/avatars/${filename}`;
-
-  // Save file
-  await fs.promises.writeFile(filePath, file.buffer);
-
-  // Update parent
-  parent.avatar = relativePath;
-  await parent.save();
-
-  return relativePath;
-};
-
-parentSchema.statics.deleteAvatar = async function (parentId) {
-  const parent = await this.findById(parentId);
-  if (!parent) throw new Error('Parent not found');
-
-  if (parent.avatar) {
-    const filePath = path.join(__dirname, '..', parent.avatar);
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-    parent.avatar = null;
-    await parent.save();
-  }
-
-  return true;
 };
 
 module.exports = mongoose.model('Parent', parentSchema);

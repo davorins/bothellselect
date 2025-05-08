@@ -26,6 +26,10 @@ const playerSchema = new mongoose.Schema(
     season: { type: String, required: true },
     registrationComplete: { type: Boolean, default: false },
     paymentComplete: { type: Boolean, default: false },
+    avatar: {
+      type: String,
+      default: null,
+    },
   },
   { timestamps: true }
 );

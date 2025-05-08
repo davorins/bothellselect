@@ -16,6 +16,8 @@ const paymentProcessRoutes = require('./routes/paymentProcessRoutes');
 const squareWebhooksRouter = require('./routes/squareWebhooks');
 const { authenticate, isAdmin, isCoach, isUser } = require('./utils/auth');
 const path = require('path');
+const uploadRoutes = require('./routes/upload');
+const notificationRoutes = require('./routes/notificationRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -24,6 +26,7 @@ const PORT = process.env.PORT || 5001;
 const allowedOrigins = [
   'http://localhost:3000',
   'https://bothellselect.com',
+  'https://www.bothellselect.com',
   'https://bothellselect.vercel.app',
 ];
 
@@ -40,8 +43,25 @@ app.use(
   })
 );
 
-// Middleware
+app.options('*', cors());
+
+app.use(
+  '/api/square',
+  express.raw({ type: 'application/json' }),
+  squareWebhooksRouter
+);
+
 app.use(express.json());
+
+// Use routes
+app.use('/api', authRoutes);
+app.use('/api/search', searchRoutes);
+app.use('/api/payment', paymentRoutes);
+app.use('/api/payments', unpaidRoutes);
+app.use('/api/payments', paymentProcessRoutes);
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use('/api/upload', uploadRoutes);
+app.use('/api', notificationRoutes);
 
 // Connect to MongoDB
 mongoose
@@ -51,15 +71,6 @@ mongoose
     console.error('Failed to connect to MongoDB:', err.message);
     process.exit(1);
   });
-
-// Use routes
-app.use('/api', authRoutes);
-app.use('/api/search', searchRoutes);
-app.use('/api/payment', paymentRoutes);
-app.use('/api/payments', unpaidRoutes);
-app.use('/api/payments', paymentProcessRoutes);
-app.use('/api/square', squareWebhooksRouter);
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Player Registration Routes
 
