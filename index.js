@@ -46,7 +46,7 @@ app.use(
 app.options('*', cors());
 
 app.use(
-  '/api/square',
+  '/api/square/webhook',
   express.raw({ type: 'application/json' }),
   squareWebhooksRouter
 );

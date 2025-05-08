@@ -24,7 +24,7 @@ const verifyWebhook = (req) => {
   return hash === signature;
 };
 
-router.post('/webhook', async (req, res) => {
+router.post('/', async (req, res) => {
   try {
     // Verify webhook signature (comment out during testing)
     if (!verifyWebhook(req)) {
