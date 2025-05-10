@@ -3,8 +3,15 @@ const { submitPayment } = require('../services/square-payments');
 const router = express.Router();
 
 router.post('/square-payment', async (req, res) => {
-  const { sourceId, amount, parentId, playerId, cardDetails, locationId } =
-    req.body;
+  const {
+    sourceId,
+    amount,
+    parentId,
+    playerId,
+    buyerEmailAddress,
+    cardDetails,
+    locationId,
+  } = req.body;
 
   // Validate required fields
   if (!sourceId)
@@ -13,11 +20,15 @@ router.post('/square-payment', async (req, res) => {
     return res.status(400).json({ error: 'Valid amount is required' });
   if (!parentId)
     return res.status(400).json({ error: 'Parent ID is required' });
+  if (!buyerEmailAddress) {
+    return res.status(400).json({ error: 'Email is required for receipt' });
+  }
 
   try {
     const result = await submitPayment(sourceId, amount, {
       parentId,
       playerId,
+      buyerEmailAddress,
       cardDetails,
       locationId,
     });

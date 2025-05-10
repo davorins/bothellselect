@@ -30,6 +30,12 @@ const playerSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    paymentStatus: {
+      type: String,
+      enum: ['pending', 'paid', 'failed', 'refunded'],
+      default: 'pending',
+    },
+    lastPaymentDate: Date,
   },
   { timestamps: true }
 );

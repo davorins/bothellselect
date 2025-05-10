@@ -1,100 +1,202 @@
 const Notification = require('../models/Notification');
-const User = require('../models/Parent');
+const Parent = require('../models/Parent');
 
 // Mark a notification as read
 exports.markAsRead = async (req, res) => {
   const { id } = req.params;
   try {
-    const notification = await Notification.findById(id);
+    const notification = await Notification.findByIdAndUpdate(
+      id,
+      { read: true },
+      { new: true }
+    );
+
     if (!notification) {
-      return res.status(404).send('Notification not found');
+      return res.status(404).json({ error: 'Notification not found' });
     }
 
-    notification.read = true;
-    await notification.save();
-    res.status(200).send('Notification marked as read');
+    res.status(200).json({
+      success: true,
+      message: 'Notification marked as read',
+      notification,
+    });
   } catch (err) {
     console.error('Error marking notification as read:', err);
-    res.status(500).send('Internal server error');
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+    });
   }
 };
 
-// Mark all notifications as read
+// Mark all notifications as read for current user
 exports.markAllAsRead = async (req, res) => {
   try {
     await Notification.updateMany({ read: false }, { read: true });
-    res.status(200).send('All notifications marked as read');
+
+    res.status(200).json({
+      success: true,
+      message: 'All notifications marked as read',
+    });
   } catch (err) {
     console.error('Error marking all notifications as read:', err);
-    res.status(500).send('Internal server error');
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+    });
   }
 };
 
-// Dismiss a notification
-exports.dismissNotification = async (req, res) => {
+// Dismiss a notification for current user (alias for dismissForUser)
+exports.dismissNotification = exports.dismissForUser = async (req, res) => {
   const { id } = req.params;
-  const { userId } = req.body; // Assuming the user ID is passed in the request body
+  const userId = req.user._id; // Get user ID from authenticated request
 
   try {
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).send('User not found');
-    }
-
-    // Check if the notification exists before dismissing it
+    // Verify notification exists
     const notification = await Notification.findById(id);
     if (!notification) {
-      return res.status(404).send('Notification not found');
+      return res.status(404).json({ error: 'Notification not found' });
     }
 
-    // If the user hasn't already dismissed this notification, add it to their dismissedNotifications array
-    if (!user.dismissedNotifications.includes(id)) {
-      user.dismissedNotifications.push(id);
-      await user.save();
-    }
+    // Add to user's dismissed notifications
+    await Parent.findByIdAndUpdate(
+      userId,
+      { $addToSet: { dismissedNotifications: id } },
+      { new: true }
+    );
 
-    res.status(200).send('Notification dismissed');
+    res.status(200).json({
+      success: true,
+      message: 'Notification dismissed',
+    });
   } catch (err) {
     console.error('Error dismissing notification:', err);
-    res.status(500).send('Internal server error');
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+    });
   }
 };
 
-// Get dismissed notifications for a user
-exports.getDismissedNotifications = async (req, res) => {
-  const { userId } = req.params;
-
-  try {
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).send('User not found');
-    }
-
-    res.status(200).json(user.dismissedNotifications); // Returns the array of dismissed notification IDs
-  } catch (err) {
-    console.error('Error fetching dismissed notifications:', err);
-    res.status(500).send('Internal server error');
-  }
-};
-
-// Get notifications for a specific user
+// Get notifications for current user (filtering out dismissed ones)
 exports.getNotifications = async (req, res) => {
-  const { userId } = req.params;
-
   try {
-    const user = await User.findById(userId);
-    if (!user) {
-      return res.status(404).send('User not found');
-    }
+    const userId = req.user._id;
+    const user = await Parent.findById(userId);
 
-    // Fetch notifications that have not been dismissed by this user
-    const notifications = await Notification.find({
-      _id: { $nin: user.dismissedNotifications }, // Exclude dismissed notifications
-    }).sort({ createdAt: -1 }); // Optional: Sort by creation date if needed
+    const query = user?.dismissedNotifications?.length
+      ? { _id: { $nin: user.dismissedNotifications } }
+      : {};
 
-    res.status(200).json(notifications);
+    const notifications = await Notification.find(query).sort({
+      createdAt: -1,
+    });
+
+    res.status(200).json({
+      success: true,
+      count: notifications.length,
+      notifications,
+    });
   } catch (err) {
     console.error('Error fetching notifications:', err);
-    res.status(500).send('Internal server error');
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+    });
+  }
+};
+
+// Admin-only: Create new notification
+exports.createNotification = async (req, res) => {
+  try {
+    const { message } = req.body;
+
+    if (!message) {
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    const notification = new Notification({
+      user: req.user._id,
+      message,
+      read: false,
+    });
+
+    await notification.save();
+
+    res.status(201).json({
+      success: true,
+      notification,
+    });
+  } catch (err) {
+    console.error('Error creating notification:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+    });
+  }
+};
+
+// Admin-only: Delete a notification
+exports.deleteNotification = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const notification = await Notification.findByIdAndDelete(id);
+
+    if (!notification) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Notification deleted successfully',
+    });
+  } catch (err) {
+    console.error('Error deleting notification:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+    });
+  }
+};
+
+// Admin-only: Delete all notifications
+exports.deleteAllNotifications = async (req, res) => {
+  try {
+    await Notification.deleteMany({});
+
+    res.status(200).json({
+      success: true,
+      message: 'All notifications deleted successfully',
+    });
+  } catch (err) {
+    console.error('Error deleting all notifications:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+    });
+  }
+};
+
+// Admin-only: Get dismissed notifications for a specific user
+exports.getDismissedNotifications = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const user = await Parent.findById(userId).select('dismissedNotifications');
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.status(200).json({
+      success: true,
+      dismissedNotifications: user.dismissedNotifications || [],
+    });
+  } catch (err) {
+    console.error('Error fetching dismissed notifications:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+    });
   }
 };

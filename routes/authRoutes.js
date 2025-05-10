@@ -480,21 +480,25 @@ router.post(
       }
 
       // Create player documents with registration status
-      const playerDocs = players.map((player) => ({
-        fullName: player.fullName.trim(),
-        gender: player.gender,
-        dob: player.dob,
-        schoolName: player.schoolName.trim(),
-        grade: player.grade,
-        healthConcerns: player.healthConcerns || '',
-        aauNumber: player.aauNumber || '',
-        season: player.season,
-        registrationYear: player.year,
-        parentId: null,
-        registrationComplete: true,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      }));
+      const playerDocs = players.map((player) => {
+        const _id = new mongoose.Types.ObjectId();
+        return {
+          _id,
+          fullName: player.fullName.trim(),
+          gender: player.gender,
+          dob: player.dob,
+          schoolName: player.schoolName.trim(),
+          grade: player.grade,
+          healthConcerns: player.healthConcerns || '',
+          aauNumber: player.aauNumber || '',
+          season: player.season,
+          registrationYear: player.year,
+          parentId: null,
+          registrationComplete: true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+      });
 
       const savedPlayers = await Player.insertMany(playerDocs, { session });
 
@@ -537,11 +541,11 @@ router.post(
       );
 
       // Create registration records with status
-      const registrationDocs = players.map((player, index) => ({
-        player: savedPlayers[index]._id,
+      const registrationDocs = playerDocs.map((playerDoc) => ({
+        player: playerDoc._id,
         parent: parent._id,
-        season: player.season,
-        year: player.year,
+        season: playerDoc.season,
+        year: playerDoc.registrationYear,
         paymentStatus: 'pending',
         registrationComplete: true,
         createdAt: new Date(),
@@ -1157,24 +1161,28 @@ router.get('/player/:playerId/guardians', authenticate, async (req, res) => {
 });
 
 // Get players by parent ID
-router.get('/parent/:parentId/players', authenticate, async (req, res) => {
-  try {
-    const { parentId } = req.params;
+router.get(
+  ['/parent/:parentId/players', '/players/by-parent/:parentId'],
+  authenticate,
+  async (req, res) => {
+    try {
+      const { parentId } = req.params;
 
-    const players = await Player.find({ parentId });
+      const players = await Player.find({ parentId });
 
-    if (!players || players.length === 0) {
-      return res
-        .status(404)
-        .json({ error: 'No players found for this parent' });
+      if (!players || players.length === 0) {
+        return res
+          .status(404)
+          .json({ error: 'No players found for this parent' });
+      }
+
+      res.json(players);
+    } catch (error) {
+      console.error('Error fetching parent players:', error);
+      res.status(500).json({ error: 'Failed to fetch parent players' });
     }
-
-    res.json(players);
-  } catch (error) {
-    console.error('Error fetching parent players:', error);
-    res.status(500).json({ error: 'Failed to fetch parent players' });
   }
-});
+);
 
 // Get parents with optional query parameters
 router.get('/parents', authenticate, async (req, res) => {
@@ -1817,6 +1825,78 @@ router.patch('/notifications/read-all', async (req, res) => {
   } catch (err) {
     console.error('Error marking all as read:', err);
     res.status(500).json({ error: 'Failed to mark all as read' });
+  }
+});
+
+router.post('/payments/update-players', authenticate, async (req, res) => {
+  const { parentId, playerIds } = req.body;
+
+  if (!parentId || !playerIds) {
+    return res
+      .status(400)
+      .json({ error: 'Parent ID and player IDs are required' });
+  }
+
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    // Update players' payment status
+    const playersUpdate = await Player.updateMany(
+      { _id: { $in: playerIds } },
+      {
+        $set: {
+          paymentComplete: true,
+          paymentStatus: 'paid',
+          updatedAt: new Date(),
+        },
+      },
+      { session }
+    );
+
+    // Update registrations
+    const registrationsUpdate = await Registration.updateMany(
+      { player: { $in: playerIds } },
+      {
+        $set: {
+          paymentStatus: 'paid',
+          paymentComplete: true,
+          paymentDate: new Date(),
+        },
+      },
+      { session }
+    );
+
+    // Update parent
+    const parentUpdate = await Parent.findByIdAndUpdate(
+      parentId,
+      {
+        $set: {
+          paymentComplete: true,
+          updatedAt: new Date(),
+        },
+      },
+      { new: true, session }
+    );
+
+    await session.commitTransaction();
+
+    res.json({
+      success: true,
+      playersUpdated: playersUpdate.nModified,
+      registrationsUpdated: registrationsUpdate.nModified,
+      parent: parentUpdate,
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Payment status update error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to update payment status',
+      details: error.message,
+    });
+  } finally {
+    session.endSession();
   }
 });
 

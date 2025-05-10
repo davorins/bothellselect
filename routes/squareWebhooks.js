@@ -9,8 +9,7 @@ const mongoose = require('mongoose');
 // Verify Square webhook signature
 const verifyWebhook = (req) => {
   const signature = req.headers['x-square-hmacsha256'];
-  const notificationUrl =
-    'https://bothell-select.onrender.com/api/square/webhook';
+  const notificationUrl = 'https://1269-50-47-239-206.ngrok-free.app';
 
   const body = req.body.toString('utf8');
 
