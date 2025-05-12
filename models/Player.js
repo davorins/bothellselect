@@ -24,6 +24,7 @@ const playerSchema = new mongoose.Schema(
     },
     registrationYear: { type: Number, required: true },
     season: { type: String, required: true },
+    seasonYear: { type: Number },
     registrationComplete: { type: Boolean, default: false },
     paymentComplete: { type: Boolean, default: false },
     avatar: {

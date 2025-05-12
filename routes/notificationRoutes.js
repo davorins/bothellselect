@@ -9,6 +9,7 @@ router.patch(
   authenticate,
   notificationController.markAsRead
 );
+
 router.patch(
   '/notifications/read-all',
   authenticate,
@@ -19,7 +20,7 @@ router.patch(
 router.patch(
   '/notifications/dismiss/:id',
   authenticate,
-  notificationController.dismissForUser
+  notificationController.dismissNotification
 );
 
 // Get notifications (filtered by user's dismissed ones)
@@ -66,7 +67,7 @@ router.delete(
   notificationController.deleteAllNotifications
 );
 
-// Debug/management route (optional)
+// Admin route to view dismissed notifications for a specific user (optional for debugging)
 router.get(
   '/notifications/dismissed/:userId',
   authenticate,

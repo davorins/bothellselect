@@ -201,6 +201,14 @@ const parentSchema = new mongoose.Schema(
         default: [],
       },
     ],
+    playersSeason: {
+      type: [String],
+      default: [],
+    },
+    playersYear: {
+      type: [Number],
+      default: [],
+    },
   },
   {
     timestamps: true,
@@ -212,6 +220,9 @@ const parentSchema = new mongoose.Schema(
     },
   }
 );
+
+parentSchema.index({ notifications: 1 });
+parentSchema.index({ dismissedNotifications: 1 });
 
 // Hash password before saving
 parentSchema.pre('save', async function (next) {
@@ -233,9 +244,60 @@ parentSchema.pre('save', async function (next) {
   }
 });
 
+// Update seasons and years when players change
+parentSchema.pre('save', async function (next) {
+  if (this.isModified('players')) {
+    try {
+      if (this.players && this.players.length > 0) {
+        const players = await mongoose
+          .model('Player')
+          .find(
+            { _id: { $in: this.players } },
+            { season: 1, registrationYear: 1 }
+          );
+
+        // Ensure seasons are strings and years are numbers
+        this.playersSeason = [...new Set(players.map((p) => String(p.season)))];
+        this.playersYear = [
+          ...new Set(players.map((p) => Number(p.registrationYear))),
+        ];
+      } else {
+        this.playersSeason = [];
+        this.playersYear = [];
+      }
+    } catch (err) {
+      console.error('Error updating player seasons/years:', err);
+    }
+  }
+  next();
+});
+
 // Compare password method
 parentSchema.methods.comparePassword = async function (candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
+};
+
+// Update seasons/years for all parents
+parentSchema.statics.updateAllSeasonsAndYears = async function () {
+  const parents = await this.find({});
+
+  for (const parent of parents) {
+    if (parent.players && parent.players.length > 0) {
+      const players = await mongoose
+        .model('Player')
+        .find(
+          { _id: { $in: parent.players } },
+          { season: 1, registrationYear: 1 }
+        );
+
+      const seasons = [...new Set(players.map((p) => p.season))];
+      const years = [...new Set(players.map((p) => p.registrationYear))];
+
+      parent.playersSeason = seasons;
+      parent.playersYear = years;
+      await parent.save();
+    }
+  }
 };
 
 module.exports = mongoose.model('Parent', parentSchema);

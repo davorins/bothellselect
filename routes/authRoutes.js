@@ -912,6 +912,9 @@ router.get('/parent/:id', async (req, res) => {
       return res.status(404).json({ message: 'Parent not found' });
     }
 
+    parent.playersSeason = parent.playersSeason || [];
+    parent.playersYear = parent.playersYear || [];
+
     res.json(parent);
   } catch (error) {
     console.error('Error fetching parent:', error);
@@ -1682,152 +1685,6 @@ router.get('/payments/parent/:parentId', authenticate, async (req, res) => {
   }
 });
 
-router.get('/notifications', async (req, res) => {
-  try {
-    const notifications = await Notification.find().sort({ createdAt: -1 });
-    res.json(notifications);
-  } catch (err) {
-    console.error('Error fetching notifications:', err);
-    res.status(500).json({ error: 'Failed to fetch notifications' });
-  }
-});
-
-// ✅ GET: Notifications visible to a specific user (excluding dismissed)
-router.get('/notifications/user/:userId', async (req, res) => {
-  try {
-    const user = await Parent.findById(req.params.userId);
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const notifications = await Notification.find({
-      _id: { $nin: user.dismissedNotifications || [] },
-    }).sort({ createdAt: -1 });
-
-    res.json(notifications);
-  } catch (err) {
-    console.error('Error fetching user-specific notifications:', err);
-    res.status(500).json({ error: 'Failed to fetch notifications' });
-  }
-});
-
-// ✅ PATCH: Dismiss a single notification for a specific user
-router.patch('/notifications/dismiss/:id', async (req, res) => {
-  const { userId } = req.body;
-  try {
-    const user = await Parent.findById(userId);
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const notificationId = req.params.id;
-    if (!user.dismissedNotifications.includes(notificationId)) {
-      user.dismissedNotifications.push(notificationId);
-      await user.save();
-    }
-
-    res.status(200).json({ message: 'Notification dismissed for user' });
-  } catch (err) {
-    console.error('Error dismissing notification:', err);
-    res.status(500).json({ error: 'Failed to dismiss notification' });
-  }
-});
-
-// ✅ (Optional) GET: Fetch dismissed notifications (for debugging)
-router.get('/notifications/dismissed/:userId', async (req, res) => {
-  try {
-    const user = await Parent.findById(req.params.userId);
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    res.status(200).json(user.dismissedNotifications || []);
-  } catch (err) {
-    console.error('Error fetching dismissed notifications:', err);
-    res.status(500).json({ error: 'Failed to fetch dismissed notifications' });
-  }
-});
-
-// ✅ POST: New notification
-router.post('/notifications', async (req, res) => {
-  try {
-    const { user, message, avatar } = req.body;
-    if (!user || !message) {
-      return res.status(400).json({ error: 'Missing required fields' });
-    }
-
-    const newNotification = new Notification({
-      user,
-      message,
-      avatar,
-    });
-
-    const saved = await newNotification.save();
-    res.status(201).json(saved);
-  } catch (err) {
-    console.error('Error posting notification:', err);
-    res.status(500).json({ error: 'Failed to post notification' });
-  }
-});
-
-// ✅ DELETE: Individual notification
-router.delete('/notifications/:id', async (req, res) => {
-  try {
-    const notification = await Notification.findByIdAndDelete(req.params.id);
-
-    if (!notification) {
-      return res.status(404).json({ error: 'Notification not found' });
-    }
-
-    res.status(200).json({
-      message: 'Notification deleted successfully',
-      notification,
-    });
-  } catch (err) {
-    console.error('Error deleting notification:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// ✅ DELETE: All notifications
-router.delete('/notifications', async (req, res) => {
-  try {
-    await Notification.deleteMany({});
-    res.status(200).json({ message: 'All notifications deleted successfully' });
-  } catch (err) {
-    console.error('Error deleting all notifications:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// ✅ PATCH: Mark a single notification as read/unread
-router.patch('/notifications/read/:id', async (req, res) => {
-  try {
-    const { read } = req.body;
-    const notification = await Notification.findByIdAndUpdate(
-      req.params.id,
-      { read },
-      { new: true }
-    );
-    if (!notification) return res.status(404).json({ error: 'Not found' });
-    res.json(notification);
-  } catch (err) {
-    console.error('Error updating read state:', err);
-    res.status(500).json({ error: 'Failed to update notification' });
-  }
-});
-
-// ✅ PATCH: Mark all notifications as read
-router.patch('/notifications/read-all', async (req, res) => {
-  try {
-    await Notification.updateMany({}, { read: true });
-    res.json({ message: 'All notifications marked as read' });
-  } catch (err) {
-    console.error('Error marking all as read:', err);
-    res.status(500).json({ error: 'Failed to mark all as read' });
-  }
-});
-
 router.post('/payments/update-players', authenticate, async (req, res) => {
   const { parentId, playerIds } = req.body;
 
@@ -1897,6 +1754,361 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
     });
   } finally {
     session.endSession();
+  }
+});
+
+router.get('/users/search', async (req, res) => {
+  const query = req.query.q;
+  if (!query) {
+    return res.status(400).json({ error: 'Query parameter "q" is required' });
+  }
+
+  try {
+    const regex = new RegExp(query, 'i'); // case-insensitive search
+    const users = await Parent.find({
+      $or: [{ firstName: regex }, { lastName: regex }, { email: regex }],
+    }).limit(10); // Limit results to 10
+
+    res.json(users);
+  } catch (err) {
+    console.error('Error searching users:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET available seasons
+router.get('/seasons/available', authenticate, async (req, res) => {
+  try {
+    const seasons = await Player.distinct('season');
+    res.json(seasons);
+  } catch (err) {
+    console.error('Error fetching seasons:', err);
+    res.status(500).json({ error: 'Failed to fetch available seasons' });
+  }
+});
+
+router.get('/notifications', authenticate, async (req, res) => {
+  try {
+    const currentUser = req.user;
+
+    let query = {};
+
+    // For non-admin users, apply filters
+    if (currentUser.role !== 'admin') {
+      query = {
+        $or: [
+          { targetType: 'all' },
+          {
+            targetType: 'individual',
+            parentIds: currentUser.id,
+          },
+          {
+            targetType: 'season',
+            parentIds: currentUser.id,
+          },
+        ],
+        dismissedBy: { $ne: currentUser.id },
+      };
+    }
+
+    const notifications = await Notification.find(query)
+      .sort({ createdAt: -1 })
+      .populate('parentIds', 'fullName avatar')
+      .lean();
+
+    res.json(notifications);
+  } catch (err) {
+    console.error('Error fetching notifications:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// ✅ GET: Notifications visible to a specific user (excluding dismissed)
+router.get('/notifications/user/:userId', authenticate, async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const user = await Parent.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Get all notifications that either:
+    // 1. Are targeted to this user specifically
+    // 2. Are general notifications
+    // 3. Are season notifications matching user's seasons
+    const notifications = await Notification.find({
+      $or: [
+        { targetType: 'all' },
+        { targetType: 'individual', parentIds: userId },
+        {
+          targetType: 'season',
+          $or: [
+            { parentIds: userId },
+            {
+              // Match if user has players in any of the notification's seasons
+              targetSeason: { $in: user.playersSeasons || [] },
+            },
+          ],
+        },
+      ],
+      dismissedBy: { $ne: userId },
+    })
+      .sort({ createdAt: -1 })
+      .populate('user', 'fullName avatar')
+      .lean();
+
+    res.json(notifications);
+  } catch (err) {
+    console.error('Error fetching notifications:', err);
+    res.status(500).json({
+      error: 'Failed to fetch notifications',
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined,
+    });
+  }
+});
+
+// ✅ PATCH: Dismiss a single notification for a specific user
+router.patch('/notifications/dismiss/:id', authenticate, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const notificationId = req.params.id;
+    const userId = req.user._id;
+
+    // Verify the notification exists and user should have access to it
+    const notification = await Notification.findOne({
+      _id: notificationId,
+      $or: [
+        { parentIds: userId }, // User is in parentIds
+        { targetType: 'all' }, // Or it's a general notification
+      ],
+    }).session(session);
+
+    if (!notification) {
+      await session.abortTransaction();
+      return res
+        .status(404)
+        .json({ error: 'Notification not found or unauthorized' });
+    }
+
+    // Update both notification and parent document atomically
+    await Promise.all([
+      // Add to notification's dismissedBy
+      Notification.findByIdAndUpdate(
+        notificationId,
+        { $addToSet: { dismissedBy: userId } },
+        { session }
+      ),
+
+      // Remove from parent's notifications
+      Parent.findByIdAndUpdate(
+        userId,
+        { $pull: { notifications: notificationId } },
+        { session }
+      ),
+    ]);
+
+    await session.commitTransaction();
+
+    res.json({
+      success: true,
+      notificationId,
+      dismissedAt: new Date(),
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    console.error('Error dismissing notification:', err);
+    res.status(500).json({
+      error: 'Failed to dismiss notification',
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined,
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
+// ✅ (Optional) GET: Fetch dismissed notifications (for debugging)
+router.get('/notifications/dismissed/:userId', async (req, res) => {
+  try {
+    const user = await Parent.findById(req.params.userId);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.status(200).json(user.dismissedNotifications || []);
+  } catch (err) {
+    console.error('Error fetching dismissed notifications:', err);
+    res.status(500).json({ error: 'Failed to fetch dismissed notifications' });
+  }
+});
+
+// ✅ POST: New notification
+router.post('/notifications', authenticate, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const {
+      message,
+      targetType = 'all',
+      targetSeason, // Full season name (e.g., "Winter Classic")
+      seasonName, // Alternative field name
+      parentIds = [],
+    } = req.body;
+
+    // Validation
+    if (!message) {
+      await session.abortTransaction();
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    if (targetType === 'individual' && parentIds.length === 0) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        error: 'Target users are required for individual notifications',
+      });
+    }
+
+    let resolvedParentIds = [...parentIds];
+    const finalSeasonName = seasonName || targetSeason;
+
+    if (targetType === 'season') {
+      if (!finalSeasonName) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          error: 'Season name is required for season notifications',
+        });
+      }
+
+      // Find players by season name (partial match)
+      const players = await Player.find({
+        season: { $regex: new RegExp(finalSeasonName, 'i') }, // Case-insensitive partial match
+      }).session(session);
+
+      resolvedParentIds = [
+        ...new Set(players.map((p) => p.parentId?.toString()).filter(Boolean)),
+      ];
+
+      if (resolvedParentIds.length === 0) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          error: `No players found matching season "${finalSeasonName}"`,
+          suggestion:
+            'Available seasons: ' +
+            (await Player.distinct('season')).join(', '),
+        });
+      }
+    }
+
+    const sender = await Parent.findById(req.user.id).select('fullName avatar');
+
+    const notification = new Notification({
+      user: req.user._id,
+      userFullName: sender.fullName,
+      userAvatar: sender.avatar,
+      message,
+      targetType,
+      ...(targetType === 'season' && {
+        targetSeason: finalSeasonName,
+        seasonName: finalSeasonName,
+        parentIds: resolvedParentIds,
+      }),
+      ...(targetType === 'individual' && {
+        parentIds,
+      }),
+    });
+
+    await notification.save({ session });
+
+    const updateOperation =
+      targetType === 'all'
+        ? { $push: { notifications: notification._id } }
+        : {
+            $push: {
+              notifications: {
+                $each: [notification._id],
+                $position: 0,
+              },
+            },
+          };
+
+    await Parent.updateMany(
+      targetType === 'all' ? {} : { _id: { $in: resolvedParentIds } },
+      updateOperation,
+      { session }
+    );
+
+    await session.commitTransaction();
+    res.status(201).json(notification);
+  } catch (err) {
+    await session.abortTransaction();
+    console.error('Error creating notification:', err);
+    res.status(500).json({
+      error: 'Internal server error',
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined,
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
+// ✅ DELETE: Individual notification
+router.delete('/notifications/:id', async (req, res) => {
+  try {
+    const notification = await Notification.findByIdAndDelete(req.params.id);
+
+    if (!notification) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
+
+    res.status(200).json({
+      message: 'Notification deleted successfully',
+      notification,
+    });
+  } catch (err) {
+    console.error('Error deleting notification:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ✅ DELETE: All notifications
+router.delete('/notifications', async (req, res) => {
+  try {
+    await Notification.deleteMany({});
+    res.status(200).json({ message: 'All notifications deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting all notifications:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ✅ PATCH: Mark a single notification as read/unread
+router.patch('/notifications/read/:id', async (req, res) => {
+  try {
+    const { read } = req.body;
+    const notification = await Notification.findByIdAndUpdate(
+      req.params.id,
+      { read },
+      { new: true }
+    );
+    if (!notification) return res.status(404).json({ error: 'Not found' });
+    res.json(notification);
+  } catch (err) {
+    console.error('Error updating read state:', err);
+    res.status(500).json({ error: 'Failed to update notification' });
+  }
+});
+
+// ✅ PATCH: Mark all notifications as read
+router.patch('/notifications/read-all', async (req, res) => {
+  try {
+    await Notification.updateMany({}, { read: true });
+    res.json({ message: 'All notifications marked as read' });
+  } catch (err) {
+    console.error('Error marking all as read:', err);
+    res.status(500).json({ error: 'Failed to mark all as read' });
   }
 });
 

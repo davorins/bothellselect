@@ -1,5 +1,15 @@
 const Notification = require('../models/Notification');
 const Parent = require('../models/Parent');
+const Player = require('../models/Player');
+const mongoose = require('mongoose');
+
+// Helper function to populate notification with user data
+const populateNotification = async (notification) => {
+  return await Notification.findById(notification._id)
+    .populate('user', 'fullName avatar')
+    .populate('parentIds', 'fullName avatar')
+    .lean();
+};
 
 // Mark a notification as read
 exports.markAsRead = async (req, res) => {
@@ -9,7 +19,7 @@ exports.markAsRead = async (req, res) => {
       id,
       { read: true },
       { new: true }
-    );
+    ).populate('user', 'fullName avatar');
 
     if (!notification) {
       return res.status(404).json({ error: 'Notification not found' });
@@ -47,10 +57,10 @@ exports.markAllAsRead = async (req, res) => {
   }
 };
 
-// Dismiss a notification for current user (alias for dismissForUser)
-exports.dismissNotification = exports.dismissForUser = async (req, res) => {
+// Dismiss a notification for current user
+exports.dismissNotification = async (req, res) => {
   const { id } = req.params;
-  const userId = req.user._id; // Get user ID from authenticated request
+  const userId = req.user._id;
 
   try {
     // Verify notification exists
@@ -60,9 +70,9 @@ exports.dismissNotification = exports.dismissForUser = async (req, res) => {
     }
 
     // Add to user's dismissed notifications
-    await Parent.findByIdAndUpdate(
-      userId,
-      { $addToSet: { dismissedNotifications: id } },
+    await Notification.findByIdAndUpdate(
+      id,
+      { $addToSet: { dismissedBy: userId } },
       { new: true }
     );
 
@@ -79,65 +89,119 @@ exports.dismissNotification = exports.dismissForUser = async (req, res) => {
   }
 };
 
-// Get notifications for current user (filtering out dismissed ones)
+// Get notifications for current user
 exports.getNotifications = async (req, res) => {
   try {
-    const userId = req.user._id;
-    const user = await Parent.findById(userId);
+    const currentUser = req.user;
+    const userObjectId = mongoose.Types.ObjectId(currentUser.id);
 
-    const query = user?.dismissedNotifications?.length
-      ? { _id: { $nin: user.dismissedNotifications } }
-      : {};
+    const query = {
+      $or: [
+        { targetType: 'all' },
+        { targetType: 'individual', parentIds: userObjectId },
+        { targetType: 'season', parentIds: userObjectId },
+      ],
+      dismissedBy: { $ne: userObjectId },
+    };
 
-    const notifications = await Notification.find(query).sort({
-      createdAt: -1,
-    });
+    console.log('User ID:', currentUser.id);
+    console.log('Query:', JSON.stringify(query, null, 2));
 
-    res.status(200).json({
-      success: true,
-      count: notifications.length,
-      notifications,
-    });
-  } catch (err) {
-    console.error('Error fetching notifications:', err);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error',
-    });
+    const notifications = await Notification.find(query)
+      .sort({ createdAt: -1 })
+      .populate('parentIds', 'fullName avatar')
+      .lean();
+
+    console.log('Found notifications:', notifications.length);
+    res.json(notifications);
+  } catch (error) {
+    console.error('Notification fetch error:', error);
+    res.status(500).json({ error: 'Server error' });
   }
 };
 
-// Admin-only: Create new notification
+// Create new notification
 exports.createNotification = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
-    const { message } = req.body;
+    const {
+      message,
+      targetType = 'all',
+      parentIds = [],
+      seasonName,
+    } = req.body;
 
     if (!message) {
+      await session.abortTransaction();
       return res.status(400).json({ error: 'Message is required' });
+    }
+
+    if (targetType === 'individual' && parentIds.length === 0) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        error: 'Target users are required for individual notifications',
+      });
+    }
+
+    let resolvedParentIds = [...parentIds];
+
+    if (targetType === 'season' && seasonName) {
+      if (!seasonName) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          error: 'Season name is required for season notifications',
+        });
+      }
+
+      const players = await Player.find({
+        season: { $regex: new RegExp(seasonName, 'i') },
+      }).session(session);
+
+      resolvedParentIds = [
+        ...new Set(
+          players
+            .map((p) =>
+              p.parentId ? mongoose.Types.ObjectId(p.parentId) : null
+            )
+            .filter(Boolean)
+        ),
+      ];
     }
 
     const notification = new Notification({
       user: req.user._id,
       message,
-      read: false,
+      targetType,
+      parentIds: resolvedParentIds,
+      seasonName: targetType === 'season' ? seasonName : undefined,
     });
 
-    await notification.save();
+    await notification.save({ session });
+
+    // Populate the notification with user data
+    const populatedNotification = await populateNotification(notification);
+
+    await session.commitTransaction();
 
     res.status(201).json({
       success: true,
-      notification,
+      notification: populatedNotification,
     });
   } catch (err) {
+    await session.abortTransaction();
     console.error('Error creating notification:', err);
     res.status(500).json({
       success: false,
       error: 'Internal server error',
     });
+  } finally {
+    session.endSession();
   }
 };
 
-// Admin-only: Delete a notification
+// Delete a notification
 exports.deleteNotification = async (req, res) => {
   try {
     const { id } = req.params;
@@ -160,7 +224,7 @@ exports.deleteNotification = async (req, res) => {
   }
 };
 
-// Admin-only: Delete all notifications
+// Delete all notifications
 exports.deleteAllNotifications = async (req, res) => {
   try {
     await Notification.deleteMany({});
@@ -178,7 +242,7 @@ exports.deleteAllNotifications = async (req, res) => {
   }
 };
 
-// Admin-only: Get dismissed notifications for a specific user
+// Get dismissed notifications for a specific user
 exports.getDismissedNotifications = async (req, res) => {
   try {
     const { userId } = req.params;
