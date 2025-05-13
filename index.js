@@ -9,6 +9,7 @@ const Player = require('./models/Player');
 const Parent = require('./models/Parent');
 const PlayerRegistration = require('./models/PlayerRegistration');
 const authRoutes = require('./routes/authRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
 const searchRoutes = require('./routes/searchRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const unpaidRoutes = require('./routes/unpaidRoutes');
@@ -17,7 +18,6 @@ const squareWebhooksRouter = require('./routes/squareWebhooks');
 const { authenticate, isAdmin, isCoach, isUser } = require('./utils/auth');
 const path = require('path');
 const uploadRoutes = require('./routes/upload');
-const notificationRoutes = require('./routes/notificationRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -55,13 +55,13 @@ app.use(express.json());
 
 // Use routes
 app.use('/api', authRoutes);
+app.use('/api', notificationRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/payments', unpaidRoutes);
 app.use('/api/payments', paymentProcessRoutes);
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/api/upload', uploadRoutes);
-app.use('/api', notificationRoutes);
 
 // Connect to MongoDB
 mongoose
