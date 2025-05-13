@@ -2,6 +2,8 @@ const Notification = require('../models/Notification');
 const Parent = require('../models/Parent');
 const Player = require('../models/Player');
 const mongoose = require('mongoose');
+const { Resend } = require('resend');
+const resend = new Resend(process.env.RESEND_API_KEY);
 
 // Helper function to populate notification with user data
 const populateNotification = async (notification) => {
@@ -9,6 +11,137 @@ const populateNotification = async (notification) => {
     .populate('user', 'fullName avatar')
     .populate('parentIds', 'fullName avatar')
     .lean();
+};
+
+// Send email notifications
+const sendEmailNotification = async (emails, message) => {
+  try {
+    await resend.emails.send({
+      from: 'no-reply@bothellselect.com',
+      to: emails,
+      subject: 'New Notification from Bothell Select',
+      html: `<p>${message}</p>`,
+    });
+  } catch (err) {
+    console.error('Error sending notification email:', err);
+  }
+};
+
+// Create new notification
+exports.createNotification = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const {
+      message,
+      targetType = 'all',
+      parentIds = [],
+      seasonName,
+    } = req.body;
+
+    if (!message) {
+      await session.abortTransaction();
+      return res.status(400).json({ error: 'Message is required' });
+    }
+
+    if (targetType === 'individual' && parentIds.length === 0) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        error: 'Target users are required for individual notifications',
+      });
+    }
+
+    let resolvedParentIds = [...parentIds];
+    let parentsToEmail = [];
+
+    if (targetType === 'season' && seasonName) {
+      const players = await Player.find({
+        season: { $regex: new RegExp(seasonName, 'i') },
+      }).session(session);
+
+      resolvedParentIds = [
+        ...new Set(
+          players
+            .map((p) =>
+              p.parentId ? mongoose.Types.ObjectId(p.parentId) : null
+            )
+            .filter(Boolean)
+        ),
+      ];
+    }
+
+    // For 'all' notifications, get all parent emails
+    if (targetType === 'all') {
+      parentsToEmail = await Parent.find({}).select('email').session(session);
+    }
+    // For other types, get emails of specific parents
+    else if (resolvedParentIds.length > 0) {
+      parentsToEmail = await Parent.find({
+        _id: { $in: resolvedParentIds },
+      })
+        .select('email')
+        .session(session);
+    }
+
+    const notification = new Notification({
+      user: req.user._id,
+      message,
+      targetType,
+      parentIds: resolvedParentIds,
+      seasonName: targetType === 'season' ? seasonName : undefined,
+    });
+
+    await notification.save({ session });
+
+    // Populate with user data
+    const populatedNotification = await populateNotification(notification);
+
+    // Send emails to all applicable parents
+    if (parentsToEmail.length > 0) {
+      const emails = parentsToEmail.map((p) => p.email).filter(Boolean);
+
+      if (emails.length > 0) {
+        try {
+          const emailHtml = `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+              <h2 style="color: #2563eb;">New Notification from Bothell Select</h2>
+              <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px;">
+                <p style="font-size: 16px; line-height: 1.5;">${message}</p>
+              </div>
+              <p style="margin-top: 20px; font-size: 14px; color: #6b7280;">
+                This is an automated message. Please do not reply directly to this email.
+              </p>
+            </div>
+          `;
+
+          await sendEmailNotification(emails, emailHtml);
+          console.log(
+            `✅ Email notification sent to ${emails.length} recipients`
+          );
+        } catch (emailError) {
+          console.error('Email sending error:', emailError);
+          // Don't fail the whole operation if email fails
+        }
+      }
+    }
+
+    await session.commitTransaction();
+
+    res.status(201).json({
+      success: true,
+      notification: populatedNotification,
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    console.error('Error creating notification:', err);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error',
+    });
+  } finally {
+    session.endSession();
+  }
 };
 
 // Mark a notification as read
@@ -117,87 +250,6 @@ exports.getNotifications = async (req, res) => {
   } catch (error) {
     console.error('Notification fetch error:', error);
     res.status(500).json({ error: 'Server error' });
-  }
-};
-
-// Create new notification
-exports.createNotification = async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const {
-      message,
-      targetType = 'all',
-      parentIds = [],
-      seasonName,
-    } = req.body;
-
-    if (!message) {
-      await session.abortTransaction();
-      return res.status(400).json({ error: 'Message is required' });
-    }
-
-    if (targetType === 'individual' && parentIds.length === 0) {
-      await session.abortTransaction();
-      return res.status(400).json({
-        error: 'Target users are required for individual notifications',
-      });
-    }
-
-    let resolvedParentIds = [...parentIds];
-
-    if (targetType === 'season' && seasonName) {
-      if (!seasonName) {
-        await session.abortTransaction();
-        return res.status(400).json({
-          error: 'Season name is required for season notifications',
-        });
-      }
-
-      const players = await Player.find({
-        season: { $regex: new RegExp(seasonName, 'i') },
-      }).session(session);
-
-      resolvedParentIds = [
-        ...new Set(
-          players
-            .map((p) =>
-              p.parentId ? mongoose.Types.ObjectId(p.parentId) : null
-            )
-            .filter(Boolean)
-        ),
-      ];
-    }
-
-    const notification = new Notification({
-      user: req.user._id,
-      message,
-      targetType,
-      parentIds: resolvedParentIds,
-      seasonName: targetType === 'season' ? seasonName : undefined,
-    });
-
-    await notification.save({ session });
-
-    // Populate the notification with user data
-    const populatedNotification = await populateNotification(notification);
-
-    await session.commitTransaction();
-
-    res.status(201).json({
-      success: true,
-      notification: populatedNotification,
-    });
-  } catch (err) {
-    await session.abortTransaction();
-    console.error('Error creating notification:', err);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error',
-    });
-  } finally {
-    session.endSession();
   }
 };
 
