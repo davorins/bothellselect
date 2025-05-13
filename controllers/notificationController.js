@@ -9,21 +9,45 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 const populateNotification = async (notification) => {
   return await Notification.findById(notification._id)
     .populate('user', 'fullName avatar')
-    .populate('parentIds', 'fullName avatar')
+    .populate('parentIds', 'fullName avatar email')
     .lean();
 };
 
 // Send email notifications
 const sendEmailNotification = async (emails, message) => {
   try {
-    await resend.emails.send({
-      from: 'no-reply@bothellselect.com',
+    console.log('Attempting to send emails to:', emails);
+    console.log('Resolved parent emails to send:', emails);
+
+    const emailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+        <h2 style="color: #2563eb;">New Notification from Bothell Select</h2>
+        <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px;">
+          <p style="font-size: 16px; line-height: 1.5;">${message}</p>
+        </div>
+        <p style="margin-top: 20px; font-size: 14px; color: #6b7280;">
+          This is an automated message. Please do not reply directly to this email.
+        </p>
+      </div>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: 'Bothell Select <info@bothellselect.com>',
       to: emails,
       subject: 'New Notification from Bothell Select',
-      html: `<p>${message}</p>`,
+      html: emailHtml,
     });
+
+    if (error) {
+      console.error('Resend API error:', error);
+      throw error;
+    }
+
+    console.log('Email sent successfully:', data);
+    return data;
   } catch (err) {
-    console.error('Error sending notification email:', err);
+    console.error('Full email sending error:', err);
+    throw err;
   }
 };
 
@@ -40,6 +64,7 @@ exports.createNotification = async (req, res) => {
       seasonName,
     } = req.body;
 
+    // Validation
     if (!message) {
       await session.abortTransaction();
       return res.status(400).json({ error: 'Message is required' });
@@ -55,6 +80,7 @@ exports.createNotification = async (req, res) => {
     let resolvedParentIds = [...parentIds];
     let parentsToEmail = [];
 
+    // Get recipients based on target type
     if (targetType === 'season' && seasonName) {
       const players = await Player.find({
         season: { $regex: new RegExp(seasonName, 'i') },
@@ -64,19 +90,17 @@ exports.createNotification = async (req, res) => {
         ...new Set(
           players
             .map((p) =>
-              p.parentId ? mongoose.Types.ObjectId(p.parentId) : null
+              p.parentId ? new mongoose.Types.ObjectId(p.parentId) : null
             )
             .filter(Boolean)
         ),
       ];
     }
 
-    // For 'all' notifications, get all parent emails
+    // Get parent emails
     if (targetType === 'all') {
       parentsToEmail = await Parent.find({}).select('email').session(session);
-    }
-    // For other types, get emails of specific parents
-    else if (resolvedParentIds.length > 0) {
+    } else if (resolvedParentIds.length > 0) {
       parentsToEmail = await Parent.find({
         _id: { $in: resolvedParentIds },
       })
@@ -84,6 +108,9 @@ exports.createNotification = async (req, res) => {
         .session(session);
     }
 
+    console.log('Parents to email:', parentsToEmail);
+
+    // Create notification
     const notification = new Notification({
       user: req.user._id,
       message,
@@ -94,50 +121,50 @@ exports.createNotification = async (req, res) => {
 
     await notification.save({ session });
 
-    // Populate with user data
-    const populatedNotification = await populateNotification(notification);
+    // Send emails if we have recipients
+    let emails = [];
 
-    // Send emails to all applicable parents
     if (parentsToEmail.length > 0) {
-      const emails = parentsToEmail.map((p) => p.email).filter(Boolean);
-
-      if (emails.length > 0) {
-        try {
-          const emailHtml = `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-              <h2 style="color: #2563eb;">New Notification from Bothell Select</h2>
-              <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px;">
-                <p style="font-size: 16px; line-height: 1.5;">${message}</p>
-              </div>
-              <p style="margin-top: 20px; font-size: 14px; color: #6b7280;">
-                This is an automated message. Please do not reply directly to this email.
-              </p>
-            </div>
-          `;
-
-          await sendEmailNotification(emails, emailHtml);
-          console.log(
-            `✅ Email notification sent to ${emails.length} recipients`
-          );
-        } catch (emailError) {
-          console.error('Email sending error:', emailError);
-          // Don't fail the whole operation if email fails
-        }
-      }
+      emails = parentsToEmail
+        .map((p) => p.email)
+        .filter((email) => {
+          const isValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+          if (!isValid) {
+            console.warn('Invalid email skipped:', email);
+          }
+          return isValid;
+        });
     }
 
     await session.commitTransaction();
+    session.endSession();
+
+    // ✅ Send email after DB transaction is committed
+    if (emails.length > 0) {
+      await sendEmailNotification(emails, message);
+    } else {
+      console.warn('No valid emails found for notification');
+    }
+
+    const populatedNotification = await populateNotification(notification);
 
     res.status(201).json({
       success: true,
       notification: populatedNotification,
+      emailCount: parentsToEmail.length,
     });
   } catch (err) {
     await session.abortTransaction();
-    console.error('Error creating notification:', err);
+    console.error('Error in createNotification:', {
+      message: err.message,
+      stack: err.stack,
+      ...(err.response?.data && { apiError: err.response.data }),
+    });
+
     res.status(500).json({
       success: false,
       error: 'Internal server error',
+      details: process.env.NODE_ENV === 'development' ? err.message : undefined,
     });
   } finally {
     session.endSession();

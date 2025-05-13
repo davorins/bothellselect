@@ -1953,8 +1953,8 @@ router.post('/notifications', authenticate, async (req, res) => {
     const {
       message,
       targetType = 'all',
-      targetSeason, // Full season name (e.g., "Winter Classic")
-      seasonName, // Alternative field name
+      targetSeason,
+      seasonName,
       parentIds = [],
     } = req.body;
 
@@ -2041,6 +2041,36 @@ router.post('/notifications', authenticate, async (req, res) => {
     );
 
     await session.commitTransaction();
+
+    // ✅ Only send emails if the user is an admin
+    if (req.user.role === 'admin') {
+      let emails = [];
+
+      if (targetType === 'all') {
+        const parents = await Parent.find({}, 'email');
+        emails = parents.map((p) => p.email);
+      } else {
+        const parents = await Parent.find(
+          { _id: { $in: resolvedParentIds } },
+          'email'
+        );
+        emails = parents.map((p) => p.email);
+      }
+
+      // Send email notifications using the sendEmail function
+      for (const email of emails) {
+        try {
+          await sendEmail({
+            to: email,
+            subject: 'New Notification',
+            html: `<p>${message}</p>`,
+          });
+        } catch (emailError) {
+          console.error(`Failed to send email to ${email}:`, emailError);
+        }
+      }
+    }
+
     res.status(201).json(notification);
   } catch (err) {
     await session.abortTransaction();
