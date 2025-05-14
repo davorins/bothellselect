@@ -13,9 +13,12 @@ const {
 } = require('../utils/auth');
 const mongoose = require('mongoose');
 const crypto = require('crypto');
-const { sendResetEmail } = require('../services/emailService');
 const cloudinary = require('cloudinary').v2;
-const { sendEmail } = require('../utils/email');
+const {
+  sendEmail,
+  sendWelcomeEmail,
+  sendResetEmail,
+} = require('../utils/email');
 
 const registrationSchema = new mongoose.Schema({
   player: {
@@ -555,6 +558,13 @@ router.post(
       const registrations = await Registration.insertMany(registrationDocs, {
         session,
       });
+
+      await session.commitTransaction();
+
+      // Send welcome email (non-blocking) AFTER transaction is committed
+      sendWelcomeEmail(parent._id, savedPlayers[0]._id).catch((err) =>
+        console.error('Welcome email failed:', err)
+      );
 
       // Generate token with status information
       const token = generateToken({
