@@ -1023,6 +1023,49 @@ router.put(
   }
 );
 
+router.put('/parent/:parentId/guardians', authenticate, async (req, res) => {
+  try {
+    const { parentId } = req.params;
+    const { additionalGuardians } = req.body;
+
+    if (!Array.isArray(additionalGuardians)) {
+      return res.status(400).json({ error: 'Guardians data must be an array' });
+    }
+
+    // Find the parent document first
+    const parent = await Parent.findById(parentId);
+    if (!parent) {
+      return res.status(404).json({ error: 'Parent not found' });
+    }
+
+    // Process and update guardians
+    parent.additionalGuardians = additionalGuardians.map((guardian) => ({
+      ...guardian,
+      phone: guardian.phone.replace(/\D/g, ''),
+      address: ensureAddress(guardian.address),
+      isCoach: !!guardian.aauNumber?.trim(),
+      aauNumber: (guardian.aauNumber || '').trim(),
+    }));
+
+    // Explicitly mark the array as modified
+    parent.markModified('additionalGuardians');
+
+    // Save the document
+    await parent.save();
+
+    res.json({
+      message: 'Guardians updated successfully',
+      parent,
+    });
+  } catch (error) {
+    console.error('Error updating guardians:', error);
+    res.status(500).json({
+      error: 'Failed to update guardians',
+      details: error.message,
+    });
+  }
+});
+
 // Fetch multiple players by IDs or all players if admin
 router.get(
   '/players',

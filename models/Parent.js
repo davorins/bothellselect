@@ -1,8 +1,5 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
-const path = require('path');
-const fs = require('fs');
-
 const parentSchema = new mongoose.Schema(
   {
     email: {
@@ -166,19 +163,110 @@ const parentSchema = new mongoose.Schema(
     players: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Player' }],
     additionalGuardians: [
       {
-        fullName: { type: String, required: true },
-        relationship: { type: String, required: true },
-        phone: { type: String, required: true },
-        email: { type: String, required: true },
+        _id: { type: mongoose.Schema.Types.ObjectId, auto: true }, // Add auto-generated IDs
+        fullName: { type: String, required: true, trim: true },
+        relationship: { type: String, required: true, trim: true },
+        phone: {
+          type: String,
+          required: true,
+          validate: {
+            validator: function (v) {
+              return /^\d{10}$/.test(v.replace(/\D/g, ''));
+            },
+            message: 'Please enter a valid 10-digit phone number',
+          },
+        },
+        email: {
+          type: String,
+          required: true,
+          lowercase: true,
+          trim: true,
+          validate: {
+            validator: function (v) {
+              return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+            },
+            message: 'Please enter a valid email',
+          },
+        },
         address: {
-          street: { type: String, required: true },
-          street2: { type: String, default: '' },
-          city: { type: String, required: true },
-          state: { type: String, required: true },
-          zip: { type: String, required: true },
+          street: { type: String, required: true, trim: true },
+          street2: { type: String, default: '', trim: true },
+          city: { type: String, required: true, trim: true },
+          state: {
+            type: String,
+            required: true,
+            uppercase: true,
+            enum: [
+              'AL',
+              'AK',
+              'AZ',
+              'AR',
+              'CA',
+              'CO',
+              'CT',
+              'DE',
+              'FL',
+              'GA',
+              'HI',
+              'ID',
+              'IL',
+              'IN',
+              'IA',
+              'KS',
+              'KY',
+              'LA',
+              'ME',
+              'MD',
+              'MA',
+              'MI',
+              'MN',
+              'MS',
+              'MO',
+              'MT',
+              'NE',
+              'NV',
+              'NH',
+              'NJ',
+              'NM',
+              'NY',
+              'NC',
+              'ND',
+              'OH',
+              'OK',
+              'OR',
+              'PA',
+              'RI',
+              'SC',
+              'SD',
+              'TN',
+              'TX',
+              'UT',
+              'VT',
+              'VA',
+              'WA',
+              'WV',
+              'WI',
+              'WY',
+            ],
+          },
+          zip: {
+            type: String,
+            required: true,
+            validate: {
+              validator: function (v) {
+                return /^\d{5}(-\d{4})?$/.test(v);
+              },
+              message: 'Please enter a valid ZIP code',
+            },
+          },
         },
         isCoach: { type: Boolean, default: false },
-        aauNumber: { type: String, default: '' },
+        aauNumber: {
+          type: String,
+          required: function () {
+            return this.isCoach;
+          },
+        },
         isAdmin: { type: Boolean, default: false },
         isPrimaryParent: { type: Boolean, default: true },
         managedParents: [
