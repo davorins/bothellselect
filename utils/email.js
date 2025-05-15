@@ -64,10 +64,15 @@ async function replaceTemplateVariables(
 // General email sender
 async function sendEmail({ to, subject, html, parentId, playerId }) {
   try {
-    const finalHtml =
-      parentId || playerId
-        ? await replaceTemplateVariables(html, { parentId, playerId })
-        : html;
+    let finalHtml = html;
+
+    // Only replace template variables if html is not already populated
+    if (
+      ((parentId || playerId) && html.includes('[parent.')) ||
+      html.includes('[player.')
+    ) {
+      finalHtml = await replaceTemplateVariables(html, { parentId, playerId });
+    }
 
     const { data, error } = await resend.emails.send({
       from: 'Bothell Select <info@bothellselect.com>',
@@ -84,33 +89,6 @@ async function sendEmail({ to, subject, html, parentId, playerId }) {
     return data;
   } catch (err) {
     console.error('Email sending failed:', err);
-    throw err;
-  }
-}
-
-// Send email using a stored template
-async function sendTemplateEmail({ templateId, parentId, playerId, to }) {
-  const EmailTemplate = require('../routes/emailTemplates');
-  try {
-    const template = await EmailTemplate.findById(templateId);
-    if (!template) throw new Error('Email template not found');
-
-    const html = await replaceTemplateVariables(template.content, {
-      parentId,
-      playerId,
-    });
-    const recipientEmail =
-      to || (parentId ? (await Parent.findById(parentId).lean())?.email : null);
-
-    return sendEmail({
-      to: recipientEmail,
-      subject: template.subject,
-      html,
-      parentId,
-      playerId,
-    });
-  } catch (err) {
-    console.error('Template email failed:', err);
     throw err;
   }
 }
@@ -199,6 +177,5 @@ async function sendResetEmail(email, resetToken) {
 module.exports = {
   sendEmail,
   sendResetEmail,
-  sendTemplateEmail,
   sendWelcomeEmail,
 };

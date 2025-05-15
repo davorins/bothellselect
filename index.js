@@ -19,6 +19,7 @@ const { authenticate, isAdmin, isCoach, isUser } = require('./utils/auth');
 const path = require('path');
 const uploadRoutes = require('./routes/upload');
 const emailTemplateRoutes = require('./routes/emailTemplates');
+const emailCampaignRoutes = require('./routes/emailCampaignRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -68,6 +69,7 @@ app.use('/api/payments', paymentProcessRoutes);
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/api/upload', uploadRoutes);
 app.use('/api/email-templates', emailTemplateRoutes);
+app.use('/api/email', emailCampaignRoutes);
 
 // Connect to MongoDB
 mongoose

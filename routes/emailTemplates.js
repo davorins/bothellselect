@@ -3,11 +3,8 @@ const { body, validationResult } = require('express-validator');
 const router = express.Router();
 
 const EmailTemplate = require('../models/EmailTemplate');
-const Parent = require('../models/Parent');
 
 const { authenticate } = require('../utils/auth');
-const { sendEmail } = require('../utils/email');
-const { replaceTemplateVariables } = require('../utils/templateHelpers');
 
 // 🔐 Middleware for admin-only routes
 const authorizeAdmin = (req, res, next) => {
@@ -51,7 +48,10 @@ router.post(
 router.get('/', authenticate, async (req, res) => {
   try {
     const templates = await EmailTemplate.find({});
-    res.json({ success: true, data: templates });
+    res.json({
+      success: true,
+      data: templates,
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -166,61 +166,5 @@ router.delete('/:id', authenticate, authorizeAdmin, async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
-
-// ✅ Send email using a template
-router.post(
-  '/send-template',
-  authenticate,
-  [
-    body('templateId').notEmpty().withMessage('templateId is required'),
-    body('parentId').notEmpty().withMessage('parentId is required'),
-    body('playerId').notEmpty().withMessage('playerId is required'),
-  ],
-  async (req, res) => {
-    const { templateId, parentId, playerId } = req.body;
-
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, errors: errors.array() });
-    }
-
-    try {
-      const template = await EmailTemplate.findById(templateId);
-      if (!template) {
-        return res
-          .status(404)
-          .json({ success: false, error: 'Template not found' });
-      }
-
-      const parent = await Parent.findById(parentId);
-      if (!parent) {
-        return res
-          .status(404)
-          .json({ success: false, error: 'Parent not found' });
-      }
-
-      const populatedContent = await replaceTemplateVariables(
-        template.content,
-        {
-          parentId,
-          playerId,
-        }
-      );
-
-      await sendEmail({
-        to: parent.email,
-        subject: template.subject,
-        html: populatedContent,
-      });
-
-      res
-        .status(200)
-        .json({ success: true, message: 'Email sent successfully' });
-    } catch (error) {
-      console.error('Error sending template email:', error);
-      res.status(500).json({ success: false, error: error.message });
-    }
-  }
-);
 
 module.exports = router;
