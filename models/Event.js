@@ -23,8 +23,8 @@ const eventSchema = new mongoose.Schema({
   },
   category: {
     type: String,
-    enum: ['meeting', 'holiday', 'training', 'celebration', 'camp'],
-    default: 'meeting',
+    enum: ['training', 'game', 'holidays', 'celebration', 'camp', 'tryout'],
+    default: 'training',
   },
   backgroundColor: String,
   forStudents: Boolean,
@@ -35,7 +35,7 @@ const eventSchema = new mongoose.Schema({
       validator: function (v) {
         return v.every((cls) => cls.length <= 50);
       },
-      message: 'Each class must be 50 characters or less',
+      message: 'Each class name must be 50 characters or less',
     },
   },
   sections: {
@@ -44,19 +44,12 @@ const eventSchema = new mongoose.Schema({
       validator: function (v) {
         return v.every((section) => section.length <= 50);
       },
-      message: 'Each section must be 50 characters or less',
+      message: 'Each section name must be 50 characters or less',
     },
   },
   roles: {
     type: [String],
-    enum: [
-      'Admin',
-      'Teacher',
-      'Driver',
-      'Accountant',
-      'Librarian',
-      'Receptionist',
-    ],
+    enum: [''],
   },
   attendees: [String],
   attachment: String,
@@ -76,6 +69,19 @@ const eventSchema = new mongoose.Schema({
 });
 
 eventSchema.pre('save', function (next) {
+  if (this.isModified('category')) {
+    const colorMap = {
+      training: '#1abe17',
+      game: '#dc3545',
+      holidays: '#0dcaf0',
+      celebration: '#ffc107',
+      camp: '#6c757d',
+      tryout: '#0d6efd',
+    };
+
+    this.backgroundColor = colorMap[this.category] || '#adb5bd'; // light gray fallback
+  }
+
   this.updatedAt = new Date();
   next();
 });
