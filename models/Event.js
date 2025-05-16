@@ -7,6 +7,11 @@ const eventSchema = new mongoose.Schema({
     trim: true,
     maxlength: 100,
   },
+  caption: {
+    type: String,
+    required: false,
+    maxlength: 150,
+  },
   description: {
     type: String,
     trim: true,
@@ -15,42 +20,27 @@ const eventSchema = new mongoose.Schema({
   start: {
     type: Date,
     required: true,
+    set: function (date) {
+      return new Date(date);
+    },
   },
-  end: Date,
-  allDay: {
-    type: Boolean,
-    default: false,
+  end: {
+    type: Date,
+    set: function (date) {
+      return date ? new Date(date) : undefined;
+    },
   },
   category: {
     type: String,
     enum: ['training', 'game', 'holidays', 'celebration', 'camp', 'tryout'],
     default: 'training',
   },
+  school: {
+    name: String,
+    address: String,
+    website: String,
+  },
   backgroundColor: String,
-  forStudents: Boolean,
-  forStaff: Boolean,
-  classes: {
-    type: [String],
-    validate: {
-      validator: function (v) {
-        return v.every((cls) => cls.length <= 50);
-      },
-      message: 'Each class name must be 50 characters or less',
-    },
-  },
-  sections: {
-    type: [String],
-    validate: {
-      validator: function (v) {
-        return v.every((section) => section.length <= 50);
-      },
-      message: 'Each section name must be 50 characters or less',
-    },
-  },
-  roles: {
-    type: [String],
-    enum: [''],
-  },
   attendees: [String],
   attachment: String,
   createdBy: {
@@ -73,13 +63,13 @@ eventSchema.pre('save', function (next) {
     const colorMap = {
       training: '#1abe17',
       game: '#dc3545',
-      holidays: '#0dcaf0',
-      celebration: '#ffc107',
+      holidays: '#0f65cd',
+      celebration: '#eab300',
       camp: '#6c757d',
       tryout: '#0d6efd',
     };
 
-    this.backgroundColor = colorMap[this.category] || '#adb5bd'; // light gray fallback
+    this.backgroundColor = colorMap[this.category] || '#adb5bd';
   }
 
   this.updatedAt = new Date();
