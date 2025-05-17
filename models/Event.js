@@ -9,8 +9,14 @@ const eventSchema = new mongoose.Schema({
   },
   caption: {
     type: String,
-    required: false,
+    default: '',
+    trim: true,
     maxlength: 150,
+  },
+  price: {
+    type: Number,
+    min: 0,
+    default: 0,
   },
   description: {
     type: String,
@@ -59,6 +65,10 @@ const eventSchema = new mongoose.Schema({
 });
 
 eventSchema.pre('save', function (next) {
+  if (typeof this.price !== 'number') {
+    this.price = parseFloat(this.price) || 0;
+  }
+
   if (this.isModified('category')) {
     const colorMap = {
       training: '#1abe17',

@@ -30,14 +30,22 @@ router.get('/schools', async (req, res) => {
 
 // Create new event
 router.post('/', authenticate, async (req, res) => {
-  try {
-    const event = new Event({
-      ...req.body,
-      start: new Date(req.body.start),
-      end: req.body.end ? new Date(req.body.end) : undefined,
-      createdBy: req.user._id,
-    });
+  const event = new Event({
+    title: req.body.title,
+    caption: req.body.caption,
+    price: req.body.price,
+    description: req.body.description,
+    start: req.body.start,
+    end: req.body.end,
+    category: req.body.category,
+    school: req.body.school,
+    backgroundColor: req.body.backgroundColor,
+    attendees: req.body.attendees,
+    attachment: req.body.attachment,
+    createdBy: req.user._id,
+  });
 
+  try {
     const newEvent = await event.save();
     res.status(201).json(newEvent);
   } catch (err) {
@@ -51,10 +59,19 @@ router.put('/:id', authenticate, async (req, res) => {
     const event = await Event.findById(req.params.id);
     if (!event) return res.status(404).json({ message: 'Event not found' });
 
-    // Update fields with proper date handling
-    event.start = new Date(req.body.start || event.start);
-    event.end = req.body.end ? new Date(req.body.end) : event.end;
-    // ... other fields
+    // Update fields
+    event.title = req.body.title || event.title;
+    event.caption = req.body.caption || event.caption;
+    event.price = req.body.price || event.price;
+    event.description = req.body.description || event.description;
+    event.start = req.body.start || event.start;
+    event.end = req.body.end || event.end;
+    event.category = req.body.category || event.category;
+    event.school = req.body.school || event.school;
+    event.backgroundColor = req.body.backgroundColor || event.backgroundColor;
+    event.attendees = req.body.attendees || event.attendees;
+    event.attachment = req.body.attachment || event.attachment;
+    event.updatedAt = Date.now();
 
     const updatedEvent = await event.save();
     res.json(updatedEvent);
