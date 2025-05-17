@@ -17,6 +17,34 @@ const authorizeAdmin = (req, res, next) => {
   next();
 };
 
+// Helper function to send bulk emails
+const sendBulkEmails = async ({ template, subject, recipients }) => {
+  const results = await Promise.allSettled(
+    recipients.map(async (email) => {
+      try {
+        await sendEmail({
+          to: email,
+          subject,
+          html: template,
+        });
+        return { success: true, email };
+      } catch (err) {
+        return { success: false, email, error: err.message };
+      }
+    })
+  );
+
+  const formattedResults = results.map((r) =>
+    r.status === 'fulfilled' ? r.value : { success: false, error: r.reason }
+  );
+
+  return {
+    successCount: formattedResults.filter((r) => r.success).length,
+    failedCount: formattedResults.filter((r) => !r.success).length,
+    results: formattedResults,
+  };
+};
+
 router.post(
   '/send-campaign',
   authenticate,
@@ -113,6 +141,57 @@ router.post(
       res.status(500).json({
         success: false,
         error: 'Failed to send campaign',
+        details: error.message,
+      });
+    }
+  }
+);
+
+router.post(
+  '/send-manual',
+  authenticate,
+  authorizeAdmin,
+  [
+    body('templateId').notEmpty().withMessage('Template ID is required'),
+    body('emails')
+      .isArray({ min: 1 })
+      .withMessage('Emails must be a non-empty array'),
+    body('emails.*').isEmail().withMessage('Each email must be valid'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
+
+    const { templateId, emails } = req.body;
+
+    try {
+      const template = await EmailTemplate.findById(templateId);
+      if (!template) {
+        return res
+          .status(404)
+          .json({ success: false, error: 'Template not found' });
+      }
+
+      const { successCount, failedCount, results } = await sendBulkEmails({
+        template: template.content,
+        subject: template.subject,
+        recipients: emails,
+      });
+
+      res.json({
+        success: true,
+        totalRecipients: emails.length,
+        successfulSends: successCount,
+        failedSends: failedCount,
+        results,
+      });
+    } catch (error) {
+      console.error('Manual email send error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to send manual emails',
         details: error.message,
       });
     }
