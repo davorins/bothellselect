@@ -62,6 +62,19 @@ const eventSchema = new mongoose.Schema({
     type: Date,
     default: Date.now,
   },
+  formId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Form',
+  },
+  paymentConfig: {
+    amount: { type: Number, default: 0 },
+    description: { type: String, default: '' },
+    currency: {
+      type: String,
+      enum: ['USD', 'CAD', 'EUR', 'GBP'],
+      default: 'USD',
+    },
+  },
 });
 
 eventSchema.pre('save', function (next) {

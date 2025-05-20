@@ -28,6 +28,7 @@ async function submitPayment(
     cardDetails,
     locationId,
     buyerEmailAddress,
+    description = 'Form submission payment',
   }
 ) {
   const session = await mongoose.startSession();

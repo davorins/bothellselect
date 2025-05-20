@@ -174,8 +174,13 @@ router.post(
           .json({ success: false, error: 'Template not found' });
       }
 
+      const emailContent = await replaceTemplateVariables(template.content, {
+        parentName: 'Valued Member',
+        playerName: 'Your Player',
+      });
+
       const { successCount, failedCount, results } = await sendBulkEmails({
-        template: template.content,
+        template: emailContent,
         subject: template.subject,
         recipients: emails,
       });
