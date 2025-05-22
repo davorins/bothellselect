@@ -3,9 +3,10 @@ const router = express.Router();
 const { body, validationResult } = require('express-validator');
 const Event = require('../models/Event');
 const Form = require('../models/Form');
+const Parent = require('../models/Parent');
 const { authenticate } = require('../utils/auth');
 const FormSubmission = require('../models/FormSubmission');
-const { processPayment } = require('../services/square-payments');
+const { submitPayment } = require('../services/square-payments');
 
 // Get all events
 router.get('/', async (req, res) => {
@@ -265,7 +266,7 @@ router.post('/:id/submit', authenticate, async (req, res) => {
       }
 
       try {
-        paymentResult = await processPayment({
+        paymentResult = await submitPayment({
           amount: paymentField.paymentConfig.amount,
           currency: paymentField.paymentConfig.currency || 'USD',
           token: req.body.paymentToken,
@@ -314,6 +315,74 @@ router.post('/:id/submit', authenticate, async (req, res) => {
     res.status(400).json({
       success: false,
       message: err.message,
+    });
+  }
+});
+
+router.get('/forms/:id', async (req, res) => {
+  try {
+    const form = await Form.findById(req.params.id);
+    if (!form) return res.status(404).json({ message: 'Form not found' });
+    res.json(form);
+  } catch (err) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+router.post('/payments/process', authenticate, async (req, res) => {
+  try {
+    const {
+      token,
+      amount,
+      eventId,
+      formId,
+      buyerEmail,
+      buyerName,
+      description,
+      cardDetails,
+      playerId,
+      playerCount,
+    } = req.body;
+
+    // Get parentId from authenticated user
+    const parent = await Parent.findOne({ userId: req.user._id });
+    if (!parent) throw new Error('Parent account not found');
+
+    // Validate required fields
+    if (!token) throw new Error('Payment token is required');
+    if (!amount || isNaN(amount)) throw new Error('Valid amount is required');
+    if (!eventId) throw new Error('Event ID is required');
+    if (!formId) throw new Error('Form ID is required');
+    if (!buyerEmail) throw new Error('Buyer email is required');
+    if (!cardDetails?.last_4) throw new Error('Card details are incomplete');
+
+    const result = await submitPayment(token, amount, {
+      parentId: parent._id,
+      playerId: playerId || null,
+      playerCount: playerCount || null,
+      cardDetails,
+      locationId: process.env.SQUARE_LOCATION_ID,
+      buyerEmailAddress: buyerEmail,
+      buyerName: buyerName || '',
+      description: description || 'Event registration payment',
+      metadata: {
+        eventId,
+        formId,
+        userId: req.user._id.toString(),
+      },
+    });
+
+    res.json({
+      success: true,
+      paymentId: result.payment?.squareId || result.payment?.id,
+      status: result.payment?.status,
+      receiptUrl: result.payment?.receiptUrl,
+    });
+  } catch (error) {
+    console.error('Event payment processing error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Payment processing failed',
     });
   }
 });
