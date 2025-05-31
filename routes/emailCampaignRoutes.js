@@ -157,6 +157,10 @@ router.post(
       .isArray({ min: 1 })
       .withMessage('Emails must be a non-empty array'),
     body('emails.*').isEmail().withMessage('Each email must be valid'),
+    body('variables')
+      .optional()
+      .isObject()
+      .withMessage('Variables must be an object'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -164,7 +168,7 @@ router.post(
       return res.status(400).json({ success: false, errors: errors.array() });
     }
 
-    const { templateId, emails } = req.body;
+    const { templateId, emails, variables = {} } = req.body;
 
     try {
       const template = await EmailTemplate.findById(templateId);
@@ -174,10 +178,21 @@ router.post(
           .json({ success: false, error: 'Template not found' });
       }
 
-      const emailContent = await replaceTemplateVariables(template.content, {
-        parentName: 'Valued Member',
-        playerName: 'Your Player',
-      });
+      // Create default variables if not provided
+      const defaultVariables = {
+        parent: {
+          fullName: 'Valued Member',
+          email: emails.join(', '),
+        },
+        isManual: true,
+        ...variables, // Override with any provided variables
+      };
+
+      // Process the template with the variables
+      const emailContent = await replaceTemplateVariables(
+        template.content,
+        defaultVariables
+      );
 
       const { successCount, failedCount, results } = await sendBulkEmails({
         template: emailContent,

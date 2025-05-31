@@ -337,6 +337,14 @@ router.post(
         season,
         parentId,
         grade,
+        seasons: [
+          {
+            season: req.body.season,
+            year: req.body.registrationYear,
+            registrationDate: new Date(),
+            paymentStatus: 'pending',
+          },
+        ],
       });
 
       await player.save();
@@ -363,8 +371,11 @@ router.post(
 
       res.status(201).json({
         message: 'Player registered successfully',
-        player,
-        registration,
+        player: {
+          ...player.toObject(),
+          season: req.body.season,
+          registrationYear: req.body.registrationYear,
+        },
       });
     } catch (error) {
       console.error('Error registering player:', error.message, error.stack);
@@ -2192,6 +2203,49 @@ router.patch('/notifications/read-all', async (req, res) => {
   } catch (err) {
     console.error('Error marking all as read:', err);
     res.status(500).json({ error: 'Failed to mark all as read' });
+  }
+});
+
+router.post('/players/:playerId/season', authenticate, async (req, res) => {
+  try {
+    const { season, year, paymentStatus } = req.body;
+    const { playerId } = req.params;
+
+    const player = await Player.findById(playerId);
+    if (!player) {
+      return res.status(404).json({ message: 'Player not found' });
+    }
+
+    // Add new season registration
+    player.seasons.push({
+      season,
+      year,
+      registrationDate: new Date(),
+      paymentStatus: paymentStatus || 'pending',
+    });
+
+    // Update top-level fields to match the latest season
+    player.season = season;
+    player.registrationYear = year;
+
+    await player.save();
+
+    res.json({
+      success: true,
+      player: {
+        _id: player._id,
+        fullName: player.fullName,
+        season: player.season,
+        registrationYear: player.registrationYear,
+        seasons: player.seasons,
+      },
+    });
+  } catch (error) {
+    console.error('Season registration error:', error);
+    res.status(500).json({
+      message: 'Server error',
+      error: error.message,
+    });
   }
 });
 
