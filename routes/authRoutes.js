@@ -1,6 +1,9 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
 const { body, validationResult, query } = require('express-validator');
+const mongoose = require('mongoose');
+const crypto = require('crypto');
+const cloudinary = require('cloudinary').v2;
 const Parent = require('../models/Parent');
 const Player = require('../models/Player');
 const Payment = require('../models/Payment');
@@ -11,26 +14,56 @@ const {
   generateToken,
   authenticate,
 } = require('../utils/auth');
-const mongoose = require('mongoose');
-const crypto = require('crypto');
-const cloudinary = require('cloudinary').v2;
 const {
   sendEmail,
   sendWelcomeEmail,
   sendResetEmail,
 } = require('../utils/email');
 
-const registrationSchema = new mongoose.Schema({
-  player: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Player',
-    required: true,
+const registrationSchema = new mongoose.Schema(
+  {
+    player: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Player',
+      required: [true, 'Player reference is required'],
+      index: true,
+    },
+    parent: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Parent',
+      required: [true, 'Parent reference is required'],
+      index: true,
+    },
+    season: {
+      type: String,
+      required: [true, 'Season is required'],
+    },
+    year: {
+      type: Number,
+      required: [true, 'Year is required'],
+      min: [2020, 'Year must be 2020 or later'],
+      max: [2030, 'Year must be 2030 or earlier'],
+    },
+    tryoutId: { type: String, default: null },
+    paymentStatus: {
+      type: String,
+      enum: ['pending', 'paid', 'failed', 'refunded'],
+      default: 'pending',
+    },
+    paymentComplete: { type: Boolean, default: false },
+    paymentDate: { type: Date },
   },
-  season: { type: String, required: true },
-  year: { type: Number, required: true },
-  createdAt: { type: Date, default: Date.now },
-});
+  {
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
+  }
+);
 
+registrationSchema.index(
+  { player: 1, season: 1, year: 1, tryoutId: 1 },
+  { unique: true }
+);
 const Registration = mongoose.model('Registration', registrationSchema);
 
 const router = express.Router();
@@ -50,13 +83,7 @@ module.exports = {
 };
 
 const addressUtils = {
-  /**
-   * Parses an address from string or object format
-   * @param {string|object} addressInput
-   * @returns {object} Normalized address
-   */
   parseAddress: (addressInput) => {
-    // Handle object case
     if (typeof addressInput !== 'string') {
       return {
         street: (addressInput.street || '').trim(),
@@ -66,8 +93,6 @@ const addressUtils = {
         zip: (addressInput.zip || '').toString().replace(/\D/g, ''),
       };
     }
-
-    // Handle empty string case
     if (!addressInput.trim()) {
       return {
         street: '',
@@ -77,8 +102,6 @@ const addressUtils = {
         zip: '',
       };
     }
-
-    // String parsing logic
     const parts = addressInput.split(',').map((part) => part.trim());
     const result = {
       street: parts[0] || '',
@@ -87,26 +110,17 @@ const addressUtils = {
       state: '',
       zip: '',
     };
-
     if (parts.length > 3) {
       result.street2 = parts.slice(1, -2).join(', ');
     }
-
     if (parts.length >= 3) {
       result.city = parts[parts.length - 2] || '';
       const stateZip = parts[parts.length - 1].trim().split(/\s+/);
       result.state = stateZip[0] || '';
       result.zip = stateZip[1] || '';
     }
-
     return result;
   },
-
-  /**
-   * Ensures valid address structure
-   * @param {string|object|undefined} address
-   * @returns {object} Valid address
-   */
   ensureAddress: (address) => {
     if (!address) {
       return {
@@ -117,11 +131,9 @@ const addressUtils = {
         zip: '',
       };
     }
-
     if (typeof address === 'string') {
       return addressUtils.parseAddress(address);
     }
-
     return {
       street: (address.street || '').trim(),
       street2: ('street2' in address ? address.street2 : '').trim(),
@@ -132,7 +144,6 @@ const addressUtils = {
   },
 };
 
-// Destructure for easier use
 const { parseAddress, ensureAddress } = addressUtils;
 
 // Register a new parent
@@ -167,7 +178,7 @@ router.post(
       .if((value, { req }) => req.body.registerType === 'self')
       .isBoolean()
       .withMessage('You must agree to the terms')
-      .equals(true)
+      .equals('true')
       .withMessage('You must agree to the terms'),
   ],
   async (req, res) => {
@@ -212,7 +223,7 @@ router.post(
 
       const parentData = {
         email: normalizedEmail,
-        password: plainPassword, // <-- Only raw, never hash here
+        password: plainPassword,
         fullName: fullName.trim(),
         phone: phone.replace(/\D/g, ''),
         address: {
@@ -302,6 +313,10 @@ router.post(
     body('season').notEmpty().withMessage('Season is required'),
     body('parentId').notEmpty().withMessage('Parent ID is required'),
     body('grade').notEmpty().withMessage('Grade is required'),
+    body('tryoutId')
+      .optional()
+      .isString()
+      .withMessage('Tryout ID must be a string'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -320,12 +335,29 @@ router.post(
       season,
       parentId,
       grade,
+      tryoutId,
     } = req.body;
 
     const session = await mongoose.startSession();
     session.startTransaction();
 
     try {
+      // Check for existing registration to prevent duplicates
+      const existingRegistration = await Registration.findOne({
+        player: { $exists: true },
+        parent: parentId,
+        season,
+        year: registrationYear,
+        tryoutId: tryoutId || null,
+      }).session(session);
+
+      if (existingRegistration) {
+        await session.abortTransaction();
+        return res
+          .status(400)
+          .json({ error: 'Player already registered for this tryout' });
+      }
+
       const player = new Player({
         fullName,
         gender,
@@ -339,29 +371,29 @@ router.post(
         grade,
         seasons: [
           {
-            season: req.body.season,
-            year: req.body.registrationYear,
+            season,
+            year: registrationYear,
+            tryoutId: tryoutId || null,
             registrationDate: new Date(),
             paymentStatus: 'pending',
           },
         ],
       });
 
-      await player.save();
+      await player.save({ session });
 
-      // Update the parent's players array
       await Parent.findByIdAndUpdate(
         parentId,
         { $push: { players: player._id } },
-        { new: true }
+        { new: true, session }
       );
 
-      // Create registration record
       const registration = new Registration({
         player: player._id,
         parent: parentId,
         season,
         year: registrationYear,
+        tryoutId: tryoutId || null,
         paymentStatus: 'pending',
       });
 
@@ -373,34 +405,27 @@ router.post(
         message: 'Player registered successfully',
         player: {
           ...player.toObject(),
-          season: req.body.season,
-          registrationYear: req.body.registrationYear,
+          season,
+          registrationYear,
+          tryoutId,
         },
       });
     } catch (error) {
+      await session.abortTransaction();
       console.error('Error registering player:', error.message, error.stack);
       res
         .status(500)
         .json({ error: 'Failed to register player', details: error.message });
+    } finally {
+      session.endSession();
     }
   }
 );
-
-router.use('/register/basketball-camp', (req, res, next) => {
-  if (Array.isArray(req.body.players)) {
-    req.body.players = req.body.players.map((p) => ({
-      ...p,
-      year: p.year ?? p.registrationYear,
-    }));
-  }
-  next();
-});
 
 // Register for basketball camp
 router.post(
   '/register/basketball-camp',
   [
-    // Parent validation
     body('email').isEmail().withMessage('Invalid email'),
     body('password')
       .optional()
@@ -429,8 +454,6 @@ router.post(
       .withMessage('isCoach must be boolean'),
     body('aauNumber').optional().isString(),
     body('agreeToTerms').isBoolean().withMessage('You must agree to the terms'),
-
-    // Players validation
     body('players')
       .isArray({ min: 1 })
       .withMessage('At least one player is required'),
@@ -443,17 +466,17 @@ router.post(
     body('players.*.grade').notEmpty().withMessage('Player grade required'),
     body('players.*.healthConcerns').optional().isString(),
     body('players.*.aauNumber').optional().isString(),
-    body('players.*.season')
-      .notEmpty()
-      .withMessage('Season is required')
-      .isIn(['Spring', 'Summer', 'Fall', 'Winter'])
-      .withMessage('Invalid season'),
+    body('players.*.season').notEmpty().withMessage('Season is required'),
     body('players.*.year')
       .notEmpty()
       .withMessage('Year is required')
       .isInt({ min: 2020, max: 2030 })
       .withMessage('Year must be between 2020 and 2030')
       .customSanitizer((value) => parseInt(value, 10)),
+    body('players.*.tryoutId')
+      .optional()
+      .isString()
+      .withMessage('Tryout ID must be a string'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -485,15 +508,32 @@ router.post(
         email: normalizedEmail,
       }).session(session);
       if (existingParent) {
-        throw new Error('Email already registered');
+        await session.abortTransaction();
+        return res.status(400).json({ error: 'Email already registered' });
       }
 
       const rawPassword = (parentInfo.password || password || '').trim();
       if (!rawPassword) {
-        throw new Error('Password is required');
+        await session.abortTransaction();
+        return res.status(400).json({ error: 'Password is required' });
       }
 
-      // Create player documents with registration status
+      for (const player of players) {
+        const existingRegistration = await Registration.findOne({
+          season: player.season,
+          year: player.year,
+          tryoutId: player.tryoutId || null,
+          player: { $exists: true },
+        }).session(session);
+
+        if (existingRegistration) {
+          await session.abortTransaction();
+          return res.status(400).json({
+            error: `Player already registered for ${player.season} ${player.year} tryout`,
+          });
+        }
+      }
+
       const playerDocs = players.map((player) => {
         const _id = new mongoose.Types.ObjectId();
         return {
@@ -507,8 +547,18 @@ router.post(
           aauNumber: player.aauNumber || '',
           season: player.season,
           registrationYear: player.year,
+          tryoutId: player.tryoutId || null,
           parentId: null,
           registrationComplete: true,
+          seasons: [
+            {
+              season: player.season,
+              year: player.year,
+              tryoutId: player.tryoutId || null,
+              registrationDate: new Date(),
+              paymentStatus: 'pending',
+            },
+          ],
           createdAt: new Date(),
           updatedAt: new Date(),
         };
@@ -516,7 +566,6 @@ router.post(
 
       const savedPlayers = await Player.insertMany(playerDocs, { session });
 
-      // Create parent with registration status
       const parent = new Parent({
         email: normalizedEmail,
         password: rawPassword,
@@ -547,19 +596,18 @@ router.post(
 
       await parent.save({ session });
 
-      // Update players with parent ID
       await Player.updateMany(
         { _id: { $in: savedPlayers.map((p) => p._id) } },
         { parentId: parent._id },
         { session }
       );
 
-      // Create registration records with status
       const registrationDocs = playerDocs.map((playerDoc) => ({
         player: playerDoc._id,
         parent: parent._id,
         season: playerDoc.season,
         year: playerDoc.registrationYear,
+        tryoutId: playerDoc.tryoutId || null,
         paymentStatus: 'pending',
         registrationComplete: true,
         createdAt: new Date(),
@@ -572,12 +620,10 @@ router.post(
 
       await session.commitTransaction();
 
-      // Send welcome email (non-blocking) AFTER transaction is committed
       sendWelcomeEmail(parent._id, savedPlayers[0]._id).catch((err) =>
         console.error('Welcome email failed:', err)
       );
 
-      // Generate token with status information
       const token = generateToken({
         id: parent._id,
         role: parent.role,
@@ -587,9 +633,6 @@ router.post(
         registrationComplete: true,
       });
 
-      await session.commitTransaction();
-
-      // Successful response with status information
       res.status(201).json({
         success: true,
         message: 'Registration successful. Please complete payment.',
@@ -610,12 +653,14 @@ router.post(
           name: p.fullName,
           registrationComplete: true,
           paymentComplete: false,
+          tryoutId: p.tryoutId,
         })),
         registrations: registrations.map((r) => ({
           id: r._id,
           playerId: r.player,
           season: r.season,
           year: r.year,
+          tryoutId: r.tryoutId,
           paymentStatus: r.paymentStatus,
           registrationComplete: true,
           paymentComplete: false,
@@ -642,6 +687,7 @@ router.post(
   }
 );
 
+// Login
 router.post(
   '/login',
   [
@@ -658,7 +704,6 @@ router.post(
       const { email, password } = req.body;
       const normalizedEmail = email.toLowerCase().trim();
 
-      // Find parent by email with password field included
       const parent = await Parent.findOne({ email: normalizedEmail }).select(
         '+password'
       );
@@ -670,11 +715,7 @@ router.post(
         });
       }
 
-      // Compare passwords
       const isMatch = await bcrypt.compare(password.trim(), parent.password);
-      console.log('Comparing password:', password);
-      console.log('With stored hash:', parent.password);
-      console.log('Password match result:', isMatch);
 
       if (!isMatch) {
         return res.status(401).json({
@@ -683,14 +724,12 @@ router.post(
         });
       }
 
-      // Generate token
       const token = generateToken({
         id: parent._id.toString(),
         role: parent.role,
         email: parent.email,
       });
 
-      // Return response without password
       const parentData = parent.toObject();
       delete parentData.password;
 
@@ -709,6 +748,7 @@ router.post(
   }
 );
 
+// Request password reset
 router.post('/request-password-reset', async (req, res) => {
   try {
     const { email } = req.body;
@@ -719,21 +759,18 @@ router.post('/request-password-reset', async (req, res) => {
 
     const parent = await Parent.findOne({ email: email.toLowerCase().trim() });
 
-    // Always return success to prevent email enumeration
     if (!parent) {
       return res.json({
         message: 'If an account exists, a reset link has been sent',
       });
     }
 
-    // Generate reset token (expires in 1 hour)
     const resetToken = crypto.randomBytes(20).toString('hex');
     parent.resetPasswordToken = resetToken;
-    parent.resetPasswordExpires = Date.now() + 3600000; // 1 hour
+    parent.resetPasswordExpires = Date.now() + 3600000;
 
     await parent.save();
 
-    // Send email with reset link
     try {
       await sendResetEmail(parent.email, resetToken);
     } catch (emailError) {
@@ -756,6 +793,7 @@ router.post('/request-password-reset', async (req, res) => {
   }
 });
 
+// Reset password
 router.post(
   '/reset-password',
   [
@@ -792,7 +830,7 @@ router.post(
         return res.status(400).json({ error: 'Invalid or expired token' });
       }
 
-      parent.password = newPassword; // ✅ Let the pre-save hook hash it
+      parent.password = newPassword;
       parent.resetPasswordToken = undefined;
       parent.resetPasswordExpires = undefined;
 
@@ -813,11 +851,11 @@ router.post(
   }
 );
 
+// Change password
 router.post('/change-password', authenticate, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
 
-    // Validate input
     if (!currentPassword || !newPassword) {
       return res
         .status(400)
@@ -830,19 +868,16 @@ router.post('/change-password', authenticate, async (req, res) => {
         .json({ error: 'New password must be at least 8 characters' });
     }
 
-    // Get parent
     const parent = await Parent.findById(req.user.id).select('+password');
     if (!parent) {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Verify current password
     const isMatch = await bcrypt.compare(currentPassword, parent.password);
     if (!isMatch) {
       return res.status(401).json({ error: 'Current password is incorrect' });
     }
 
-    // ✅ Assign plain new password, let the pre-save hook hash it
     parent.password = newPassword;
     await parent.save();
 
@@ -892,18 +927,16 @@ router.patch(
   }
 );
 
-// Fetch Parent data by ID - Enhanced version
+// Fetch Parent data by ID
 router.get('/parent/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
-    // First try to find as parent
     let parent = await Parent.findById(id)
       .populate('players')
       .populate('additionalGuardians')
       .lean();
 
-    // If not found as parent, check if it's a guardian ID
     if (!parent) {
       const guardian = await Parent.findOne({
         'additionalGuardians._id': id,
@@ -921,7 +954,6 @@ router.get('/parent/:id', async (req, res) => {
             .json({ message: 'Parent not found for this guardian' });
         }
 
-        // Add guardian-specific info to the response
         const guardianData = guardian.additionalGuardians.find(
           (g) => g._id.toString() === id
         );
@@ -972,12 +1004,11 @@ router.put('/parent/:id', authenticate, async (req, res) => {
   }
 });
 
-// When adding/updating additional guardians
+// Add/update additional guardians
 router.put('/parent/:id/guardian', authenticate, async (req, res) => {
   try {
     const { isCoach, aauNumber, ...guardianData } = req.body;
 
-    // Validate coach data
     if (isCoach && (!aauNumber || aauNumber.trim() === '')) {
       return res
         .status(400)
@@ -1000,10 +1031,14 @@ router.put('/parent/:id/guardian', authenticate, async (req, res) => {
 
     res.json(parent);
   } catch (error) {
-    // ... error handling
+    console.error('Error adding guardian:', error);
+    res
+      .status(500)
+      .json({ error: 'Failed to add guardian', details: error.message });
   }
 });
 
+// Update specific guardian
 router.put(
   '/parent/:parentId/guardian/:guardianIndex',
   authenticate,
@@ -1012,16 +1047,12 @@ router.put(
       const { parentId, guardianIndex } = req.params;
       const updatedGuardian = req.body;
 
-      // Find the parent by ID
       const parent = await Parent.findById(parentId);
       if (!parent) {
         return res.status(404).json({ error: 'Parent not found' });
       }
 
-      // Update the specific guardian in the additionalGuardians array
       parent.additionalGuardians[guardianIndex] = updatedGuardian;
-
-      // Save the updated parent document
       await parent.save();
 
       res.json({ message: 'Guardian updated successfully', parent });
@@ -1034,6 +1065,7 @@ router.put(
   }
 );
 
+// Update all guardians
 router.put('/parent/:parentId/guardians', authenticate, async (req, res) => {
   try {
     const { parentId } = req.params;
@@ -1043,13 +1075,11 @@ router.put('/parent/:parentId/guardians', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Guardians data must be an array' });
     }
 
-    // Find the parent document first
     const parent = await Parent.findById(parentId);
     if (!parent) {
       return res.status(404).json({ error: 'Parent not found' });
     }
 
-    // Process and update guardians
     parent.additionalGuardians = additionalGuardians.map((guardian) => ({
       ...guardian,
       phone: guardian.phone.replace(/\D/g, ''),
@@ -1058,10 +1088,7 @@ router.put('/parent/:parentId/guardians', authenticate, async (req, res) => {
       aauNumber: (guardian.aauNumber || '').trim(),
     }));
 
-    // Explicitly mark the array as modified
     parent.markModified('additionalGuardians');
-
-    // Save the document
     await parent.save();
 
     res.json({
@@ -1077,7 +1104,7 @@ router.put('/parent/:parentId/guardians', authenticate, async (req, res) => {
   }
 });
 
-// Fetch multiple players by IDs or all players if admin
+// Fetch players by IDs or all players if admin
 router.get(
   '/players',
   authenticate,
@@ -1088,6 +1115,7 @@ router.get(
       .withMessage('IDs must be a comma-separated string'),
     query('season').optional().isString(),
     query('year').optional().isInt(),
+    query('tryoutId').optional().isString(),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -1096,33 +1124,33 @@ router.get(
     }
 
     try {
-      const { ids, season, year } = req.query;
+      const { ids, season, year, tryoutId } = req.query;
       let query = {};
 
-      // Handle IDs filter
       if (ids) {
         const playerIds = ids.split(',');
         query._id = { $in: playerIds };
       }
 
-      // Handle season/year filter
       if (season && year) {
-        query.season = season;
-        query.registrationYear = parseInt(year);
+        query['seasons.season'] = season;
+        query['seasons.year'] = parseInt(year);
+        if (tryoutId) {
+          query['seasons.tryoutId'] = tryoutId;
+        }
       }
 
-      const players = await Player.find(query).lean();
+      const players = await Player.find(query)
+        .populate('parentId', 'fullName email')
+        .lean();
 
       if (!players || players.length === 0) {
         return res.status(404).json({ error: 'No players found' });
       }
 
-      // Transform response to ensure consistent avatar URLs
       const response = players.map((player) => ({
         ...player,
-        // Preserve raw avatar URL exactly as stored
         avatar: player.avatar || null,
-        // Add additional fields that might be needed by frontend
         imgSrc: player.avatar
           ? `${player.avatar}${player.avatar.includes('?') ? '&' : '?'}ts=${Date.now()}`
           : player.gender === 'Female'
@@ -1142,24 +1170,61 @@ router.get(
   }
 );
 
-// Improve error responses
-router.use((err, req, res, next) => {
-  console.error('Unhandled error:', err.message, err.stack);
-  res
-    .status(500)
-    .json({ error: 'Internal server error', details: err.message });
-});
+// Fetch players by tryout
+router.get(
+  '/players/tryout',
+  authenticate,
+  [
+    query('season').notEmpty().withMessage('Season is required'),
+    query('year').isNumeric().withMessage('Year must be a number'),
+    query('tryoutId')
+      .optional()
+      .isString()
+      .withMessage('Tryout ID must be a string'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
 
-// Add this route to your Express router
+    try {
+      const { season, year, tryoutId } = req.query;
+
+      const players = await Player.find({
+        'seasons.season': season,
+        'seasons.year': parseInt(year),
+        'seasons.tryoutId': tryoutId || null,
+      })
+        .populate('parentId', 'fullName email')
+        .lean();
+
+      if (!players || players.length === 0) {
+        return res
+          .status(404)
+          .json({ error: 'No players found for this tryout' });
+      }
+
+      res.json(players);
+    } catch (error) {
+      console.error('Error fetching tryout players:', error);
+      res.status(500).json({
+        error: 'Failed to fetch tryout players',
+        details: error.message,
+      });
+    }
+  }
+);
+
+// Fetch player registrations
 router.get(
   '/players/:playerId/registrations',
   authenticate,
   async (req, res) => {
     try {
       const { playerId } = req.params;
-      const { season, year } = req.query;
+      const { season, year, tryoutId } = req.query;
 
-      // Validate playerId
       if (!mongoose.Types.ObjectId.isValid(playerId)) {
         return res.status(400).json({
           isRegistered: false,
@@ -1171,11 +1236,16 @@ router.get(
         return res.status(400).json({ error: 'Season and year are required' });
       }
 
-      const registrations = await Registration.find({
+      const query = {
         player: playerId,
         season,
-        year,
-      }).populate('player');
+        year: parseInt(year),
+      };
+      if (tryoutId) {
+        query.tryoutId = tryoutId;
+      }
+
+      const registrations = await Registration.find(query).populate('player');
 
       res.json({
         isRegistered: registrations.length > 0,
@@ -1192,18 +1262,16 @@ router.get(
   }
 );
 
-// Add this route to your Express router
+// Fetch guardians for a player
 router.get('/player/:playerId/guardians', authenticate, async (req, res) => {
   try {
     const { playerId } = req.params;
 
-    // Fetch the player to ensure they exist
     const player = await Player.findById(playerId);
     if (!player) {
       return res.status(404).json({ error: 'Player not found' });
     }
 
-    // Fetch guardians associated with the player
     const guardians = await Parent.find({ players: playerId });
 
     if (!guardians || guardians.length === 0) {
@@ -1212,7 +1280,6 @@ router.get('/player/:playerId/guardians', authenticate, async (req, res) => {
         .json({ error: 'No guardians found for this player' });
     }
 
-    // Include additionalGuardians in the response
     const response = guardians.map((guardian) => ({
       ...guardian.toObject(),
       additionalGuardians: guardian.additionalGuardians || [],
@@ -1259,7 +1326,6 @@ router.get('/parents', authenticate, async (req, res) => {
 
     const query = {};
 
-    // Add isCoach filter if provided
     if (isCoach !== undefined) {
       query.isCoach = isCoach === 'true';
     }
@@ -1299,6 +1365,7 @@ router.get('/parents', authenticate, async (req, res) => {
   }
 });
 
+// Get coaches
 router.get('/coaches', authenticate, async (req, res) => {
   try {
     const coaches = await Parent.find({ isCoach: true })
@@ -1316,10 +1383,6 @@ router.get('/coaches', authenticate, async (req, res) => {
 router.put('/player/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-
-    // Debug log
-    console.log(`Attempting to update player with ID: ${id}`);
-    console.log('Update payload:', req.body);
 
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ error: 'Invalid player ID format' });
@@ -1347,16 +1410,15 @@ router.put('/player/:id', authenticate, async (req, res) => {
   }
 });
 
-// Get all guardians (both primary parents and additional guardians)
+// Get all guardians
 router.get('/guardians', authenticate, async (req, res) => {
   try {
     const { season, year, name } = req.query;
 
-    // Find all parents who have additional guardians or are marked as guardians
     const query = {
       $or: [
-        { 'additionalGuardians.0': { $exists: true } }, // Parents with additional guardians
-        { isGuardian: true }, // Or parents marked as guardians
+        { 'additionalGuardians.0': { $exists: true } },
+        { isGuardian: true },
       ],
     };
 
@@ -1376,7 +1438,6 @@ router.get('/guardians', authenticate, async (req, res) => {
       .populate('players')
       .lean();
 
-    // Extract and flatten all guardians (both primary parents and additional guardians)
     const allGuardians = parentsWithGuardians.flatMap((parent) => {
       const mainGuardian = {
         ...parent,
@@ -1421,7 +1482,6 @@ router.put('/parent-full/:id', authenticate, async (req, res) => {
       password,
     } = req.body;
 
-    // Prepare update data
     const updateData = {
       fullName,
       phone,
@@ -1438,7 +1498,6 @@ router.put('/parent-full/:id', authenticate, async (req, res) => {
       updateData.password = await bcrypt.hash(password.trim(), 12);
     }
 
-    // Find and update the parent
     const parent = await Parent.findByIdAndUpdate(id, updateData, {
       new: true,
       runValidators: true,
@@ -1472,6 +1531,7 @@ router.get('/players/seasons', authenticate, async (req, res) => {
             $addToSet: {
               season: '$season',
               registrationYear: '$registrationYear',
+              tryoutId: '$seasons.tryoutId',
             },
           },
         },
@@ -1494,13 +1554,11 @@ router.get('/players/seasons', authenticate, async (req, res) => {
 
 // Get past seasons
 router.get('/past-seasons', (req, res) => {
-  console.log('GET /api/past-seasons hit');
   const currentDate = new Date();
   const currentYear = currentDate.getFullYear();
 
   const pastSeasons = [];
 
-  // Helper function to get season range
   const getSeasonRange = (year, month, day) => {
     if (
       (month === 12 && day >= 21) ||
@@ -1537,17 +1595,16 @@ router.get('/past-seasons', (req, res) => {
     }
   };
 
-  // Generate past seasons for the last 5 years
   for (let i = 1; i <= 5; i++) {
     const year = currentYear - i;
     const seasons = [
-      getSeasonRange(year, 12, 31), // Winter
-      getSeasonRange(year, 3, 21), // Spring
-      getSeasonRange(year, 6, 21), // Summer
-      getSeasonRange(year, 9, 23), // Fall
+      getSeasonRange(year, 12, 31),
+      getSeasonRange(year, 3, 21),
+      getSeasonRange(year, 6, 21),
+      getSeasonRange(year, 9, 23),
     ];
 
-    pastSeasons.push(...seasons.filter(Boolean)); // Filter out undefined values
+    pastSeasons.push(...seasons.filter(Boolean));
   }
 
   if (pastSeasons.length === 0) {
@@ -1557,6 +1614,7 @@ router.get('/past-seasons', (req, res) => {
   res.json(pastSeasons);
 });
 
+// Contact form
 router.post('/contact', async (req, res) => {
   const { fullName, email, subject, message } = req.body;
 
@@ -1580,7 +1638,7 @@ router.post('/contact', async (req, res) => {
   }
 });
 
-//RESEND
+// Send reset email
 router.post('/send-reset-email', async (req, res) => {
   const { email, token } = req.body;
   const resetLink = `https://yourfrontend.com/reset-password/${token}`;
@@ -1597,12 +1655,11 @@ router.post('/send-reset-email', async (req, res) => {
   }
 });
 
-// AVATAR UPDATE ENDPOINT (Cloudinary URL)
+// Update parent avatar
 router.put('/parent/:id/avatar', authenticate, async (req, res) => {
   try {
     const { avatarUrl } = req.body;
 
-    // Validate URL format
     if (!avatarUrl || !avatarUrl.includes('res.cloudinary.com')) {
       return res.status(400).json({ error: 'Invalid avatar URL format' });
     }
@@ -1619,7 +1676,7 @@ router.put('/parent/:id/avatar', authenticate, async (req, res) => {
 
     res.json({
       success: true,
-      parent, // Return full parent object
+      parent,
     });
   } catch (error) {
     console.error('Avatar update error:', error);
@@ -1627,21 +1684,7 @@ router.put('/parent/:id/avatar', authenticate, async (req, res) => {
   }
 });
 
-router.get('/parent/:id', async (req, res) => {
-  try {
-    const parent = await Parent.findById(req.params.id);
-    if (!parent) {
-      return res.status(404).json({ error: 'Parent not found' });
-    }
-
-    res.json({ parent });
-  } catch (error) {
-    console.error('Error fetching parent:', error);
-    res.status(500).json({ error: 'Failed to fetch parent info' });
-  }
-});
-
-// AVATAR DELETION ENDPOINT
+// Delete parent avatar
 router.delete('/parent/:id/avatar', authenticate, async (req, res) => {
   try {
     const parent = await Parent.findById(req.params.id);
@@ -1650,15 +1693,13 @@ router.delete('/parent/:id/avatar', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Parent not found' });
     }
 
-    // If the parent has an avatar with a Cloudinary URL, delete it from Cloudinary
     const avatarUrl = parent.avatar;
     if (avatarUrl && avatarUrl.includes('res.cloudinary.com')) {
-      const publicId = avatarUrl.split('/').pop().split('.')[0]; // Assumes no folder structure
-      await cloudinary.uploader.destroy(publicId); // Delete the image from Cloudinary
+      const publicId = avatarUrl.split('/').pop().split('.')[0];
+      await cloudinary.uploader.destroy(publicId);
     }
 
-    // Remove avatar from MongoDB
-    parent.avatar = null; // or use `$unset: { avatar: 1 }` if you prefer
+    parent.avatar = null;
     await parent.save();
 
     res.json({
@@ -1671,14 +1712,11 @@ router.delete('/parent/:id/avatar', authenticate, async (req, res) => {
   }
 });
 
-// Add these routes to your authRoutes.js file
-
-// PLAYER AVATAR UPDATE ENDPOINT (Cloudinary URL)
+// Update player avatar
 router.put('/player/:id/avatar', authenticate, async (req, res) => {
   try {
     const { avatarUrl } = req.body;
 
-    // Validate URL format
     if (!avatarUrl) {
       return res.status(400).json({ error: 'Avatar URL is required' });
     }
@@ -1695,7 +1733,7 @@ router.put('/player/:id/avatar', authenticate, async (req, res) => {
 
     res.json({
       success: true,
-      player, // Return full player object
+      player,
     });
   } catch (error) {
     console.error('Player avatar update error:', error);
@@ -1703,7 +1741,7 @@ router.put('/player/:id/avatar', authenticate, async (req, res) => {
   }
 });
 
-// PLAYER AVATAR DELETION ENDPOINT
+// Delete player avatar
 router.delete('/player/:id/avatar', authenticate, async (req, res) => {
   try {
     const player = await Player.findById(req.params.id);
@@ -1712,14 +1750,12 @@ router.delete('/player/:id/avatar', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Player not found' });
     }
 
-    // If the player has an avatar with a Cloudinary URL, delete it from Cloudinary
     const avatarUrl = player.avatar;
     if (avatarUrl && avatarUrl.includes('res.cloudinary.com')) {
-      const publicId = avatarUrl.split('/').pop().split('.')[0]; // Assumes no folder structure
-      await cloudinary.uploader.destroy(publicId); // Delete the image from Cloudinary
+      const publicId = avatarUrl.split('/').pop().split('.')[0];
+      await cloudinary.uploader.destroy(publicId);
     }
 
-    // Remove avatar from MongoDB and set to default based on gender
     const defaultAvatar =
       player.gender === 'Female'
         ? 'https://bothell-select.onrender.com/uploads/avatars/girl.png'
@@ -1738,6 +1774,7 @@ router.delete('/player/:id/avatar', authenticate, async (req, res) => {
   }
 });
 
+// Get payments by parent ID
 router.get('/payments/parent/:parentId', authenticate, async (req, res) => {
   const { parentId } = req.params;
 
@@ -1749,63 +1786,99 @@ router.get('/payments/parent/:parentId', authenticate, async (req, res) => {
   }
 });
 
+// Update payment status for players
 router.post('/payments/update-players', authenticate, async (req, res) => {
-  const { parentId, playerIds } = req.body;
+  const {
+    parentId,
+    playerIds,
+    season,
+    year,
+    tryoutId,
+    paymentId,
+    paymentStatus,
+    amountPaid,
+    paymentMethod,
+    cardLast4,
+    cardBrand,
+  } = req.body;
 
-  if (!parentId || !playerIds) {
+  if (!parentId || !playerIds || !season || !year) {
     return res
       .status(400)
-      .json({ error: 'Parent ID and player IDs are required' });
+      .json({ error: 'Parent ID, player IDs, season, and year are required' });
   }
 
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    // Update players' payment status
     const playersUpdate = await Player.updateMany(
-      { _id: { $in: playerIds } },
+      {
+        _id: { $in: playerIds },
+        'seasons.season': season,
+        'seasons.year': year,
+        'seasons.tryoutId': tryoutId || null,
+      },
       {
         $set: {
-          paymentComplete: true,
-          paymentStatus: 'paid',
-          updatedAt: new Date(),
+          'seasons.$.paymentComplete': paymentStatus === 'paid',
+          'seasons.$.paymentStatus': paymentStatus,
+          'seasons.$.amountPaid': amountPaid
+            ? amountPaid / playerIds.length
+            : undefined,
+          'seasons.$.paymentId': paymentId,
+          'seasons.$.paymentMethod': paymentMethod,
+          'seasons.$.cardLast4': cardLast4,
+          'seasons.$.cardBrand': cardBrand,
         },
       },
       { session }
     );
 
-    // Update registrations
     const registrationsUpdate = await Registration.updateMany(
-      { player: { $in: playerIds } },
+      {
+        player: { $in: playerIds },
+        season,
+        year,
+        tryoutId: tryoutId || null,
+      },
       {
         $set: {
-          paymentStatus: 'paid',
-          paymentComplete: true,
+          paymentStatus,
+          paymentComplete: paymentStatus === 'paid',
           paymentDate: new Date(),
         },
       },
       { session }
     );
 
-    // Update parent
     const parentUpdate = await Parent.findByIdAndUpdate(
       parentId,
       {
         $set: {
-          paymentComplete: true,
+          paymentComplete: paymentStatus === 'paid',
           updatedAt: new Date(),
         },
       },
       { new: true, session }
     );
 
+    if (
+      playersUpdate.modifiedCount === 0 ||
+      registrationsUpdate.modifiedCount === 0
+    ) {
+      await session.abortTransaction();
+      return res
+        .status(404)
+        .json({ error: 'No matching players or registrations found' });
+    }
+
     await session.commitTransaction();
 
     res.json({
       success: true,
-      playersUpdated: playersUpdate.nModified,
-      registrationsUpdated: registrationsUpdate.nModified,
+      playersUpdated: playersUpdate.modifiedCount,
+      registrationsUpdated: registrationsUpdate.modifiedCount,
       parent: parentUpdate,
     });
   } catch (error) {
@@ -1821,6 +1894,7 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
   }
 });
 
+// Search users
 router.get('/users/search', async (req, res) => {
   const query = req.query.q;
   if (!query) {
@@ -1828,10 +1902,10 @@ router.get('/users/search', async (req, res) => {
   }
 
   try {
-    const regex = new RegExp(query, 'i'); // case-insensitive search
+    const regex = new RegExp(query, 'i');
     const users = await Parent.find({
-      $or: [{ firstName: regex }, { lastName: regex }, { email: regex }],
-    }).limit(10); // Limit results to 10
+      $or: [{ fullName: regex }, { email: regex }],
+    }).limit(10);
 
     res.json(users);
   } catch (err) {
@@ -1840,7 +1914,7 @@ router.get('/users/search', async (req, res) => {
   }
 });
 
-// GET available seasons
+// Get available seasons
 router.get('/seasons/available', authenticate, async (req, res) => {
   try {
     const seasons = await Player.distinct('season');
@@ -1851,13 +1925,13 @@ router.get('/seasons/available', authenticate, async (req, res) => {
   }
 });
 
+// Get notifications
 router.get('/notifications', authenticate, async (req, res) => {
   try {
     const currentUser = req.user;
 
     let query = {};
 
-    // For non-admin users, apply filters
     if (currentUser.role !== 'admin') {
       query = {
         $or: [
@@ -1881,13 +1955,13 @@ router.get('/notifications', authenticate, async (req, res) => {
       .lean();
 
     res.json(notifications);
-  } catch (err) {
-    console.error('Error fetching notifications:', err);
+  } catch (error) {
+    console.error('Error fetching notifications:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
 
-// ✅ GET: Notifications visible to a specific user (excluding dismissed)
+// Get notifications for a specific user
 router.get('/notifications/user/:userId', authenticate, async (req, res) => {
   try {
     const userId = req.params.userId;
@@ -1897,10 +1971,6 @@ router.get('/notifications/user/:userId', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'User not found' });
     }
 
-    // Get all notifications that either:
-    // 1. Are targeted to this user specifically
-    // 2. Are general notifications
-    // 3. Are season notifications matching user's seasons
     const notifications = await Notification.find({
       $or: [
         { targetType: 'all' },
@@ -1909,10 +1979,7 @@ router.get('/notifications/user/:userId', authenticate, async (req, res) => {
           targetType: 'season',
           $or: [
             { parentIds: userId },
-            {
-              // Match if user has players in any of the notification's seasons
-              targetSeason: { $in: user.playersSeasons || [] },
-            },
+            { targetSeason: { $in: user.playersSeasons || [] } },
           ],
         },
       ],
@@ -1923,16 +1990,17 @@ router.get('/notifications/user/:userId', authenticate, async (req, res) => {
       .lean();
 
     res.json(notifications);
-  } catch (err) {
-    console.error('Error fetching notifications:', err);
+  } catch (error) {
+    console.error('Error fetching notifications:', error);
     res.status(500).json({
       error: 'Failed to fetch notifications',
-      details: process.env.NODE_ENV === 'development' ? err.message : undefined,
+      details:
+        process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }
 });
 
-// ✅ PATCH: Dismiss a single notification for a specific user
+// Dismiss a notification
 router.patch('/notifications/dismiss/:id', authenticate, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -1941,13 +2009,9 @@ router.patch('/notifications/dismiss/:id', authenticate, async (req, res) => {
     const notificationId = req.params.id;
     const userId = req.user._id;
 
-    // Verify the notification exists and user should have access to it
     const notification = await Notification.findOne({
       _id: notificationId,
-      $or: [
-        { parentIds: userId }, // User is in parentIds
-        { targetType: 'all' }, // Or it's a general notification
-      ],
+      $or: [{ parentIds: userId }, { targetType: 'all' }],
     }).session(session);
 
     if (!notification) {
@@ -1957,16 +2021,12 @@ router.patch('/notifications/dismiss/:id', authenticate, async (req, res) => {
         .json({ error: 'Notification not found or unauthorized' });
     }
 
-    // Update both notification and parent document atomically
     await Promise.all([
-      // Add to notification's dismissedBy
       Notification.findByIdAndUpdate(
         notificationId,
         { $addToSet: { dismissedBy: userId } },
         { session }
       ),
-
-      // Remove from parent's notifications
       Parent.findByIdAndUpdate(
         userId,
         { $pull: { notifications: notificationId } },
@@ -1981,34 +2041,20 @@ router.patch('/notifications/dismiss/:id', authenticate, async (req, res) => {
       notificationId,
       dismissedAt: new Date(),
     });
-  } catch (err) {
+  } catch (error) {
     await session.abortTransaction();
-    console.error('Error dismissing notification:', err);
+    console.error('Error dismissing notification:', error);
     res.status(500).json({
       error: 'Failed to dismiss notification',
-      details: process.env.NODE_ENV === 'development' ? err.message : undefined,
+      details:
+        process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   } finally {
     session.endSession();
   }
 });
 
-// ✅ (Optional) GET: Fetch dismissed notifications (for debugging)
-router.get('/notifications/dismissed/:userId', async (req, res) => {
-  try {
-    const user = await Parent.findById(req.params.userId);
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    res.status(200).json(user.dismissedNotifications || []);
-  } catch (err) {
-    console.error('Error fetching dismissed notifications:', err);
-    res.status(500).json({ error: 'Failed to fetch dismissed notifications' });
-  }
-});
-
-// ✅ POST: New notification
+// Create notification
 router.post('/notifications', authenticate, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -2022,7 +2068,6 @@ router.post('/notifications', authenticate, async (req, res) => {
       parentIds = [],
     } = req.body;
 
-    // Validation
     if (!message) {
       await session.abortTransaction();
       return res.status(400).json({ error: 'Message is required' });
@@ -2046,9 +2091,8 @@ router.post('/notifications', authenticate, async (req, res) => {
         });
       }
 
-      // Find players by season name (partial match)
       const players = await Player.find({
-        season: { $regex: new RegExp(finalSeasonName, 'i') }, // Case-insensitive partial match
+        season: { $regex: new RegExp(finalSeasonName, 'i') },
       }).session(session);
 
       resolvedParentIds = [
@@ -2106,7 +2150,6 @@ router.post('/notifications', authenticate, async (req, res) => {
 
     await session.commitTransaction();
 
-    // ✅ Only send emails if the user is an admin
     if (req.user.role === 'admin') {
       let emails = [];
 
@@ -2121,7 +2164,6 @@ router.post('/notifications', authenticate, async (req, res) => {
         emails = parents.map((p) => p.email);
       }
 
-      // Send email notifications using the sendEmail function
       for (const email of emails) {
         try {
           await sendEmail({
@@ -2136,19 +2178,20 @@ router.post('/notifications', authenticate, async (req, res) => {
     }
 
     res.status(201).json(notification);
-  } catch (err) {
+  } catch (error) {
     await session.abortTransaction();
-    console.error('Error creating notification:', err);
+    console.error('Error creating notification:', error);
     res.status(500).json({
       error: 'Internal server error',
-      details: process.env.NODE_ENV === 'development' ? err.message : undefined,
+      details:
+        process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   } finally {
     session.endSession();
   }
 });
 
-// ✅ DELETE: Individual notification
+// Delete individual notification
 router.delete('/notifications/:id', async (req, res) => {
   try {
     const notification = await Notification.findByIdAndDelete(req.params.id);
@@ -2161,24 +2204,24 @@ router.delete('/notifications/:id', async (req, res) => {
       message: 'Notification deleted successfully',
       notification,
     });
-  } catch (err) {
-    console.error('Error deleting notification:', err);
+  } catch (error) {
+    console.error('Error deleting notification:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// ✅ DELETE: All notifications
+// Delete all notifications
 router.delete('/notifications', async (req, res) => {
   try {
     await Notification.deleteMany({});
     res.status(200).json({ message: 'All notifications deleted successfully' });
-  } catch (err) {
-    console.error('Error deleting all notifications:', err);
+  } catch (error) {
+    console.error('Error deleting all notifications:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// ✅ PATCH: Mark a single notification as read/unread
+// Mark notification as read/unread
 router.patch('/notifications/read/:id', async (req, res) => {
   try {
     const { read } = req.body;
@@ -2189,64 +2232,131 @@ router.patch('/notifications/read/:id', async (req, res) => {
     );
     if (!notification) return res.status(404).json({ error: 'Not found' });
     res.json(notification);
-  } catch (err) {
-    console.error('Error updating read state:', err);
+  } catch (error) {
+    console.error('Error updating read state:', error);
     res.status(500).json({ error: 'Failed to update notification' });
   }
 });
 
-// ✅ PATCH: Mark all notifications as read
+// Mark all notifications as read
 router.patch('/notifications/read-all', async (req, res) => {
   try {
     await Notification.updateMany({}, { read: true });
     res.json({ message: 'All notifications marked as read' });
-  } catch (err) {
-    console.error('Error marking all as read:', err);
+  } catch (error) {
+    console.error('Error marking all as read:', error);
     res.status(500).json({ error: 'Failed to mark all as read' });
   }
 });
 
-router.post('/players/:playerId/season', authenticate, async (req, res) => {
-  try {
-    const { season, year, paymentStatus } = req.body;
-    const { playerId } = req.params;
-
-    const player = await Player.findById(playerId);
-    if (!player) {
-      return res.status(404).json({ message: 'Player not found' });
+// Add new season to player
+router.post(
+  '/players/:playerId/season',
+  authenticate,
+  [
+    body('season').notEmpty().withMessage('Season is required'),
+    body('year')
+      .isNumeric()
+      .withMessage('Year must be a number')
+      .isInt({ min: 2020, max: 2030 })
+      .withMessage('Year must be between 2020 and 2030'),
+    body('tryoutId')
+      .optional()
+      .isString()
+      .withMessage('Tryout ID must be a string'),
+    body('paymentStatus')
+      .optional()
+      .isIn(['pending', 'paid', 'failed', 'refunded'])
+      .withMessage('Invalid payment status'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
     }
 
-    // Add new season registration
-    player.seasons.push({
-      season,
-      year,
-      registrationDate: new Date(),
-      paymentStatus: paymentStatus || 'pending',
-    });
+    try {
+      const { season, year, paymentStatus, tryoutId } = req.body;
+      const { playerId } = req.params;
 
-    // Update top-level fields to match the latest season
-    player.season = season;
-    player.registrationYear = year;
+      const session = await mongoose.startSession();
+      session.startTransaction();
 
-    await player.save();
+      try {
+        const player = await Player.findById(playerId).session(session);
+        if (!player) {
+          await session.abortTransaction();
+          return res.status(404).json({ message: 'Player not found' });
+        }
 
-    res.json({
-      success: true,
-      player: {
-        _id: player._id,
-        fullName: player.fullName,
-        season: player.season,
-        registrationYear: player.registrationYear,
-        seasons: player.seasons,
-      },
-    });
-  } catch (error) {
-    console.error('Season registration error:', error);
-    res.status(500).json({
-      message: 'Server error',
-      error: error.message,
-    });
+        const isAlreadyRegistered = player.seasons.some(
+          (s) =>
+            s.season === season && s.year === year && s.tryoutId === tryoutId
+        );
+
+        if (isAlreadyRegistered) {
+          await session.abortTransaction();
+          return res
+            .status(400)
+            .json({ message: 'Player already registered for this tryout' });
+        }
+
+        player.seasons.push({
+          season,
+          year,
+          tryoutId: tryoutId || null,
+          registrationDate: new Date(),
+          paymentStatus: paymentStatus || 'pending',
+        });
+
+        await player.save({ session });
+
+        const registration = new Registration({
+          player: player._id,
+          parent: player.parentId,
+          season,
+          year,
+          tryoutId: tryoutId || null,
+          paymentStatus: paymentStatus || 'pending',
+        });
+
+        await registration.save({ session });
+
+        await session.commitTransaction();
+
+        res.json({
+          success: true,
+          player: {
+            _id: player._id,
+            fullName: player.fullName,
+            season: player.season,
+            registrationYear: player.registrationYear,
+            tryoutId,
+            seasons: player.seasons,
+          },
+        });
+      } catch (error) {
+        await session.abortTransaction();
+        throw error;
+      } finally {
+        session.endSession();
+      }
+    } catch (error) {
+      console.error('Season registration error:', error);
+      res.status(500).json({
+        message: 'Server error',
+        error: error.message,
+      });
+    }
   }
+);
+
+// Error handling middleware
+router.use((err, req, res, next) => {
+  console.error('Unhandled error:', err.message, err.stack);
+  res
+    .status(500)
+    .json({ error: 'Internal server error', details: err.message });
 });
 
 module.exports = router;

@@ -4,6 +4,7 @@ const seasonRegistrationSchema = new mongoose.Schema(
   {
     season: { type: String, required: true },
     year: { type: Number, required: true },
+    tryoutId: { type: String, default: null },
     registrationDate: { type: Date, default: Date.now },
     paymentComplete: { type: Boolean, default: false },
     paymentStatus: {
@@ -13,6 +14,10 @@ const seasonRegistrationSchema = new mongoose.Schema(
     },
     packageType: String,
     amountPaid: Number,
+    paymentId: String,
+    paymentMethod: String,
+    cardLast4: String,
+    cardBrand: String,
   },
   { _id: false }
 );
@@ -38,41 +43,50 @@ const playerSchema = new mongoose.Schema(
     parentId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Parent',
+      required: [true, 'Parent ID is required'],
     },
     registrationYear: { type: Number },
     season: { type: String },
     seasons: [seasonRegistrationSchema],
     registrationComplete: { type: Boolean, default: false },
     paymentComplete: { type: Boolean, default: false },
-    avatar: {
-      type: String,
-      default: null,
-    },
     paymentStatus: {
       type: String,
       enum: ['pending', 'paid', 'failed', 'refunded'],
       default: 'pending',
     },
     lastPaymentDate: Date,
+    avatar: {
+      type: String,
+      default: function () {
+        return this.gender === 'Female'
+          ? 'https://bothell-select.onrender.com/uploads/avatars/girl.png'
+          : 'https://bothell-select.onrender.com/uploads/avatars/boy.png';
+      },
+    },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+    toJSON: { virtuals: true },
+    toObject: { virtuals: true },
+  }
 );
 
-// Middleware to update top-level season fields when seasons array changes
+// Middleware to update top-level fields when seasons array changes
 playerSchema.pre('save', function (next) {
   if (this.isModified('seasons') && this.seasons.length > 0) {
-    // Find the most recent season by registrationDate
-    const latestSeason = [...this.seasons].sort(
-      (a, b) => new Date(b.registrationDate) - new Date(a.registrationDate)
-    )[0];
+    const latestSeason = this.seasons.reduce((latest, current) =>
+      !latest ||
+      new Date(current.registrationDate) > new Date(latest.registrationDate)
+        ? current
+        : latest
+    );
 
     this.season = latestSeason.season;
     this.registrationYear = latestSeason.year;
-
-    // Also update payment status if needed
     this.paymentStatus = latestSeason.paymentStatus;
-    this.paymentComplete = latestSeason.paymentComplete;
-    if (latestSeason.paymentComplete) {
+    this.paymentComplete = latestSeason.paymentStatus === 'paid';
+    if (latestSeason.paymentStatus !== 'pending') {
       this.lastPaymentDate = latestSeason.registrationDate;
     }
   }
@@ -83,7 +97,8 @@ playerSchema.pre('save', function (next) {
 playerSchema.virtual('currentSeason').get(function () {
   if (this.seasons && this.seasons.length > 0) {
     return this.seasons.reduce((latest, current) =>
-      !latest || current.registrationDate > latest.registrationDate
+      !latest ||
+      new Date(current.registrationDate) > new Date(latest.registrationDate)
         ? current
         : latest
     );
@@ -91,11 +106,11 @@ playerSchema.virtual('currentSeason').get(function () {
   return null;
 });
 
-playerSchema.set('toJSON', { virtuals: true });
-playerSchema.set('toObject', { virtuals: true });
-
 playerSchema.index({ parentId: 1 });
-playerSchema.index({ 'seasons.season': 1, 'seasons.year': 1 });
-playerSchema.index({ season: 1, registrationYear: 1 });
+playerSchema.index({
+  'seasons.season': 1,
+  'seasons.year': 1,
+  'seasons.tryoutId': 1,
+});
 
 module.exports = mongoose.model('Player', playerSchema);
