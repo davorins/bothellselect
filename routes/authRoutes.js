@@ -1302,7 +1302,9 @@ router.get(
     try {
       const { parentId } = req.params;
 
-      const players = await Player.find({ parentId });
+      const players = await Player.find({ parentId })
+        .populate('seasons')
+        .lean();
 
       if (!players || players.length === 0) {
         return res
@@ -1313,7 +1315,10 @@ router.get(
       res.json(players);
     } catch (error) {
       console.error('Error fetching parent players:', error);
-      res.status(500).json({ error: 'Failed to fetch parent players' });
+      res.status(500).json({
+        error: 'Failed to fetch parent players',
+        details: error.message,
+      });
     }
   }
 );
@@ -2255,19 +2260,11 @@ router.post(
   authenticate,
   [
     body('season').notEmpty().withMessage('Season is required'),
-    body('year')
-      .isNumeric()
-      .withMessage('Year must be a number')
-      .isInt({ min: 2020, max: 2030 })
-      .withMessage('Year must be between 2020 and 2030'),
-    body('tryoutId')
-      .optional()
-      .isString()
-      .withMessage('Tryout ID must be a string'),
+    body('year').isNumeric().withMessage('Year must be a number'),
+    body('tryoutId').optional().isString(),
     body('paymentStatus')
       .optional()
-      .isIn(['pending', 'paid', 'failed', 'refunded'])
-      .withMessage('Invalid payment status'),
+      .isIn(['pending', 'paid', 'failed', 'refunded']),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -2276,76 +2273,61 @@ router.post(
     }
 
     try {
-      const { season, year, paymentStatus, tryoutId } = req.body;
       const { playerId } = req.params;
+      const { season, year, tryoutId, paymentStatus } = req.body;
 
-      const session = await mongoose.startSession();
-      session.startTransaction();
-
-      try {
-        const player = await Player.findById(playerId).session(session);
-        if (!player) {
-          await session.abortTransaction();
-          return res.status(404).json({ message: 'Player not found' });
-        }
-
-        const isAlreadyRegistered = player.seasons.some(
-          (s) =>
-            s.season === season && s.year === year && s.tryoutId === tryoutId
-        );
-
-        if (isAlreadyRegistered) {
-          await session.abortTransaction();
-          return res
-            .status(400)
-            .json({ message: 'Player already registered for this tryout' });
-        }
-
-        player.seasons.push({
-          season,
-          year,
-          tryoutId: tryoutId || null,
-          registrationDate: new Date(),
-          paymentStatus: paymentStatus || 'pending',
-        });
-
-        await player.save({ session });
-
-        const registration = new Registration({
-          player: player._id,
-          parent: player.parentId,
-          season,
-          year,
-          tryoutId: tryoutId || null,
-          paymentStatus: paymentStatus || 'pending',
-        });
-
-        await registration.save({ session });
-
-        await session.commitTransaction();
-
-        res.json({
-          success: true,
-          player: {
-            _id: player._id,
-            fullName: player.fullName,
-            season: player.season,
-            registrationYear: player.registrationYear,
-            tryoutId,
-            seasons: player.seasons,
-          },
-        });
-      } catch (error) {
-        await session.abortTransaction();
-        throw error;
-      } finally {
-        session.endSession();
+      const player = await Player.findById(playerId);
+      if (!player) {
+        return res.status(404).json({ error: 'Player not found' });
       }
+
+      // Check if already registered for this tryout
+      const existingRegistration = player.seasons.find(
+        (s) => s.season === season && s.year === year && s.tryoutId === tryoutId
+      );
+
+      if (existingRegistration) {
+        return res.status(400).json({
+          error: 'Player already registered for this tryout',
+        });
+      }
+
+      // Add new season registration
+      player.seasons.push({
+        season,
+        year,
+        tryoutId: tryoutId || null,
+        registrationDate: new Date(),
+        paymentStatus: paymentStatus || 'pending',
+      });
+
+      await player.save();
+
+      // Create registration record
+      const registration = new Registration({
+        player: player._id,
+        parent: player.parentId,
+        season,
+        year,
+        tryoutId: tryoutId || null,
+        paymentStatus: paymentStatus || 'pending',
+      });
+
+      await registration.save();
+
+      res.json({
+        success: true,
+        player: {
+          _id: player._id,
+          fullName: player.fullName,
+          seasons: player.seasons,
+        },
+      });
     } catch (error) {
-      console.error('Season registration error:', error);
+      console.error('Error adding season:', error);
       res.status(500).json({
-        message: 'Server error',
-        error: error.message,
+        error: 'Failed to add season registration',
+        details: error.message,
       });
     }
   }
