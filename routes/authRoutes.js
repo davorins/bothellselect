@@ -299,7 +299,7 @@ router.post(
 // Register a new player
 router.post(
   '/players/register',
-  authenticate,
+  authenticate, // This ensures we have req.user available
   [
     body('fullName').notEmpty().withMessage('Full name is required'),
     body('gender').notEmpty().withMessage('Gender is required'),
@@ -311,12 +311,18 @@ router.post(
       .isNumeric()
       .withMessage('Registration year must be a number'),
     body('season').notEmpty().withMessage('Season is required'),
-    body('parentId').notEmpty().withMessage('Parent ID is required'),
-    body('grade').notEmpty().withMessage('Grade is required'),
-    body('tryoutId')
+    // Make parentId optional but validate it exists either in body or from auth
+    body('parentId')
       .optional()
-      .isString()
-      .withMessage('Tryout ID must be a string'),
+      .custom((value, { req }) => {
+        // If not provided in body, use authenticated user's ID
+        return value || req.user?.id;
+      }),
+    body('grade').notEmpty().withMessage('Grade is required'),
+    body('tryoutId').optional().isString(),
+    body('paymentStatus')
+      .optional()
+      .isIn(['pending', 'paid', 'failed', 'refunded']),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -333,7 +339,7 @@ router.post(
       aauNumber,
       registrationYear,
       season,
-      parentId,
+      parentId = req.user.id, // Default to authenticated user's ID
       grade,
       tryoutId,
     } = req.body;
