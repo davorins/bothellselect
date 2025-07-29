@@ -2265,16 +2265,37 @@ router.patch('/notifications/read-all', async (req, res) => {
 });
 
 // Add new season to player
-router.post(
+// Update or add season to player
+router.patch(
   '/players/:playerId/season',
   authenticate,
   [
     body('season').notEmpty().withMessage('Season is required'),
     body('year').isNumeric().withMessage('Year must be a number'),
-    body('tryoutId').optional().isString(),
+    body('tryoutId')
+      .optional()
+      .isString()
+      .withMessage('Tryout ID must be a string'),
     body('paymentStatus')
       .optional()
-      .isIn(['pending', 'paid', 'failed', 'refunded']),
+      .isIn(['pending', 'paid', 'failed', 'refunded'])
+      .withMessage('Invalid payment status'),
+    body('paymentId')
+      .optional()
+      .isString()
+      .withMessage('Payment ID must be a string'),
+    body('amountPaid')
+      .optional()
+      .isNumeric()
+      .withMessage('Amount paid must be a number'),
+    body('cardLast4')
+      .optional()
+      .isString()
+      .withMessage('Card last 4 must be a string'),
+    body('cardBrand')
+      .optional()
+      .isString()
+      .withMessage('Card brand must be a string'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -2284,59 +2305,114 @@ router.post(
 
     try {
       const { playerId } = req.params;
-      const { season, year, tryoutId, paymentStatus } = req.body;
+      const {
+        season,
+        year,
+        tryoutId,
+        paymentStatus,
+        paymentId,
+        amountPaid,
+        cardLast4,
+        cardBrand,
+      } = req.body;
 
-      const player = await Player.findById(playerId);
-      if (!player) {
-        return res.status(404).json({ error: 'Player not found' });
-      }
+      const session = await mongoose.startSession();
+      session.startTransaction();
 
-      // Check if already registered for this tryout
-      const existingRegistration = player.seasons.find(
-        (s) => s.season === season && s.year === year && s.tryoutId === tryoutId
-      );
+      try {
+        const player = await Player.findById(playerId).session(session);
+        if (!player) {
+          await session.abortTransaction();
+          return res.status(404).json({ error: 'Player not found' });
+        }
 
-      if (existingRegistration) {
-        return res.status(400).json({
-          error: 'Player already registered for this tryout',
+        // Find the matching season
+        const seasonIndex = player.seasons.findIndex(
+          (s) =>
+            s.season === season && s.year === year && s.tryoutId === tryoutId
+        );
+
+        if (seasonIndex === -1) {
+          // Add new season if it doesn't exist
+          player.seasons.push({
+            season,
+            year,
+            tryoutId: tryoutId || null,
+            registrationDate: new Date(),
+            paymentStatus: paymentStatus || 'pending',
+            paymentId,
+            amountPaid,
+            cardLast4,
+            cardBrand,
+            paymentComplete: paymentStatus === 'paid',
+          });
+        } else {
+          // Update existing season
+          player.seasons[seasonIndex] = {
+            ...player.seasons[seasonIndex],
+            paymentStatus:
+              paymentStatus || player.seasons[seasonIndex].paymentStatus,
+            paymentId: paymentId || player.seasons[seasonIndex].paymentId,
+            amountPaid: amountPaid || player.seasons[seasonIndex].amountPaid,
+            cardLast4: cardLast4 || player.seasons[seasonIndex].cardLast4,
+            cardBrand: cardBrand || player.seasons[seasonIndex].cardBrand,
+            paymentComplete: paymentStatus === 'paid',
+          };
+        }
+
+        // Update top-level payment status if paymentStatus is provided
+        if (paymentStatus) {
+          player.paymentComplete = paymentStatus === 'paid';
+          player.paymentStatus = paymentStatus;
+        }
+
+        await player.save({ session });
+
+        // Update or create registration record
+        const registration = await Registration.findOneAndUpdate(
+          {
+            player: playerId,
+            season,
+            year,
+            tryoutId: tryoutId || null,
+          },
+          {
+            $set: {
+              paymentStatus: paymentStatus || 'pending',
+              paymentComplete: paymentStatus === 'paid',
+              paymentDate: paymentStatus === 'paid' ? new Date() : undefined,
+            },
+          },
+          { upsert: true, new: true, session }
+        );
+
+        await session.commitTransaction();
+
+        res.json({
+          success: true,
+          player: {
+            _id: player._id,
+            fullName: player.fullName,
+            seasons: player.seasons,
+            paymentComplete: player.paymentComplete,
+            paymentStatus: player.paymentStatus,
+          },
+          registration,
         });
+      } catch (error) {
+        await session.abortTransaction();
+        console.error('Error updating season:', error);
+        res.status(500).json({
+          error: 'Failed to update season',
+          details: error.message,
+        });
+      } finally {
+        session.endSession();
       }
-
-      // Add new season registration
-      player.seasons.push({
-        season,
-        year,
-        tryoutId: tryoutId || null,
-        registrationDate: new Date(),
-        paymentStatus: paymentStatus || 'pending',
-      });
-
-      await player.save();
-
-      // Create registration record
-      const registration = new Registration({
-        player: player._id,
-        parent: player.parentId,
-        season,
-        year,
-        tryoutId: tryoutId || null,
-        paymentStatus: paymentStatus || 'pending',
-      });
-
-      await registration.save();
-
-      res.json({
-        success: true,
-        player: {
-          _id: player._id,
-          fullName: player.fullName,
-          seasons: player.seasons,
-        },
-      });
     } catch (error) {
-      console.error('Error adding season:', error);
+      console.error('Error processing season update:', error);
       res.status(500).json({
-        error: 'Failed to add season registration',
+        error: 'Server error',
         details: error.message,
       });
     }
