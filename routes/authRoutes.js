@@ -2327,6 +2327,10 @@ router.patch(
       .optional()
       .isString()
       .withMessage('Card brand must be a string'),
+    body('updateTopLevel') // Add validation for new flag
+      .optional()
+      .isBoolean()
+      .withMessage('updateTopLevel must be a boolean'),
   ],
   async (req, res) => {
     const startTime = Date.now();
@@ -2355,6 +2359,7 @@ router.patch(
         amountPaid,
         cardLast4,
         cardBrand,
+        updateTopLevel = true, // Default to true to ensure top-level updates
       } = req.body;
 
       if (!mongoose.Types.ObjectId.isValid(playerId)) {
@@ -2422,11 +2427,19 @@ router.patch(
           player.seasons[seasonIndex] = seasonData;
         }
 
-        const allSeasonsPaid = player.seasons.every(
-          (s) => s.paymentStatus === 'paid'
-        );
-        player.paymentComplete = allSeasonsPaid;
-        player.paymentStatus = allSeasonsPaid ? 'paid' : paymentStatus;
+        // Update top-level fields with the latest season's values if updateTopLevel is true
+        if (updateTopLevel) {
+          const latestSeason = player.seasons.reduce((latest, s) => {
+            const currentDate = new Date(s.registrationDate || 0);
+            const latestDate = new Date(latest.registrationDate || 0);
+            return currentDate > latestDate ? s : latest;
+          }, player.seasons[0]);
+
+          player.registrationYear = latestSeason.year;
+          player.season = latestSeason.season;
+          player.paymentComplete = latestSeason.paymentComplete;
+          player.paymentStatus = latestSeason.paymentStatus;
+        }
 
         await player.save({ session });
 
@@ -2463,6 +2476,8 @@ router.patch(
             _id: player._id,
             fullName: player.fullName,
             seasons: player.seasons,
+            registrationYear: player.registrationYear,
+            season: player.season,
             paymentComplete: player.paymentComplete,
             paymentStatus: player.paymentStatus,
           },
