@@ -518,6 +518,8 @@ router.post(
         return res.status(400).json({ error: 'Password is required' });
       }
 
+      const isExistingUser = !!req.body.password;
+
       if (isExistingUser) {
         for (const player of players) {
           if (player._id) {
