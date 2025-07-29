@@ -2300,9 +2300,7 @@ router.patch(
   authenticate,
   [
     body('season').notEmpty().withMessage('Season is required'),
-    body('year')
-      .isInt({ min: 2000, max: 2100 })
-      .withMessage('Year must be a valid number between 2000 and 2100'),
+    body('year').isNumeric().withMessage('Year must be a number'),
     body('tryoutId')
       .optional()
       .isString()
@@ -2317,8 +2315,8 @@ router.patch(
       .withMessage('Payment ID must be a string'),
     body('amountPaid')
       .optional()
-      .isFloat({ min: 0 })
-      .withMessage('Amount paid must be a non-negative number'),
+      .isNumeric()
+      .withMessage('Amount paid must be a number'),
     body('cardLast4')
       .optional()
       .isString()
@@ -2331,7 +2329,7 @@ router.patch(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ success: false, errors: errors.array() });
+      return res.status(400).json({ errors: errors.array() });
     }
 
     try {
@@ -2340,19 +2338,12 @@ router.patch(
         season,
         year,
         tryoutId,
-        paymentStatus = 'pending',
+        paymentStatus,
         paymentId,
         amountPaid,
         cardLast4,
         cardBrand,
       } = req.body;
-
-      // Validate playerId
-      if (!mongoose.Types.ObjectId.isValid(playerId)) {
-        return res
-          .status(400)
-          .json({ success: false, error: 'Invalid player ID' });
-      }
 
       const session = await mongoose.startSession();
       session.startTransaction();
@@ -2361,57 +2352,48 @@ router.patch(
         const player = await Player.findById(playerId).session(session);
         if (!player) {
           await session.abortTransaction();
-          return res
-            .status(404)
-            .json({ success: false, error: 'Player not found' });
+          return res.status(404).json({ error: 'Player not found' });
         }
 
-        // Check for duplicate season
+        // Find the matching season
         const seasonIndex = player.seasons.findIndex(
           (s) =>
             s.season === season && s.year === year && s.tryoutId === tryoutId
         );
 
-        if (
-          seasonIndex !== -1 &&
-          player.seasons[seasonIndex].paymentStatus === 'paid'
-        ) {
-          await session.abortTransaction();
-          return res.status(400).json({
-            success: false,
-            error: 'Player is already registered and paid for this tryout',
-          });
-        }
-
-        const seasonData = {
-          season,
-          year,
-          tryoutId: tryoutId || null,
-          registrationDate: new Date(),
-          paymentStatus,
-          paymentComplete: paymentStatus === 'paid',
-          ...(paymentId && { paymentId }),
-          ...(amountPaid !== undefined && { amountPaid }),
-          ...(cardLast4 && { cardLast4 }),
-          ...(cardBrand && { cardBrand }),
-        };
-
         if (seasonIndex === -1) {
-          player.seasons.push(seasonData);
+          // Add new season if it doesn't exist
+          player.seasons.push({
+            season,
+            year,
+            tryoutId: tryoutId || null,
+            registrationDate: new Date(),
+            paymentStatus: paymentStatus || 'pending',
+            paymentId,
+            amountPaid,
+            cardLast4,
+            cardBrand,
+            paymentComplete: paymentStatus === 'paid',
+          });
         } else {
+          // Update existing season
           player.seasons[seasonIndex] = {
             ...player.seasons[seasonIndex],
-            ...seasonData,
-            registrationDate: player.seasons[seasonIndex].registrationDate, // Preserve original registration date
+            paymentStatus:
+              paymentStatus || player.seasons[seasonIndex].paymentStatus,
+            paymentId: paymentId || player.seasons[seasonIndex].paymentId,
+            amountPaid: amountPaid || player.seasons[seasonIndex].amountPaid,
+            cardLast4: cardLast4 || player.seasons[seasonIndex].cardLast4,
+            cardBrand: cardBrand || player.seasons[seasonIndex].cardBrand,
+            paymentComplete: paymentStatus === 'paid',
           };
         }
 
-        // Update top-level payment status only if all seasons are paid
-        const allSeasonsPaid = player.seasons.every(
-          (s) => s.paymentStatus === 'paid'
-        );
-        player.paymentComplete = allSeasonsPaid;
-        player.paymentStatus = allSeasonsPaid ? 'paid' : paymentStatus;
+        // Update top-level payment status if paymentStatus is provided
+        if (paymentStatus) {
+          player.paymentComplete = paymentStatus === 'paid';
+          player.paymentStatus = paymentStatus;
+        }
 
         await player.save({ session });
 
@@ -2425,13 +2407,9 @@ router.patch(
           },
           {
             $set: {
-              paymentStatus,
+              paymentStatus: paymentStatus || 'pending',
               paymentComplete: paymentStatus === 'paid',
               paymentDate: paymentStatus === 'paid' ? new Date() : undefined,
-              ...(paymentId && { paymentId }),
-              ...(amountPaid !== undefined && { amountPaid }),
-              ...(cardLast4 && { cardLast4 }),
-              ...(cardBrand && { cardBrand }),
             },
           },
           { upsert: true, new: true, session }
@@ -2454,7 +2432,6 @@ router.patch(
         await session.abortTransaction();
         console.error('Error updating season:', error);
         res.status(500).json({
-          success: false,
           error: 'Failed to update season',
           details: error.message,
         });
@@ -2464,7 +2441,6 @@ router.patch(
     } catch (error) {
       console.error('Error processing season update:', error);
       res.status(500).json({
-        success: false,
         error: 'Server error',
         details: error.message,
       });
