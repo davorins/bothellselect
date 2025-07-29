@@ -555,7 +555,7 @@ router.post(
         address: ensureAddress(address),
         isCoach,
         aauNumber: isCoach ? aauNumber.trim() : '',
-        players: [], // Will update with player IDs after creation
+        players: [],
         additionalGuardians: additionalGuardians.map((g) => ({
           fullName: g.fullName.trim(),
           relationship: g.relationship.trim(),
@@ -589,7 +589,7 @@ router.post(
         season: player.season,
         registrationYear: player.year,
         tryoutId: player.tryoutId || null,
-        parentId: parent._id, // Set parentId here
+        parentId: parent._id,
         registrationComplete: true,
         seasons: [
           {
