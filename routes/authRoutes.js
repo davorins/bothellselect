@@ -2300,7 +2300,9 @@ router.patch(
   authenticate,
   [
     body('season').notEmpty().withMessage('Season is required'),
-    body('year').isNumeric().withMessage('Year must be a number'),
+    body('year')
+      .isInt({ min: 2000, max: 2100 })
+      .withMessage('Year must be a valid number between 2000 and 2100'),
     body('tryoutId')
       .optional()
       .isString()
@@ -2315,8 +2317,8 @@ router.patch(
       .withMessage('Payment ID must be a string'),
     body('amountPaid')
       .optional()
-      .isNumeric()
-      .withMessage('Amount paid must be a number'),
+      .isFloat({ min: 0 })
+      .withMessage('Amount paid must be a non-negative number'),
     body('cardLast4')
       .optional()
       .isString()
@@ -2327,9 +2329,19 @@ router.patch(
       .withMessage('Card brand must be a string'),
   ],
   async (req, res) => {
+    const startTime = Date.now();
+    console.log(
+      `[PATCH /players/:playerId/season] Request received for playerId: ${req.params.playerId}`,
+      req.body
+    );
+
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+      console.log(
+        `[PATCH /players/:playerId/season] Validation errors:`,
+        errors.array()
+      );
+      return res.status(400).json({ success: false, errors: errors.array() });
     }
 
     try {
@@ -2338,12 +2350,21 @@ router.patch(
         season,
         year,
         tryoutId,
-        paymentStatus,
+        paymentStatus = 'pending',
         paymentId,
         amountPaid,
         cardLast4,
         cardBrand,
       } = req.body;
+
+      if (!mongoose.Types.ObjectId.isValid(playerId)) {
+        console.log(
+          `[PATCH /players/:playerId/season] Invalid playerId: ${playerId}`
+        );
+        return res
+          .status(400)
+          .json({ success: false, error: 'Invalid player ID' });
+      }
 
       const session = await mongoose.startSession();
       session.startTransaction();
@@ -2351,53 +2372,64 @@ router.patch(
       try {
         const player = await Player.findById(playerId).session(session);
         if (!player) {
+          console.log(
+            `[PATCH /players/:playerId/season] Player not found: ${playerId}`
+          );
           await session.abortTransaction();
-          return res.status(404).json({ error: 'Player not found' });
+          return res
+            .status(404)
+            .json({ success: false, error: 'Player not found' });
         }
 
-        // Find the matching season
         const seasonIndex = player.seasons.findIndex(
           (s) =>
             s.season === season && s.year === year && s.tryoutId === tryoutId
         );
 
-        if (seasonIndex === -1) {
-          // Add new season if it doesn't exist
-          player.seasons.push({
-            season,
-            year,
-            tryoutId: tryoutId || null,
-            registrationDate: new Date(),
-            paymentStatus: paymentStatus || 'pending',
-            paymentId,
-            amountPaid,
-            cardLast4,
-            cardBrand,
-            paymentComplete: paymentStatus === 'paid',
+        if (
+          seasonIndex !== -1 &&
+          player.seasons[seasonIndex].paymentStatus === 'paid'
+        ) {
+          console.log(
+            `[PATCH /players/:playerId/season] Player already paid: ${playerId}`
+          );
+          await session.abortTransaction();
+          return res.status(400).json({
+            success: false,
+            error: 'Player is already registered and paid for this tryout',
           });
-        } else {
-          // Update existing season
-          player.seasons[seasonIndex] = {
-            ...player.seasons[seasonIndex],
-            paymentStatus:
-              paymentStatus || player.seasons[seasonIndex].paymentStatus,
-            paymentId: paymentId || player.seasons[seasonIndex].paymentId,
-            amountPaid: amountPaid || player.seasons[seasonIndex].amountPaid,
-            cardLast4: cardLast4 || player.seasons[seasonIndex].cardLast4,
-            cardBrand: cardBrand || player.seasons[seasonIndex].cardBrand,
-            paymentComplete: paymentStatus === 'paid',
-          };
         }
 
-        // Update top-level payment status if paymentStatus is provided
-        if (paymentStatus) {
-          player.paymentComplete = paymentStatus === 'paid';
-          player.paymentStatus = paymentStatus;
+        const seasonData = {
+          season,
+          year,
+          tryoutId: tryoutId || null,
+          registrationDate:
+            seasonIndex === -1
+              ? new Date()
+              : player.seasons[seasonIndex].registrationDate,
+          paymentStatus,
+          paymentComplete: paymentStatus === 'paid',
+          ...(paymentId && { paymentId }),
+          ...(amountPaid !== undefined && { amountPaid }),
+          ...(cardLast4 && { cardLast4 }),
+          ...(cardBrand && { cardBrand }),
+        };
+
+        if (seasonIndex === -1) {
+          player.seasons.push(seasonData);
+        } else {
+          player.seasons[seasonIndex] = seasonData;
         }
+
+        const allSeasonsPaid = player.seasons.every(
+          (s) => s.paymentStatus === 'paid'
+        );
+        player.paymentComplete = allSeasonsPaid;
+        player.paymentStatus = allSeasonsPaid ? 'paid' : paymentStatus;
 
         await player.save({ session });
 
-        // Update or create registration record
         const registration = await Registration.findOneAndUpdate(
           {
             player: playerId,
@@ -2407,15 +2439,23 @@ router.patch(
           },
           {
             $set: {
-              paymentStatus: paymentStatus || 'pending',
+              paymentStatus,
               paymentComplete: paymentStatus === 'paid',
               paymentDate: paymentStatus === 'paid' ? new Date() : undefined,
+              ...(paymentId && { paymentId }),
+              ...(amountPaid !== undefined && { amountPaid }),
+              ...(cardLast4 && { cardLast4 }),
+              ...(cardBrand && { cardBrand }),
             },
           },
           { upsert: true, new: true, session }
         );
 
         await session.commitTransaction();
+
+        console.log(
+          `[PATCH /players/:playerId/season] Success for playerId: ${playerId}, duration: ${Date.now() - startTime}ms`
+        );
 
         res.json({
           success: true,
@@ -2430,8 +2470,12 @@ router.patch(
         });
       } catch (error) {
         await session.abortTransaction();
-        console.error('Error updating season:', error);
+        console.error(
+          `[PATCH /players/:playerId/season] Transaction error:`,
+          error
+        );
         res.status(500).json({
+          success: false,
           error: 'Failed to update season',
           details: error.message,
         });
@@ -2439,8 +2483,9 @@ router.patch(
         session.endSession();
       }
     } catch (error) {
-      console.error('Error processing season update:', error);
+      console.error(`[PATCH /players/:playerId/season] Server error:`, error);
       res.status(500).json({
+        success: false,
         error: 'Server error',
         details: error.message,
       });
