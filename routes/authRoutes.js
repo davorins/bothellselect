@@ -518,19 +518,23 @@ router.post(
         return res.status(400).json({ error: 'Password is required' });
       }
 
-      for (const player of players) {
-        const existingRegistration = await Registration.findOne({
-          season: player.season,
-          year: player.year,
-          tryoutId: player.tryoutId || null,
-          player: { $exists: true },
-        }).session(session);
+      if (isExistingUser) {
+        for (const player of players) {
+          if (player._id) {
+            const existingRegistration = await Registration.findOne({
+              player: player._id,
+              season: player.season,
+              year: player.year,
+              tryoutId: player.tryoutId || null,
+            }).session(session);
 
-        if (existingRegistration) {
-          await session.abortTransaction();
-          return res.status(400).json({
-            error: `Player already registered for ${player.season} ${player.year} tryout`,
-          });
+            if (existingRegistration) {
+              await session.abortTransaction();
+              return res.status(400).json({
+                error: `Player already registered for ${player.season} ${player.year} tryout`,
+              });
+            }
+          }
         }
       }
 
