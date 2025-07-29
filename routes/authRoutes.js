@@ -1827,6 +1827,20 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
   session.startTransaction();
 
   try {
+    // Debug: Log the incoming request body
+    console.log('Updating payment status with:', {
+      parentId,
+      playerIds,
+      season,
+      year,
+      tryoutId,
+      paymentStatus,
+      paymentId,
+      amountPaid,
+      cardLast4,
+      cardBrand,
+    });
+
     const playersUpdate = await Player.updateMany(
       {
         _id: { $in: playerIds },
@@ -1845,10 +1859,15 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
           'seasons.$.paymentMethod': paymentMethod,
           'seasons.$.cardLast4': cardLast4,
           'seasons.$.cardBrand': cardBrand,
+          paymentComplete: paymentStatus === 'paid',
+          paymentStatus,
         },
       },
       { session }
     );
+
+    // Debug: Log the result of players update
+    console.log('Players update result:', playersUpdate);
 
     const registrationsUpdate = await Registration.updateMany(
       {
@@ -1861,11 +1880,14 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
         $set: {
           paymentStatus,
           paymentComplete: paymentStatus === 'paid',
-          paymentDate: new Date(),
+          paymentDate: paymentStatus === 'paid' ? new Date() : undefined,
         },
       },
       { session }
     );
+
+    // Debug: Log the result of registrations update
+    console.log('Registrations update result:', registrationsUpdate);
 
     const parentUpdate = await Parent.findByIdAndUpdate(
       parentId,
@@ -1878,14 +1900,22 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
       { new: true, session }
     );
 
+    // Debug: Log parent update result
+    console.log('Parent update result:', parentUpdate);
+
     if (
       playersUpdate.modifiedCount === 0 ||
       registrationsUpdate.modifiedCount === 0
     ) {
       await session.abortTransaction();
-      return res
-        .status(404)
-        .json({ error: 'No matching players or registrations found' });
+      return res.status(404).json({
+        error: 'No matching players or registrations found',
+        details: {
+          playersModified: playersUpdate.modifiedCount,
+          registrationsModified: registrationsUpdate.modifiedCount,
+          query: { playerIds, season, year, tryoutId },
+        },
+      });
     }
 
     await session.commitTransaction();
