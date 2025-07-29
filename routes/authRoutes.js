@@ -481,7 +481,7 @@ router.post(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+      return res.status(400).json({ errors: errors.array(), success: false });
     }
 
     const session = await mongoose.startSession();
@@ -509,13 +509,17 @@ router.post(
       }).session(session);
       if (existingParent) {
         await session.abortTransaction();
-        return res.status(400).json({ error: 'Email already registered' });
+        return res
+          .status(400)
+          .json({ error: 'Email already registered', success: false });
       }
 
       const rawPassword = (parentInfo.password || password || '').trim();
       if (!rawPassword) {
         await session.abortTransaction();
-        return res.status(400).json({ error: 'Password is required' });
+        return res
+          .status(400)
+          .json({ error: 'Password is required', success: false });
       }
 
       const isExistingUser = !!req.body.password;
@@ -534,54 +538,24 @@ router.post(
               await session.abortTransaction();
               return res.status(400).json({
                 error: `Player already registered for ${player.season} ${player.year} tryout`,
+                success: false,
               });
             }
           }
         }
       }
 
-      const playerDocs = players.map((player) => {
-        const _id = new mongoose.Types.ObjectId();
-        return {
-          _id,
-          fullName: player.fullName.trim(),
-          gender: player.gender,
-          dob: player.dob,
-          schoolName: player.schoolName.trim(),
-          grade: player.grade,
-          healthConcerns: player.healthConcerns || '',
-          aauNumber: player.aauNumber || '',
-          season: player.season,
-          registrationYear: player.year,
-          tryoutId: player.tryoutId || null,
-          parentId: null,
-          registrationComplete: true,
-          seasons: [
-            {
-              season: player.season,
-              year: player.year,
-              tryoutId: player.tryoutId || null,
-              registrationDate: new Date(),
-              paymentStatus: 'pending',
-            },
-          ],
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        };
-      });
-
-      const savedPlayers = await Player.insertMany(playerDocs, { session });
-
+      // Create parent first to get parentId
       const parent = new Parent({
         email: normalizedEmail,
-        password: rawPassword,
+        password: rawPassword, // Assume password hashing in Parent model's pre-save hook
         fullName: fullName.trim(),
         relationship: relationship.trim(),
         phone: phone.replace(/\D/g, ''),
         address: ensureAddress(address),
         isCoach,
         aauNumber: isCoach ? aauNumber.trim() : '',
-        players: savedPlayers.map((p) => p._id),
+        players: [], // Will update with player IDs after creation
         additionalGuardians: additionalGuardians.map((g) => ({
           fullName: g.fullName.trim(),
           relationship: g.relationship.trim(),
@@ -602,12 +576,41 @@ router.post(
 
       await parent.save({ session });
 
-      await Player.updateMany(
-        { _id: { $in: savedPlayers.map((p) => p._id) } },
-        { parentId: parent._id },
-        { session }
-      );
+      // Create players with parentId
+      const playerDocs = players.map((player) => ({
+        _id: new mongoose.Types.ObjectId(),
+        fullName: player.fullName.trim(),
+        gender: player.gender,
+        dob: player.dob,
+        schoolName: player.schoolName.trim(),
+        grade: player.grade,
+        healthConcerns: player.healthConcerns || '',
+        aauNumber: player.aauNumber || '',
+        season: player.season,
+        registrationYear: player.year,
+        tryoutId: player.tryoutId || null,
+        parentId: parent._id, // Set parentId here
+        registrationComplete: true,
+        seasons: [
+          {
+            season: player.season,
+            year: player.year,
+            tryoutId: player.tryoutId || null,
+            registrationDate: new Date(),
+            paymentStatus: 'pending',
+          },
+        ],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }));
 
+      const savedPlayers = await Player.insertMany(playerDocs, { session });
+
+      // Update parent with player IDs
+      parent.players = savedPlayers.map((p) => p._id);
+      await parent.save({ session });
+
+      // Create registration documents
       const registrationDocs = playerDocs.map((playerDoc) => ({
         player: playerDoc._id,
         parent: parent._id,
@@ -626,6 +629,7 @@ router.post(
 
       await session.commitTransaction();
 
+      // Send welcome email (async, no await)
       sendWelcomeEmail(parent._id, savedPlayers[0]._id).catch((err) =>
         console.error('Welcome email failed:', err)
       );
