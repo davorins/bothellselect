@@ -180,9 +180,8 @@ router.post(
       .isArray({ min: 1 })
       .withMessage('At least one player is required'),
     body('players.*.playerId')
-      .notEmpty()
-      .withMessage('Player ID is required')
-      .custom((value) => mongoose.Types.ObjectId.isValid(value))
+      .optional()
+      .custom((value) => !value || mongoose.Types.ObjectId.isValid(value))
       .withMessage('Invalid player ID format'),
     body('players.*.season').notEmpty().withMessage('Season is required'),
     body('players.*.year')
@@ -232,8 +231,13 @@ router.post(
       // Verify all players exist and belong to this parent
       const playerIds = players.map((p) => p.playerId);
       const playerRecords = await Player.find({
-        _id: { $in: playerIds },
-        parentId: parent._id,
+        $or: [
+          { _id: { $in: playerIds.filter((id) => id) } },
+          {
+            fullName: { $in: players.map((p) => p.fullName) },
+            parentId: parent._id,
+          },
+        ],
       }).session(session);
 
       if (playerRecords.length !== players.length) {
