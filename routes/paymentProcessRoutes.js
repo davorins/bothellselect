@@ -188,217 +188,245 @@ router.post(
       .optional()
       .isString()
       .withMessage('Tryout ID must be a string'),
+    body('cardDetails').isObject().withMessage('Card details are required'),
+    body('cardDetails.last_4')
+      .isLength({ min: 4, max: 4 })
+      .withMessage('Invalid card last 4 digits'),
+    body('cardDetails.card_brand')
+      .notEmpty()
+      .withMessage('Card brand is required'),
+    body('cardDetails.exp_month')
+      .isInt({ min: 1, max: 12 })
+      .withMessage('Invalid expiration month'),
+    body('cardDetails.exp_year')
+      .isInt({ min: new Date().getFullYear() })
+      .withMessage('Invalid expiration year'),
   ],
   async (req, res) => {
+    // Validate request
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array(), success: false });
+      return res.status(400).json({
+        success: false,
+        errors: errors.array(),
+        message: 'Validation failed',
+      });
     }
 
-    const { token, sourceId, amount, currency, email, players, cardDetails } =
-      req.body;
     const session = await mongoose.startSession();
+    session.startTransaction();
 
     try {
-      await session.withTransaction(async () => {
-        console.log('Starting payment transaction for:', email);
+      const { token, sourceId, amount, currency, email, players, cardDetails } =
+        req.body;
 
-        // Verify the authenticated user
-        const parent = await Parent.findOne({
-          email: email.toLowerCase().trim(),
-        }).session(session);
-        if (!parent) {
-          throw new Error('Parent not found');
-        }
+      // Verify the authenticated user
+      const parent = await Parent.findById(req.user.id).session(session);
+      if (!parent) {
+        throw new Error('Parent not found');
+      }
 
-        if (parent._id.toString() !== req.user.id) {
-          throw new Error(
-            'Unauthorized: Email does not match authenticated user'
-          );
-        }
+      // Validate players belong to this parent
+      const playerIds = players.map((p) => p.playerId);
+      const playerRecords = await Player.find({
+        _id: { $in: playerIds },
+        parentId: parent._id,
+      }).session(session);
 
-        // Validate players
-        for (const player of players) {
-          const existingPlayer = await Player.findById(player.playerId).session(
-            session
-          );
-          if (!existingPlayer) {
-            throw new Error(`Player not found: ${player.playerId}`);
-          }
-          if (existingPlayer.parentId.toString() !== parent._id.toString()) {
-            throw new Error(
-              `Player ${player.playerId} does not belong to this parent`
-            );
-          }
-        }
+      if (playerRecords.length !== players.length) {
+        throw new Error(
+          'One or more players not found or do not belong to this parent'
+        );
+      }
 
-        // Create Square customer
+      // Create or retrieve Square customer
+      let customerId;
+      if (parent.squareCustomerId) {
+        customerId = parent.squareCustomerId;
+      } else {
         const { result: customerResult } =
           await square.customersApi.createCustomer({
             emailAddress: email,
+            givenName: parent.fullName.split(' ')[0],
+            familyName: parent.fullName.split(' ').slice(1).join(' '),
           });
 
-        const customerId = customerResult.customer?.id;
-        if (!customerId) {
+        if (!customerResult.customer?.id) {
           throw new Error('Failed to create customer');
         }
 
-        const paymentSource = sourceId || token;
+        customerId = customerResult.customer.id;
+        parent.squareCustomerId = customerId;
+        await parent.save({ session });
+      }
 
-        // Process payment with Square
-        const paymentRequest = {
-          sourceId: paymentSource,
-          amountMoney: {
-            amount: amount,
-            currency,
+      // Process payment with Square
+      const paymentRequest = {
+        sourceId: sourceId || token,
+        amountMoney: {
+          amount: parseInt(amount),
+          currency: currency,
+        },
+        idempotencyKey: crypto.randomUUID(),
+        locationId: process.env.SQUARE_LOCATION_ID,
+        customerId,
+        referenceId: `parent:${parent._id}`,
+        note: `Tryout payment for ${players.length} player(s)`,
+        buyerEmailAddress: email,
+      };
+
+      const paymentResponse =
+        await square.paymentsApi.createPayment(paymentRequest);
+      const paymentResult = paymentResponse.result.payment;
+
+      if (paymentResult.status !== 'COMPLETED') {
+        throw new Error(`Payment failed with status: ${paymentResult.status}`);
+      }
+
+      // Create Payment record
+      const payment = new Payment({
+        parentId: parent._id,
+        playerCount: players.length,
+        paymentId: paymentResult.id,
+        locationId: process.env.SQUARE_LOCATION_ID,
+        buyerEmail: email,
+        cardLastFour: cardDetails.last_4,
+        cardBrand: cardDetails.card_brand,
+        cardExpMonth: cardDetails.exp_month,
+        cardExpYear: cardDetails.exp_year,
+        amount: amount / 100,
+        currency,
+        status: 'completed',
+        processedAt: new Date(),
+        receiptUrl: paymentResult.receiptUrl,
+        players: players.map((p) => ({
+          playerId: p.playerId,
+          season: p.season,
+          year: p.year,
+          tryoutId: p.tryoutId || null,
+        })),
+      });
+
+      await payment.save({ session });
+
+      // Update Player seasons and payment status
+      const updatePromises = players.map(async (player) => {
+        const updateData = {
+          $push: {
+            seasons: {
+              season: player.season,
+              year: player.year,
+              tryoutId: player.tryoutId || null,
+              paymentStatus: 'paid',
+              paymentComplete: true,
+              paymentId: paymentResult.id,
+              amountPaid: amount / 100 / players.length,
+              cardLast4: cardDetails.last_4,
+              cardBrand: cardDetails.card_brand,
+              paymentDate: new Date(),
+            },
           },
-          idempotencyKey: crypto.randomUUID(),
-          locationId: process.env.SQUARE_LOCATION_ID,
-          customerId,
-          referenceId: `parent:${parent._id}`,
-          note: `Tryout payment for ${players.length} player(s)`,
+          $set: {
+            paymentComplete: true,
+            paymentStatus: 'paid',
+            updatedAt: new Date(),
+          },
         };
 
-        console.log('Processing Square payment with request:', paymentRequest);
-        const paymentResponse =
-          await square.paymentsApi.createPayment(paymentRequest);
-        const paymentResult = paymentResponse.result.payment;
-        console.log('Square payment response:', paymentResult);
-
-        if (paymentResult.status !== 'COMPLETED') {
-          throw new Error(
-            `Payment failed with status: ${paymentResult.status}`
-          );
-        }
-
-        // Create Payment record
-        const payment = new Payment({
-          parentId: parent._id,
-          playerCount: players.length,
-          paymentId: paymentResult.id,
-          locationId: process.env.SQUARE_LOCATION_ID,
-          buyerEmail: email,
-          cardLastFour: paymentResult.cardDetails.card.last4,
-          cardBrand: paymentResult.cardDetails.card.cardBrand,
-          cardExpMonth: paymentResult.cardDetails.card.expMonth,
-          cardExpYear: paymentResult.cardDetails.card.expYear,
-          amount: amount / 100,
-          currency,
-          status: 'completed',
-          processedAt: new Date(),
-          receiptUrl: paymentResult.receiptUrl,
-          players: players.map((p) => ({
-            playerId: p.playerId,
-            season: p.season,
-            year: p.year,
-            tryoutId: p.tryoutId || null,
-          })),
+        await Player.findByIdAndUpdate(player.playerId, updateData, {
+          session,
         });
 
-        await payment.save({ session });
-
-        // Update Player seasons
-        for (const player of players) {
-          await Player.updateOne(
-            { _id: player.playerId },
-            {
-              $push: {
-                seasons: {
-                  season: player.season,
-                  year: player.year,
-                  tryoutId: player.tryoutId || null,
-                  paymentStatus: 'paid',
-                  paymentComplete: true,
-                  paymentId: paymentResult.id,
-                  amountPaid: amount / 100 / players.length,
-                  cardLast4: paymentResult.cardDetails.card.last4,
-                  cardBrand: paymentResult.cardDetails.card.cardBrand,
-                },
-              },
-              $set: {
-                paymentComplete: true,
-                paymentStatus: 'paid',
-              },
-            },
-            { session }
-          );
-        }
-
         // Update Registration records
-        const registrationUpdates = await Registration.updateMany(
+        await Registration.updateMany(
           {
-            player: { $in: players.map((p) => p.playerId) },
-            season: { $in: players.map((p) => p.season) },
-            year: { $in: players.map((p) => p.year) },
-            tryoutId: { $in: players.map((p) => p.tryoutId || null) },
+            player: player.playerId,
+            season: player.season,
+            year: player.year,
+            tryoutId: player.tryoutId || null,
           },
           {
             $set: {
               paymentStatus: 'paid',
               paymentComplete: true,
               paymentDate: new Date(),
+              paymentId: paymentResult.id,
             },
           },
           { session }
         );
+      });
 
-        console.log('Updated registrations:', registrationUpdates);
+      await Promise.all(updatePromises);
 
-        // Update Parent
-        await Parent.findByIdAndUpdate(
-          parent._id,
-          { $set: { paymentComplete: true, updatedAt: new Date() } },
-          { session }
-        );
+      // Update Parent payment status
+      await Parent.findByIdAndUpdate(
+        parent._id,
+        { $set: { paymentComplete: true, updatedAt: new Date() } },
+        { session }
+      );
 
-        // Send email receipt
-        try {
-          await sendEmail({
-            to: email,
-            subject: 'Your Tryout Payment Receipt',
-            html: `
-              <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto;">
-                <h2 style="color: #2c3e50;">Thank you for your tryout payment!</h2>
-                <p style="font-size: 16px;">We've successfully processed your payment for <strong>${players.length}</strong> player(s).</p>
-                <hr style="margin: 20px 0;" />
-                <p><strong>Amount Paid:</strong> $${(amount / 100).toFixed(2)}</p>
-                <p><strong>Payment ID:</strong> ${paymentResult.id}</p>
-                <p><strong>Date:</strong> ${new Date().toLocaleDateString()}</p>
-                <p>
-                  <strong>Receipt:</strong>
-                  <a href="${paymentResult.receiptUrl}" target="_blank">
-                    View your payment receipt
-                  </a>
-                </p>
-                <hr style="margin: 20px 0;" />
-                <p style="font-size: 14px; color: #555;">If you have any questions, feel free to reply to this email.</p>
-              </div>
-            `,
-          });
-        } catch (emailError) {
-          console.error('Failed to send email:', emailError);
-        }
-
-        res.status(200).json({
-          success: true,
-          paymentId: payment._id,
-          parentUpdated: true,
-          playersUpdated: players.length,
-          playerIds: players.map((p) => p.playerId),
-          status: 'processed',
+      // Send email receipt
+      try {
+        await sendEmail({
+          to: email,
+          subject: 'Your Tryout Payment Receipt',
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto;">
+              <h2 style="color: #2c3e50;">Thank you for your tryout payment!</h2>
+              <p style="font-size: 16px;">We've successfully processed your payment for <strong>${players.length}</strong> player(s).</p>
+              <hr style="margin: 20px 0;" />
+              <p><strong>Amount Paid:</strong> $${(amount / 100).toFixed(2)}</p>
+              <p><strong>Payment ID:</strong> ${paymentResult.id}</p>
+              <p><strong>Date:</strong> ${new Date().toLocaleDateString()}</p>
+              <p>
+                <strong>Receipt:</strong>
+                <a href="${paymentResult.receiptUrl}" target="_blank">
+                  View your payment receipt
+                </a>
+              </p>
+              <hr style="margin: 20px 0;" />
+              <p style="font-size: 14px; color: #555;">If you have any questions, feel free to reply to this email.</p>
+            </div>
+          `,
         });
+      } catch (emailError) {
+        console.error('Failed to send email:', emailError);
+        // Don't fail the whole transaction if email fails
+      }
+
+      await session.commitTransaction();
+
+      res.status(200).json({
+        success: true,
+        paymentId: payment._id,
+        parentUpdated: true,
+        playersUpdated: players.length,
+        playerIds: players.map((p) => p.playerId),
+        status: 'processed',
+        receiptUrl: paymentResult.receiptUrl,
       });
     } catch (error) {
+      await session.abortTransaction();
+
       console.error('Payment processing error:', {
         message: error.message,
         stack: error.stack,
         requestBody: req.body,
+        userId: req.user?.id,
+        timestamp: new Date().toISOString(),
       });
+
       res.status(400).json({
         success: false,
         error: 'Tryout payment processing failed',
         details:
-          process.env.NODE_ENV === 'development' ? error.message : undefined,
+          process.env.NODE_ENV === 'development'
+            ? {
+                message: error.message,
+                type: error.constructor.name,
+              }
+            : undefined,
       });
     } finally {
       session.endSession();
