@@ -179,7 +179,11 @@ router.post(
     body('players')
       .isArray({ min: 1 })
       .withMessage('At least one player is required'),
-    body('players.*.playerId').isMongoId().withMessage('Invalid player ID'),
+    body('players.*.playerId')
+      .notEmpty()
+      .withMessage('Player ID is required')
+      .custom((value) => mongoose.Types.ObjectId.isValid(value))
+      .withMessage('Invalid player ID format'),
     body('players.*.season').notEmpty().withMessage('Season is required'),
     body('players.*.year')
       .isInt({ min: 2020, max: 2030 })
@@ -203,7 +207,6 @@ router.post(
       .withMessage('Invalid expiration year'),
   ],
   async (req, res) => {
-    // Validate request
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({
@@ -220,23 +223,13 @@ router.post(
       const { token, sourceId, amount, currency, email, players, cardDetails } =
         req.body;
 
-      // Add the player ID validation check here
-      const invalidPlayerIds = players.filter(
-        (p) => !mongoose.Types.ObjectId.isValid(p.playerId)
-      );
-      if (invalidPlayerIds.length > 0) {
-        throw new Error(
-          `Invalid player IDs: ${invalidPlayerIds.map((p) => p.playerId).join(', ')}`
-        );
-      }
-
-      // Verify the authenticated user
+      // Verify parent exists
       const parent = await Parent.findById(req.user.id).session(session);
       if (!parent) {
         throw new Error('Parent not found');
       }
 
-      // Validate players belong to this parent
+      // Verify all players exist and belong to this parent
       const playerIds = players.map((p) => p.playerId);
       const playerRecords = await Player.find({
         _id: { $in: playerIds },
@@ -250,10 +243,8 @@ router.post(
       }
 
       // Create or retrieve Square customer
-      let customerId;
-      if (parent.squareCustomerId) {
-        customerId = parent.squareCustomerId;
-      } else {
+      let customerId = parent.squareCustomerId;
+      if (!customerId) {
         const { result: customerResult } =
           await client.customersApi.createCustomer({
             emailAddress: email,
@@ -321,33 +312,34 @@ router.post(
 
       // Update Player seasons and payment status
       const updatePromises = players.map(async (player) => {
-        const updateData = {
-          $push: {
-            seasons: {
-              season: player.season,
-              year: player.year,
-              tryoutId: player.tryoutId || null,
-              paymentStatus: 'paid',
-              paymentComplete: true,
-              paymentId: paymentResult.id,
-              amountPaid: amount / 100 / players.length,
-              cardLast4: cardDetails.last_4,
-              cardBrand: cardDetails.card_brand,
-              paymentDate: new Date(),
-            },
-          },
-          $set: {
-            paymentComplete: true,
-            paymentStatus: 'paid',
-            updatedAt: new Date(),
-          },
+        const seasonData = {
+          season: player.season,
+          year: player.year,
+          tryoutId: player.tryoutId || null,
+          paymentStatus: 'paid',
+          paymentComplete: true,
+          paymentId: paymentResult.id,
+          amountPaid: amount / 100 / players.length,
+          cardLast4: cardDetails.last_4,
+          cardBrand: cardDetails.card_brand,
+          paymentDate: new Date(),
         };
 
-        await Player.findByIdAndUpdate(player.playerId, updateData, {
-          session,
-        });
+        // Update player document
+        await Player.findByIdAndUpdate(
+          player.playerId,
+          {
+            $push: { seasons: seasonData },
+            $set: {
+              paymentComplete: true,
+              paymentStatus: 'paid',
+              updatedAt: new Date(),
+            },
+          },
+          { session }
+        );
 
-        // Update Registration records
+        // Update registration records
         await Registration.updateMany(
           {
             player: player.playerId,
@@ -402,7 +394,6 @@ router.post(
         });
       } catch (emailError) {
         console.error('Failed to send email:', emailError);
-        // Don't fail the whole transaction if email fails
       }
 
       await session.commitTransaction();
@@ -418,25 +409,12 @@ router.post(
       });
     } catch (error) {
       await session.abortTransaction();
-
-      console.error('Payment processing error:', {
-        message: error.message,
-        stack: error.stack,
-        requestBody: req.body,
-        userId: req.user?.id,
-        timestamp: new Date().toISOString(),
-      });
-
+      console.error('Payment processing error:', error);
       res.status(400).json({
         success: false,
         error: 'Tryout payment processing failed',
         details:
-          process.env.NODE_ENV === 'development'
-            ? {
-                message: error.message,
-                type: error.constructor.name,
-              }
-            : undefined,
+          process.env.NODE_ENV === 'development' ? error.message : undefined,
       });
     } finally {
       session.endSession();
