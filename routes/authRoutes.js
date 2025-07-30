@@ -2446,7 +2446,7 @@ router.patch(
       .optional()
       .isString()
       .withMessage('Card brand must be a string'),
-    body('updateTopLevel') // Add validation for new flag
+    body('updateTopLevel')
       .optional()
       .isBoolean()
       .withMessage('updateTopLevel must be a boolean'),
@@ -2478,7 +2478,7 @@ router.patch(
         amountPaid,
         cardLast4,
         cardBrand,
-        updateTopLevel = true, // Default to true to ensure top-level updates
+        updateTopLevel = true,
       } = req.body;
 
       if (!mongoose.Types.ObjectId.isValid(playerId)) {
@@ -2505,17 +2505,20 @@ router.patch(
             .json({ success: false, error: 'Player not found' });
         }
 
-        const seasonIndex = player.seasons.findIndex(
-          (s) =>
-            s.season === season && s.year === year && s.tryoutId === tryoutId
-        );
+        // Check for existing registration to prevent duplicates
+        const existingRegistration = await Registration.findOne({
+          player: playerId,
+          season,
+          year,
+          tryoutId: tryoutId || null,
+        }).session(session);
 
         if (
-          seasonIndex !== -1 &&
-          player.seasons[seasonIndex].paymentStatus === 'paid'
+          existingRegistration &&
+          existingRegistration.paymentStatus === 'paid'
         ) {
           console.log(
-            `[PATCH /players/:playerId/season] Player already paid: ${playerId}`
+            `[PATCH /players/:playerId/season] Registration already paid for player: ${playerId}`
           );
           await session.abortTransaction();
           return res.status(400).json({
@@ -2523,6 +2526,11 @@ router.patch(
             error: 'Player is already registered and paid for this tryout',
           });
         }
+
+        const seasonIndex = player.seasons.findIndex(
+          (s) =>
+            s.season === season && s.year === year && s.tryoutId === tryoutId
+        );
 
         const seasonData = {
           season,
