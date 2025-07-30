@@ -179,19 +179,17 @@ router.post(
     body('players')
       .isArray({ min: 1 })
       .withMessage('At least one player is required'),
-    body('players.*.playerId')
-      .isMongoId()
-      .withMessage('Invalid player ID')
-      .custom(async (playerId, { req }) => {
-        const player = await Player.findById(playerId);
-        if (!player) {
-          throw new Error('Player not found');
-        }
-        if (player.parentId.toString() !== req.user.id) {
-          throw new Error('Player does not belong to this parent');
-        }
-        return true;
-      }),
+    body('players')
+      .isArray({ min: 1 })
+      .withMessage('At least one player is required')
+      .custom((players, { req }) => {
+        // Allow temporary 'new' ID for newly registered players
+        return players.every(
+          (p) =>
+            mongoose.Types.ObjectId.isValid(p.playerId) || p.playerId === 'new'
+        );
+      })
+      .withMessage('Invalid player ID format'),
     body('players.*.season').notEmpty().withMessage('Season is required'),
     body('players.*.year')
       .isInt({ min: 2020, max: 2030 })
