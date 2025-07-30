@@ -220,6 +220,16 @@ router.post(
       const { token, sourceId, amount, currency, email, players, cardDetails } =
         req.body;
 
+      // Add the player ID validation check here
+      const invalidPlayerIds = players.filter(
+        (p) => !mongoose.Types.ObjectId.isValid(p.playerId)
+      );
+      if (invalidPlayerIds.length > 0) {
+        throw new Error(
+          `Invalid player IDs: ${invalidPlayerIds.map((p) => p.playerId).join(', ')}`
+        );
+      }
+
       // Verify the authenticated user
       const parent = await Parent.findById(req.user.id).session(session);
       if (!parent) {
