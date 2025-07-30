@@ -6,8 +6,10 @@ const router = express.Router();
 const mongoose = require('mongoose');
 const Parent = require('../models/Parent');
 const Player = require('../models/Player');
+const Registration = require('../models/Registration');
 const { sendEmail } = require('../utils/email');
 const crypto = require('crypto');
+const { body, validationResult } = require('express-validator');
 
 // POST /api/payments/process
 router.post('/process', authenticate, async (req, res) => {
@@ -158,5 +160,249 @@ router.post('/process', authenticate, async (req, res) => {
     session.endSession();
   }
 });
+
+router.post(
+  '/tryout',
+  authenticate,
+  [
+    body('token').notEmpty().withMessage('Payment token is required'),
+    body('amount')
+      .isInt({ min: 1 })
+      .withMessage('Amount must be a positive integer'),
+    body('currency').isIn(['USD']).withMessage('Currency must be USD'),
+    body('email').isEmail().withMessage('Valid email is required'),
+    body('players')
+      .isArray({ min: 1 })
+      .withMessage('At least one player is required'),
+    body('players.*.playerId').isMongoId().withMessage('Invalid player ID'),
+    body('players.*.season').notEmpty().withMessage('Season is required'),
+    body('players.*.year')
+      .isInt({ min: 2020, max: 2030 })
+      .withMessage('Year must be between 2020 and 2030'),
+    body('players.*.tryoutId')
+      .optional()
+      .isString()
+      .withMessage('Tryout ID must be a string'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array(), success: false });
+    }
+
+    const { token, amount, currency, email, players } = req.body;
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      // Verify the authenticated user
+      const parent = await Parent.findOne({
+        email: email.toLowerCase().trim(),
+      }).session(session);
+      if (!parent) {
+        await session.abortTransaction();
+        return res
+          .status(404)
+          .json({ error: 'Parent not found', success: false });
+      }
+      if (parent._id.toString() !== req.user.id) {
+        await session.abortTransaction();
+        return res
+          .status(403)
+          .json({
+            error: 'Unauthorized: Email does not match authenticated user',
+            success: false,
+          });
+      }
+
+      // Validate players
+      for (const player of players) {
+        const existingPlayer = await Player.findById(player.playerId).session(
+          session
+        );
+        if (!existingPlayer) {
+          await session.abortTransaction();
+          return res
+            .status(404)
+            .json({
+              error: `Player not found: ${player.playerId}`,
+              success: false,
+            });
+        }
+        if (existingPlayer.parentId.toString() !== parent._id.toString()) {
+          await session.abortTransaction();
+          return res
+            .status(403)
+            .json({
+              error: `Player ${player.playerId} does not belong to this parent`,
+              success: false,
+            });
+        }
+      }
+
+      // Create Square customer
+      const { result: customerResult } =
+        await square.customersApi.createCustomer({
+          emailAddress: email,
+        });
+      const customerId = customerResult.customer?.id;
+      if (!customerId) {
+        await session.abortTransaction();
+        return res
+          .status(400)
+          .json({ error: 'Failed to create customer', success: false });
+      }
+
+      // Process payment with Square
+      const paymentRequest = {
+        sourceId: token,
+        amountMoney: {
+          amount: amount,
+          currency,
+        },
+        idempotencyKey: crypto.randomUUID(),
+        locationId: process.env.SQUARE_LOCATION_ID,
+        customerId,
+        referenceId: `parent:${parent._id}`,
+        note: `Tryout payment for ${players.length} player(s)`,
+      };
+
+      const paymentResponse =
+        await square.paymentsApi.createPayment(paymentRequest);
+      const paymentResult = paymentResponse.result.payment;
+      if (paymentResult.status !== 'COMPLETED') {
+        await session.abortTransaction();
+        return res
+          .status(400)
+          .json({
+            error: `Payment failed with status: ${paymentResult.status}`,
+            success: false,
+          });
+      }
+
+      // Create Payment record
+      const payment = new Payment({
+        parentId: parent._id,
+        playerCount: players.length,
+        paymentId: paymentResult.id,
+        locationId: process.env.SQUARE_LOCATION_ID,
+        buyerEmail: email,
+        cardLastFour: paymentResult.cardDetails.card.last4,
+        cardBrand: paymentResult.cardDetails.card.cardBrand,
+        cardExpMonth: paymentResult.cardDetails.card.expMonth,
+        cardExpYear: paymentResult.cardDetails.card.expYear,
+        amount: amount / 100,
+        currency,
+        status: 'completed',
+        processedAt: new Date(),
+        receiptUrl: paymentResult.receiptUrl,
+        players: players.map((p) => ({
+          playerId: p.playerId,
+          season: p.season,
+          year: p.year,
+          tryoutId: p.tryoutId || null,
+        })),
+      });
+      await payment.save({ session });
+
+      // Update Player seasons
+      for (const player of players) {
+        await Player.updateOne(
+          {
+            _id: player.playerId,
+            'seasons.season': player.season,
+            'seasons.year': player.year,
+            'seasons.tryoutId': player.tryoutId || null,
+          },
+          {
+            $set: {
+              'seasons.$.paymentStatus': 'paid',
+              'seasons.$.paymentComplete': true,
+              'seasons.$.paymentId': paymentResult.id,
+              'seasons.$.amountPaid': amount / 100 / players.length,
+              'seasons.$.cardLast4': paymentResult.cardDetails.card.last4,
+              'seasons.$.cardBrand': paymentResult.cardDetails.card.cardBrand,
+              paymentComplete: true,
+              paymentStatus: 'paid',
+            },
+          },
+          { session }
+        );
+      }
+
+      // Update Registration records
+      await Registration.updateMany(
+        {
+          player: { $in: players.map((p) => p.playerId) },
+          season: { $in: players.map((p) => p.season) },
+          year: { $in: players.map((p) => p.year) },
+          tryoutId: { $in: players.map((p) => p.tryoutId || null) },
+        },
+        {
+          $set: {
+            paymentStatus: 'paid',
+            paymentComplete: true,
+            paymentDate: new Date(),
+          },
+        },
+        { session }
+      );
+
+      // Update Parent
+      await Parent.findByIdAndUpdate(
+        parent._id,
+        { $set: { paymentComplete: true, updatedAt: new Date() } },
+        { session }
+      );
+
+      // Send email receipt
+      await sendEmail({
+        to: email,
+        subject: 'Your Bothell Select Tryout Payment Receipt',
+        html: `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto;">
+            <h2 style="color: #2c3e50;">Thank you for your tryout payment!</h2>
+            <p style="font-size: 16px;">We’ve successfully processed your payment for <strong>${players.length}</strong> player(s).</p>
+            <hr style="margin: 20px 0;" />
+            <p><strong>Amount Paid:</strong> $${(amount / 100).toFixed(2)}</p>
+            <p><strong>Payment ID:</strong> ${paymentResult.id}</p>
+            <p><strong>Date:</strong> ${new Date().toLocaleDateString()}</p>
+            <p>
+              <strong>Receipt:</strong>
+              <a href="${paymentResult.receiptUrl}" target="_blank">
+                View your payment receipt
+              </a>
+            </p>
+            <hr style="margin: 20px 0;" />
+            <p style="font-size: 14px; color: #555;">If you have any questions, feel free to reply to this email.</p>
+            <p style="font-size: 14px; color: #555;">– Bothell Select Team</p>
+          </div>
+        `,
+      });
+
+      await session.commitTransaction();
+
+      res.status(200).json({
+        success: true,
+        paymentId: payment._id,
+        parentUpdated: true,
+        playersUpdated: players.length,
+        playerIds: players.map((p) => p.playerId),
+        status: 'processed',
+      });
+    } catch (error) {
+      await session.abortTransaction();
+      console.error('Tryout payment processing error:', error);
+      res.status(400).json({
+        success: false,
+        error: 'Tryout payment processing failed',
+        details:
+          process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    } finally {
+      session.endSession();
+    }
+  }
+);
 
 module.exports = router;
