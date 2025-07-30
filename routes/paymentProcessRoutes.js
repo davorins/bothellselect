@@ -2,7 +2,7 @@
 const express = require('express');
 const { authenticate } = require('../utils/auth');
 const Payment = require('../models/Payment');
-const { square } = require('../services/square-payments');
+const { client } = require('../services/square-payments');
 const router = express.Router();
 const mongoose = require('mongoose');
 const Parent = require('../models/Parent');
@@ -37,7 +37,7 @@ router.post('/process', authenticate, async (req, res) => {
       throw new Error('Parent not found');
     }
 
-    const { result: customerResult } = await square.customersApi.createCustomer(
+    const { result: customerResult } = await client.customersApi.createCustomer(
       {
         emailAddress: buyerEmailAddress,
       }
@@ -62,7 +62,7 @@ router.post('/process', authenticate, async (req, res) => {
     };
 
     const paymentResponse =
-      await square.paymentsApi.createPayment(paymentRequest);
+      await client.paymentsApi.createPayment(paymentRequest);
 
     if (paymentResponse.result.payment?.status !== 'COMPLETED') {
       throw new Error(
@@ -245,7 +245,7 @@ router.post(
         customerId = parent.squareCustomerId;
       } else {
         const { result: customerResult } =
-          await square.customersApi.createCustomer({
+          await client.customersApi.createCustomer({
             emailAddress: email,
             givenName: parent.fullName.split(' ')[0],
             familyName: parent.fullName.split(' ').slice(1).join(' '),
@@ -276,7 +276,7 @@ router.post(
       };
 
       const paymentResponse =
-        await square.paymentsApi.createPayment(paymentRequest);
+        await client.paymentsApi.createPayment(paymentRequest);
       const paymentResult = paymentResponse.result.payment;
 
       if (paymentResult.status !== 'COMPLETED') {
