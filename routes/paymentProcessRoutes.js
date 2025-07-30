@@ -1,22 +1,15 @@
 const express = require('express');
+const { authenticate } = require('../utils/auth');
+const Payment = require('../models/Payment');
+const { square } = require('../services/square-payments');
 const router = express.Router();
 const mongoose = require('mongoose');
-const { Client, Environment } = require('square');
-const crypto = require('crypto');
-const { sendEmail } = require('../utils/email');
-const { authenticate } = require('../utils/auth');
-const Player = require('../models/Player');
-const Payment = require('../models/Payment');
 const Parent = require('../models/Parent');
+const Player = require('../models/Player');
+const { sendEmail } = require('../utils/email');
+const crypto = require('crypto');
 
-const square = new Client({
-  accessToken: process.env.SQUARE_ACCESS_TOKEN,
-  environment:
-    process.env.NODE_ENV === 'production'
-      ? Environment.Production
-      : Environment.Sandbox,
-});
-
+// POST /api/payments/process
 router.post('/process', authenticate, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -26,50 +19,32 @@ router.post('/process', authenticate, async (req, res) => {
       sourceId,
       amount,
       parentId,
-      playerIds,
       playerCount,
       cardDetails,
       locationId,
       buyerEmailAddress,
-      packageType,
-      season,
-      year,
     } = req.body;
 
-    // Validate input
-    if (
-      !sourceId ||
-      !amount ||
-      !parentId ||
-      !playerIds ||
-      !Array.isArray(playerIds) ||
-      playerIds.length === 0
-    ) {
-      throw new Error(
-        'Missing required fields: sourceId, amount, parentId, or playerIds'
-      );
-    }
-    if (playerCount !== playerIds.length) {
-      throw new Error('Player count does not match the number of player IDs');
-    }
-    if (!locationId || !buyerEmailAddress) {
-      throw new Error('Missing locationId or buyerEmailAddress');
+    if (!buyerEmailAddress) {
+      throw new Error('Email is required for payment receipt');
     }
 
-    // Verify parent and players
-    const parent = await Parent.findById(parentId).session(session);
-    if (!parent) throw new Error('Parent not found');
-    const players = await Player.find({
-      _id: { $in: playerIds },
-      parentId,
-    }).session(session);
-    if (players.length !== playerIds.length) {
-      throw new Error(
-        'One or more player IDs are invalid or not associated with the parent'
-      );
+    const parentExists = await Parent.findById(parentId).session(session);
+    if (!parentExists) {
+      throw new Error('Parent not found');
     }
 
-    // Create Square payment
+    const { result: customerResult } = await square.customersApi.createCustomer(
+      {
+        emailAddress: buyerEmailAddress,
+      }
+    );
+
+    const customerId = customerResult.customer?.id;
+    if (!customerId) {
+      throw new Error('Failed to create customer');
+    }
+
     const paymentRequest = {
       sourceId,
       amountMoney: {
@@ -78,112 +53,107 @@ router.post('/process', authenticate, async (req, res) => {
       },
       idempotencyKey: crypto.randomBytes(32).toString('hex'),
       locationId,
-      customerId: (
-        await square.customersApi.createCustomer({
-          emailAddress: buyerEmailAddress,
-        })
-      ).result.customer?.id,
+      customerId,
       referenceId: `parent:${parentId}`,
-      note: `Payment for ${playerCount} player(s) for ${season} ${year}`,
+      note: `Payment for ${playerCount} player(s)`,
     };
 
     const paymentResponse =
       await square.paymentsApi.createPayment(paymentRequest);
+
     if (paymentResponse.result.payment?.status !== 'COMPLETED') {
       throw new Error(
         `Payment failed with status: ${paymentResponse.result.payment?.status}`
       );
     }
 
-    // Create payment record
     const payment = new Payment({
       parentId,
-      playerIds,
+      playerCount,
       paymentId: paymentResponse.result.payment.id,
       locationId,
+      buyerEmail: buyerEmailAddress,
       cardLastFour: cardDetails.last_4,
       cardBrand: cardDetails.card_brand,
+      cardExpMonth: cardDetails.exp_month,
+      cardExpYear: cardDetails.exp_year,
       amount: amount / 100,
       currency: 'USD',
       status: 'completed',
       processedAt: new Date(),
       receiptUrl: paymentResponse.result.payment?.receiptUrl,
     });
+
     await payment.save({ session });
 
-    // Update players' seasons
-    for (const playerId of playerIds) {
-      const player = await Player.findOne(
-        { _id: playerId, 'seasons.season': season, 'seasons.year': year },
-        null,
-        { session }
-      );
-      if (player) {
-        await Player.updateOne(
-          { _id: playerId, 'seasons.season': season, 'seasons.year': year },
-          {
-            $set: {
-              'seasons.$.paymentComplete': true,
-              'seasons.$.paymentStatus': 'paid',
-              'seasons.$.paymentId': paymentResponse.result.payment.id,
-              'seasons.$.amountPaid': amount / playerCount / 100,
-              'seasons.$.cardLast4': cardDetails.last_4,
-              'seasons.$.cardBrand': cardDetails.card_brand,
-              'seasons.$.packageType': packageType,
-            },
-          },
-          { session }
-        );
-      } else {
-        await Player.updateOne(
-          { _id: playerId },
-          {
-            $push: {
-              seasons: {
-                season,
-                year,
-                paymentComplete: true,
-                paymentStatus: 'paid',
-                paymentId: paymentResponse.result.payment.id,
-                amountPaid: amount / playerCount / 100,
-                cardLast4: cardDetails.last_4,
-                cardBrand: cardDetails.card_brand,
-                packageType,
-                registrationDate: new Date(),
-              },
-            },
-          },
-          { session }
-        );
-      }
+    // Update parent payment status
+    await Parent.updateOne(
+      { _id: parentId },
+      { $set: { paymentComplete: true } },
+      { session }
+    );
+
+    // Update all related players' payment status
+    const players = await Player.find({ parentId }).session(session);
+    if (players.length === 0) {
+      throw new Error('No players found for this parent');
     }
 
-    // Send confirmation email
-    const playerNames = players.map((p) => p.fullName).join(', ');
+    const playerIds = players.map((player) => player._id);
+    const updateResult = await Player.updateMany(
+      { _id: { $in: playerIds } },
+      { $set: { paymentComplete: true } },
+      { session }
+    );
+
+    // Send email receipt
     await sendEmail({
       to: buyerEmailAddress,
-      subject: `Payment Confirmation for ${season} ${year}`,
+      subject: 'Your Bothell Select Payment Receipt',
       html: `
-        <h2>Payment Confirmation</h2>
-        <p>Thank you for your payment for ${playerNames}.</p>
-        <p><strong>Season:</strong> ${season} ${year}</p>
-        <p><strong>Package:</strong> ${packageType === '1' ? '3 Times/Week' : '4 Times/Week'}</p>
-        <p><strong>Amount:</strong> $${(amount / 100).toFixed(2)}</p>
-        <p><strong>Card:</strong> ${cardDetails.card_brand} ending in ${cardDetails.last_4}</p>
-        <p><strong>Receipt:</strong> <a href="${paymentResponse.result.payment?.receiptUrl}">View Receipt</a></p>
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto;">
+          <h2 style="color: #2c3e50;">Thank you for your payment!</h2>
+          <p style="font-size: 16px;">We’ve successfully processed your payment for <strong>${playerCount}</strong> player(s).</p>
+
+          <hr style="margin: 20px 0;" />
+
+          <p><strong>Amount Paid:</strong> $${(amount / 100).toFixed(2)}</p>
+          <p><strong>Payment ID:</strong> ${paymentResponse.result.payment.id}</p>
+          <p><strong>Date:</strong> ${new Date().toLocaleDateString()}</p>
+
+          <p>
+            <strong>Receipt:</strong>
+            <a href="${paymentResponse.result.payment?.receiptUrl}" target="_blank">
+              View your payment receipt
+            </a>
+          </p>
+
+          <hr style="margin: 20px 0;" />
+
+          <p style="font-size: 14px; color: #555;">If you have any questions, feel free to reply to this email.</p>
+          <p style="font-size: 14px; color: #555;">– Bothell Select Team</p>
+        </div>
       `,
     });
 
     await session.commitTransaction();
+
     res.json({
       success: true,
       paymentId: payment._id,
+      parentUpdated: true,
+      playersUpdated: updateResult.modifiedCount,
       playerIds,
-      receiptUrl: paymentResponse.result.payment?.receiptUrl,
+      status: 'processed',
     });
   } catch (error) {
     await session.abortTransaction();
-    res.status(400).json({ success: false, error: error.message });
+    console.error('Payment processing failed:', error.message);
+    res.status(400).json({
+      success: false,
+      error: 'Payment processing failed',
+      details: error.message,
+    });
   } finally {
     session.endSession();
   }
