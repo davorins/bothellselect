@@ -478,15 +478,13 @@ router.post(
       .withMessage('Year must be between 2020 and 2030')
       .customSanitizer((value) => parseInt(value, 10)),
     body('players.*.tryoutId')
-      .notEmpty()
-      .withMessage('Tryout ID is required for each player')
+      .optional()
       .isString()
       .withMessage('Tryout ID must be a string'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-      console.log('Validation errors:', errors.array());
       return res.status(400).json({ errors: errors.array(), success: false });
     }
 
@@ -537,7 +535,7 @@ router.post(
               player: player._id,
               season: player.season,
               year: player.year,
-              tryoutId: player.tryoutId,
+              tryoutId: player.tryoutId || null,
             }).session(session);
 
             if (existingRegistration) {
@@ -551,9 +549,10 @@ router.post(
         }
       }
 
+      // Create parent first to get parentId
       const parent = new Parent({
         email: normalizedEmail,
-        password: rawPassword,
+        password: rawPassword, // Assume password hashing in Parent model's pre-save hook
         fullName: fullName.trim(),
         relationship: relationship.trim(),
         phone: phone.replace(/\D/g, ''),
@@ -581,110 +580,61 @@ router.post(
 
       await parent.save({ session });
 
-      const playerDocs = [];
-      const registrationDocs = [];
-
-      for (const player of players) {
-        // Check for existing player with the same season, year, and tryoutId
-        const existingPlayer = await Player.findOne({
-          fullName: player.fullName.trim(),
-          parentId: parent._id,
-          'seasons.season': player.season,
-          'seasons.year': player.year,
-          'seasons.tryoutId': player.tryoutId,
-        }).session(session);
-
-        let playerDoc;
-
-        if (existingPlayer) {
-          // Update existing player's seasons array if needed
-          const seasonExists = existingPlayer.seasons.some(
-            (s) =>
-              s.season === player.season &&
-              s.year === player.year &&
-              s.tryoutId === player.tryoutId
-          );
-
-          if (!seasonExists) {
-            existingPlayer.seasons.push({
-              season: player.season,
-              year: player.year,
-              tryoutId: player.tryoutId,
-              registrationDate: new Date(),
-              paymentStatus: 'pending',
-            });
-
-            await existingPlayer.save({ session });
-          }
-          playerDoc = existingPlayer;
-        } else {
-          // Create new player
-          playerDoc = new Player({
-            _id: new mongoose.Types.ObjectId(),
-            fullName: player.fullName.trim(),
-            gender: player.gender,
-            dob: player.dob,
-            schoolName: player.schoolName.trim(),
-            grade: player.grade,
-            healthConcerns: player.healthConcerns || '',
-            aauNumber: player.aauNumber || '',
-            season: player.season,
-            registrationYear: player.year,
-            tryoutId: player.tryoutId,
-            parentId: parent._id,
-            registrationComplete: true,
-            seasons: [
-              {
-                season: player.season,
-                year: player.year,
-                tryoutId: player.tryoutId,
-                registrationDate: new Date(),
-                paymentStatus: 'pending',
-              },
-            ],
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          });
-
-          await playerDoc.save({ session });
-        }
-
-        playerDocs.push(playerDoc);
-
-        // Check for existing registration
-        const existingRegistration = await Registration.findOne({
-          player: playerDoc._id,
-          season: player.season,
-          year: player.year,
-          tryoutId: player.tryoutId,
-        }).session(session);
-
-        if (!existingRegistration) {
-          const registration = new Registration({
-            player: playerDoc._id,
-            parent: parent._id,
+      // Create players with parentId
+      const playerDocs = players.map((player) => ({
+        _id: new mongoose.Types.ObjectId(),
+        fullName: player.fullName.trim(),
+        gender: player.gender,
+        dob: player.dob,
+        schoolName: player.schoolName.trim(),
+        grade: player.grade,
+        healthConcerns: player.healthConcerns || '',
+        aauNumber: player.aauNumber || '',
+        season: player.season,
+        registrationYear: player.year,
+        tryoutId: player.tryoutId || null,
+        parentId: parent._id,
+        registrationComplete: true,
+        seasons: [
+          {
             season: player.season,
             year: player.year,
-            tryoutId: player.tryoutId,
+            tryoutId: player.tryoutId || null,
+            registrationDate: new Date(),
             paymentStatus: 'pending',
-            registrationComplete: true,
-            createdAt: new Date(),
-            updatedAt: new Date(),
-          });
+          },
+        ],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }));
 
-          await registration.save({ session });
-          registrationDocs.push(registration);
-        } else {
-          registrationDocs.push(existingRegistration);
-        }
-      }
+      const savedPlayers = await Player.insertMany(playerDocs, { session });
 
-      parent.players = playerDocs.map((p) => p._id);
+      // Update parent with player IDs
+      parent.players = savedPlayers.map((p) => p._id);
       await parent.save({ session });
+
+      // Create registration documents
+      const registrationDocs = playerDocs.map((playerDoc) => ({
+        player: playerDoc._id,
+        parent: parent._id,
+        season: playerDoc.season,
+        year: playerDoc.registrationYear,
+        tryoutId: playerDoc.tryoutId || null,
+        paymentStatus: 'pending',
+        registrationComplete: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }));
+
+      const registrations = await Registration.insertMany(registrationDocs, {
+        session,
+      });
 
       await session.commitTransaction();
 
-      sendWelcomeEmail(parent._id, playerDocs[0]._id).catch((err) =>
+      // Send welcome email (async, no await)
+      sendWelcomeEmail(parent._id, savedPlayers[0]._id).catch((err) =>
         console.error('Welcome email failed:', err)
       );
 
@@ -696,9 +646,6 @@ router.post(
         address: parent.address,
         registrationComplete: true,
       });
-
-      console.log('Registered players:', playerDocs);
-      console.log('Created registrations:', registrationDocs);
 
       res.status(201).json({
         success: true,
@@ -715,14 +662,14 @@ router.post(
           registrationComplete: true,
           paymentComplete: false,
         },
-        players: playerDocs.map((p) => ({
+        players: savedPlayers.map((p) => ({
           id: p._id,
           name: p.fullName,
           registrationComplete: true,
           paymentComplete: false,
           tryoutId: p.tryoutId,
         })),
-        registrations: registrationDocs.map((r) => ({
+        registrations: registrations.map((r) => ({
           id: r._id,
           playerId: r.player,
           season: r.season,
@@ -753,68 +700,6 @@ router.post(
     }
   }
 );
-
-// Fix player tryout IDs
-router.patch('/fix-player-tryout-ids', authenticate, async (req, res) => {
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const { playerIds, season, year, tryoutId } = req.body;
-
-    if (
-      !playerIds ||
-      !Array.isArray(playerIds) ||
-      !season ||
-      !year ||
-      !tryoutId
-    ) {
-      await session.abortTransaction();
-      return res.status(400).json({
-        error: 'playerIds (array), season, year, and tryoutId are required',
-      });
-    }
-
-    const playersUpdate = await Player.updateMany(
-      {
-        _id: { $in: playerIds },
-        'seasons.season': season,
-        'seasons.year': year,
-      },
-      { $set: { 'seasons.$.tryoutId': tryoutId } },
-      { session }
-    );
-
-    const registrationsUpdate = await Registration.updateMany(
-      {
-        player: { $in: playerIds },
-        season,
-        year,
-      },
-      { $set: { tryoutId } },
-      { session }
-    );
-
-    await session.commitTransaction();
-
-    console.log('Fixed players:', playersUpdate);
-    console.log('Fixed registrations:', registrationsUpdate);
-
-    res.json({
-      success: true,
-      playersUpdated: playersUpdate.modifiedCount,
-      registrationsUpdated: registrationsUpdate.modifiedCount,
-    });
-  } catch (error) {
-    await session.abortTransaction();
-    console.error('Fix tryout IDs error:', error);
-    res
-      .status(500)
-      .json({ error: 'Failed to fix tryout IDs', details: error.message });
-  } finally {
-    session.endSession();
-  }
-});
 
 // Login
 router.post(
@@ -2446,7 +2331,7 @@ router.patch(
       .optional()
       .isString()
       .withMessage('Card brand must be a string'),
-    body('updateTopLevel')
+    body('updateTopLevel') // Add validation for new flag
       .optional()
       .isBoolean()
       .withMessage('updateTopLevel must be a boolean'),
@@ -2478,7 +2363,7 @@ router.patch(
         amountPaid,
         cardLast4,
         cardBrand,
-        updateTopLevel = true,
+        updateTopLevel = true, // Default to true to ensure top-level updates
       } = req.body;
 
       if (!mongoose.Types.ObjectId.isValid(playerId)) {
@@ -2505,20 +2390,17 @@ router.patch(
             .json({ success: false, error: 'Player not found' });
         }
 
-        // Check for existing registration to prevent duplicates
-        const existingRegistration = await Registration.findOne({
-          player: playerId,
-          season,
-          year,
-          tryoutId: tryoutId || null,
-        }).session(session);
+        const seasonIndex = player.seasons.findIndex(
+          (s) =>
+            s.season === season && s.year === year && s.tryoutId === tryoutId
+        );
 
         if (
-          existingRegistration &&
-          existingRegistration.paymentStatus === 'paid'
+          seasonIndex !== -1 &&
+          player.seasons[seasonIndex].paymentStatus === 'paid'
         ) {
           console.log(
-            `[PATCH /players/:playerId/season] Registration already paid for player: ${playerId}`
+            `[PATCH /players/:playerId/season] Player already paid: ${playerId}`
           );
           await session.abortTransaction();
           return res.status(400).json({
@@ -2526,11 +2408,6 @@ router.patch(
             error: 'Player is already registered and paid for this tryout',
           });
         }
-
-        const seasonIndex = player.seasons.findIndex(
-          (s) =>
-            s.season === season && s.year === year && s.tryoutId === tryoutId
-        );
 
         const seasonData = {
           season,
