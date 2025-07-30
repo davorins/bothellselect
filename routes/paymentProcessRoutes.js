@@ -179,17 +179,7 @@ router.post(
     body('players')
       .isArray({ min: 1 })
       .withMessage('At least one player is required'),
-    body('players')
-      .isArray({ min: 1 })
-      .withMessage('At least one player is required')
-      .custom((players, { req }) => {
-        // Allow temporary 'new' ID for newly registered players
-        return players.every(
-          (p) =>
-            mongoose.Types.ObjectId.isValid(p.playerId) || p.playerId === 'new'
-        );
-      })
-      .withMessage('Invalid player ID format'),
+    body('players.*.playerId').isMongoId().withMessage('Invalid player ID'),
     body('players.*.season').notEmpty().withMessage('Season is required'),
     body('players.*.year')
       .isInt({ min: 2020, max: 2030 })
