@@ -195,7 +195,8 @@ router.post(
       return res.status(400).json({ errors: errors.array(), success: false });
     }
 
-    const { token, amount, currency, email, players } = req.body;
+    const { token, sourceId, amount, currency, email, players, cardDetails } =
+      req.body;
     const session = await mongoose.startSession();
 
     try {
@@ -242,9 +243,11 @@ router.post(
           throw new Error('Failed to create customer');
         }
 
+        const paymentSource = sourceId || token;
+
         // Process payment with Square
         const paymentRequest = {
-          sourceId: token,
+          sourceId: paymentSource,
           amountMoney: {
             amount: amount,
             currency,
