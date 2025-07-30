@@ -581,57 +581,110 @@ router.post(
 
       await parent.save({ session });
 
-      const playerDocs = players.map((player) => ({
-        _id: new mongoose.Types.ObjectId(),
-        fullName: player.fullName.trim(),
-        gender: player.gender,
-        dob: player.dob,
-        schoolName: player.schoolName.trim(),
-        grade: player.grade,
-        healthConcerns: player.healthConcerns || '',
-        aauNumber: player.aauNumber || '',
-        season: player.season,
-        registrationYear: player.year,
-        tryoutId: player.tryoutId,
-        parentId: parent._id,
-        registrationComplete: true,
-        seasons: [
-          {
+      const playerDocs = [];
+      const registrationDocs = [];
+
+      for (const player of players) {
+        // Check for existing player with the same season, year, and tryoutId
+        const existingPlayer = await Player.findOne({
+          fullName: player.fullName.trim(),
+          parentId: parent._id,
+          'seasons.season': player.season,
+          'seasons.year': player.year,
+          'seasons.tryoutId': player.tryoutId,
+        }).session(session);
+
+        let playerDoc;
+
+        if (existingPlayer) {
+          // Update existing player's seasons array if needed
+          const seasonExists = existingPlayer.seasons.some(
+            (s) =>
+              s.season === player.season &&
+              s.year === player.year &&
+              s.tryoutId === player.tryoutId
+          );
+
+          if (!seasonExists) {
+            existingPlayer.seasons.push({
+              season: player.season,
+              year: player.year,
+              tryoutId: player.tryoutId,
+              registrationDate: new Date(),
+              paymentStatus: 'pending',
+            });
+
+            await existingPlayer.save({ session });
+          }
+          playerDoc = existingPlayer;
+        } else {
+          // Create new player
+          playerDoc = new Player({
+            _id: new mongoose.Types.ObjectId(),
+            fullName: player.fullName.trim(),
+            gender: player.gender,
+            dob: player.dob,
+            schoolName: player.schoolName.trim(),
+            grade: player.grade,
+            healthConcerns: player.healthConcerns || '',
+            aauNumber: player.aauNumber || '',
+            season: player.season,
+            registrationYear: player.year,
+            tryoutId: player.tryoutId,
+            parentId: parent._id,
+            registrationComplete: true,
+            seasons: [
+              {
+                season: player.season,
+                year: player.year,
+                tryoutId: player.tryoutId,
+                registrationDate: new Date(),
+                paymentStatus: 'pending',
+              },
+            ],
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+
+          await playerDoc.save({ session });
+        }
+
+        playerDocs.push(playerDoc);
+
+        // Check for existing registration
+        const existingRegistration = await Registration.findOne({
+          player: playerDoc._id,
+          season: player.season,
+          year: player.year,
+          tryoutId: player.tryoutId,
+        }).session(session);
+
+        if (!existingRegistration) {
+          const registration = new Registration({
+            player: playerDoc._id,
+            parent: parent._id,
             season: player.season,
             year: player.year,
             tryoutId: player.tryoutId,
-            registrationDate: new Date(),
             paymentStatus: 'pending',
-          },
-        ],
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      }));
+            registrationComplete: true,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
 
-      const savedPlayers = await Player.insertMany(playerDocs, { session });
+          await registration.save({ session });
+          registrationDocs.push(registration);
+        } else {
+          registrationDocs.push(existingRegistration);
+        }
+      }
 
-      parent.players = savedPlayers.map((p) => p._id);
+      parent.players = playerDocs.map((p) => p._id);
       await parent.save({ session });
-
-      const registrationDocs = playerDocs.map((playerDoc) => ({
-        player: playerDoc._id,
-        parent: parent._id,
-        season: playerDoc.season,
-        year: playerDoc.registrationYear,
-        tryoutId: playerDoc.tryoutId,
-        paymentStatus: 'pending',
-        registrationComplete: true,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      }));
-
-      const registrations = await Registration.insertMany(registrationDocs, {
-        session,
-      });
 
       await session.commitTransaction();
 
-      sendWelcomeEmail(parent._id, savedPlayers[0]._id).catch((err) =>
+      sendWelcomeEmail(parent._id, playerDocs[0]._id).catch((err) =>
         console.error('Welcome email failed:', err)
       );
 
@@ -644,8 +697,8 @@ router.post(
         registrationComplete: true,
       });
 
-      console.log('Registered players:', savedPlayers);
-      console.log('Created registrations:', registrations);
+      console.log('Registered players:', playerDocs);
+      console.log('Created registrations:', registrationDocs);
 
       res.status(201).json({
         success: true,
@@ -662,14 +715,14 @@ router.post(
           registrationComplete: true,
           paymentComplete: false,
         },
-        players: savedPlayers.map((p) => ({
+        players: playerDocs.map((p) => ({
           id: p._id,
           name: p.fullName,
           registrationComplete: true,
           paymentComplete: false,
           tryoutId: p.tryoutId,
         })),
-        registrations: registrations.map((r) => ({
+        registrations: registrationDocs.map((r) => ({
           id: r._id,
           playerId: r.player,
           season: r.season,
