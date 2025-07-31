@@ -228,18 +228,43 @@ router.post(
         throw new Error('Parent not found');
       }
 
-      // Verify all players exist and belong to this parent
-      const playerIds = players.map((p) => p.playerId);
-      const playerRecords = await Player.find({
-        _id: { $in: playerIds },
-        parentId: parent._id,
-      }).session(session);
-
-      if (playerRecords.length !== players.length) {
-        throw new Error(
-          'One or more players not found or do not belong to this parent'
-        );
+      // Verify players (only for those with playerId)
+      const playerIds = players.map((p) => p.playerId).filter((id) => id);
+      let playerRecords = [];
+      if (playerIds.length > 0) {
+        playerRecords = await Player.find({
+          _id: { $in: playerIds },
+          parentId: parent._id,
+        }).session(session);
+        if (playerRecords.length !== playerIds.length) {
+          throw new Error(
+            'One or more players not found or do not belong to this parent'
+          );
+        }
       }
+
+      console.log('Player validation:', {
+        requestedPlayerIds: playerIds,
+        foundPlayers: playerRecords.map((p) => p._id.toString()),
+        playersWithoutId: players.filter((p) => !p.playerId).length,
+      });
+
+      // Find players by season, year, and tryoutId for those without playerId
+      const playersWithoutId = players.filter((p) => !p.playerId);
+      for (const player of playersWithoutId) {
+        const playerRecord = await Player.findOne({
+          parentId: parent._id,
+          season: player.season,
+          registrationYear: player.year,
+          'seasons.tryoutId': player.tryoutId || null,
+        }).session(session);
+        if (playerRecord) {
+          player.playerId = playerRecord._id.toString();
+          playerRecords.push(playerRecord);
+        }
+      }
+
+      console.log('Updated players with IDs:', players);
 
       // Create or retrieve Square customer
       let customerId = parent.squareCustomerId;
@@ -275,8 +300,10 @@ router.post(
         buyerEmailAddress: email,
       };
 
+      console.log('Square payment request:', paymentRequest);
       const paymentResponse =
         await client.paymentsApi.createPayment(paymentRequest);
+      console.log('Square payment response:', paymentResponse.result);
       const paymentResult = paymentResponse.result.payment;
 
       if (paymentResult.status !== 'COMPLETED') {
@@ -300,7 +327,7 @@ router.post(
         processedAt: new Date(),
         receiptUrl: paymentResult.receiptUrl,
         players: players.map((p) => ({
-          playerId: p.playerId,
+          playerId: p.playerId || null,
           season: p.season,
           year: p.year,
           tryoutId: p.tryoutId || null,
@@ -310,53 +337,70 @@ router.post(
       await payment.save({ session });
 
       // Update Player seasons and payment status
-      const updatePromises = players.map(async (player) => {
-        const seasonData = {
-          season: player.season,
-          year: player.year,
-          tryoutId: player.tryoutId || null,
-          paymentStatus: 'paid',
-          paymentComplete: true,
-          paymentId: paymentResult.id,
-          amountPaid: amount / 100 / players.length,
-          cardLast4: cardDetails.last_4,
-          cardBrand: cardDetails.card_brand,
-          paymentDate: new Date(),
-        };
-
-        // Update player document
-        await Player.findByIdAndUpdate(
-          player.playerId,
-          {
-            $push: { seasons: seasonData },
-            $set: {
-              paymentComplete: true,
-              paymentStatus: 'paid',
-              updatedAt: new Date(),
-            },
-          },
-          { session }
-        );
-
-        // Update registration records
-        await Registration.updateMany(
-          {
-            player: player.playerId,
+      const updatePromises = players
+        .filter((p) => p.playerId) // Only update players with IDs
+        .map(async (player) => {
+          const seasonData = {
             season: player.season,
             year: player.year,
             tryoutId: player.tryoutId || null,
-          },
-          {
-            $set: {
-              paymentStatus: 'paid',
-              paymentComplete: true,
-              paymentDate: new Date(),
-              paymentId: paymentResult.id,
+            paymentStatus: 'paid',
+            paymentComplete: true,
+            paymentId: paymentResult.id,
+            amountPaid: amount / 100 / players.length,
+            cardLast4: cardDetails.last_4,
+            cardBrand: cardDetails.card_brand,
+            paymentDate: new Date(),
+          };
+
+          // Update player document
+          await Player.findByIdAndUpdate(
+            player.playerId,
+            {
+              $set: {
+                'seasons.$[season].paymentStatus': 'paid',
+                'seasons.$[season].paymentComplete': true,
+                'seasons.$[season].paymentId': paymentResult.id,
+                'seasons.$[season].amountPaid': amount / 100 / players.length,
+                'seasons.$[season].cardLast4': cardDetails.last_4,
+                'seasons.$[season].cardBrand': cardDetails.card_brand,
+                'seasons.$[season].paymentDate': new Date(),
+                paymentComplete: true,
+                paymentStatus: 'paid',
+                updatedAt: new Date(),
+              },
             },
-          },
-          { session }
-        );
-      });
+            {
+              arrayFilters: [
+                {
+                  'season.season': player.season,
+                  'season.year': player.year,
+                  'season.tryoutId': player.tryoutId || null,
+                },
+              ],
+              session,
+            }
+          );
+
+          // Update registration records
+          await Registration.updateMany(
+            {
+              player: player.playerId,
+              season: player.season,
+              year: player.year,
+              tryoutId: player.tryoutId || null,
+            },
+            {
+              $set: {
+                paymentStatus: 'paid',
+                paymentComplete: true,
+                paymentDate: new Date(),
+                paymentId: paymentResult.id,
+              },
+            },
+            { session }
+          );
+        });
 
       await Promise.all(updatePromises);
 
@@ -401,14 +445,18 @@ router.post(
         success: true,
         paymentId: payment._id,
         parentUpdated: true,
-        playersUpdated: players.length,
-        playerIds: players.map((p) => p.playerId),
+        playersUpdated: players.filter((p) => p.playerId).length,
+        playerIds: players.map((p) => p.playerId).filter(Boolean),
         status: 'processed',
         receiptUrl: paymentResult.receiptUrl,
       });
     } catch (error) {
       await session.abortTransaction();
-      console.error('Payment processing error:', error);
+      console.error('Payment processing error:', {
+        message: error.message,
+        stack: error.stack,
+        requestBody: req.body,
+      });
       res.status(400).json({
         success: false,
         error: 'Tryout payment processing failed',
