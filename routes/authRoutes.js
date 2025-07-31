@@ -18,6 +18,7 @@ const {
   sendEmail,
   sendWelcomeEmail,
   sendResetEmail,
+  sendTryoutEmail,
 } = require('../utils/email');
 
 const registrationSchema = new mongoose.Schema(
@@ -44,7 +45,7 @@ const registrationSchema = new mongoose.Schema(
       min: [2020, 'Year must be 2020 or later'],
       max: [2030, 'Year must be 2030 or earlier'],
     },
-    tryoutId: { type: String, default: null },
+    tryoutId: { type: String, required: true }, // Remove default: null, make required
     paymentStatus: {
       type: String,
       enum: ['pending', 'paid', 'failed', 'refunded'],
@@ -74,6 +75,12 @@ const generateRandomPassword = () => {
     Math.random().toString(36).slice(-10) +
     Math.random().toString(36).slice(-10)
   );
+};
+
+// Generate unique tryoutId based on season and year
+const generateTryoutId = (season, year) => {
+  const randomString = crypto.randomBytes(4).toString('hex');
+  return `${season.toLowerCase().replace(/\s+/g, '-')}-${year}-tryout-${randomString}`;
 };
 
 module.exports = {
@@ -314,10 +321,9 @@ router.post(
     body('parentId').notEmpty().withMessage('Parent ID is required'),
     body('grade').notEmpty().withMessage('Grade is required'),
     body('tryoutId')
-      .notEmpty()
-      .withMessage('Tryout ID is required')
+      .optional()
       .isString()
-      .withMessage('Tryout ID must be a string'),
+      .withMessage('Tryout ID must be a string'), // Make tryoutId optional
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -344,12 +350,16 @@ router.post(
     session.startTransaction();
 
     try {
+      // Generate tryoutId if not provided
+      const finalTryoutId =
+        tryoutId || generateTryoutId(season, registrationYear);
+
       const existingRegistration = await Registration.findOne({
         player: { $exists: true },
         parent: parentId,
         season,
         year: registrationYear,
-        tryoutId,
+        tryoutId: finalTryoutId,
       }).session(session);
 
       if (existingRegistration) {
@@ -374,7 +384,7 @@ router.post(
           {
             season,
             year: registrationYear,
-            tryoutId,
+            tryoutId: finalTryoutId,
             registrationDate: new Date(),
             paymentStatus: 'pending',
           },
@@ -394,7 +404,7 @@ router.post(
         parent: parentId,
         season,
         year: registrationYear,
-        tryoutId,
+        tryoutId: finalTryoutId,
         paymentStatus: 'pending',
       });
 
@@ -411,7 +421,7 @@ router.post(
           ...player.toObject(),
           season,
           registrationYear,
-          tryoutId,
+          tryoutId: finalTryoutId,
         },
       });
     } catch (error) {
@@ -531,11 +541,13 @@ router.post(
       if (isExistingUser) {
         for (const player of players) {
           if (player._id) {
+            const finalTryoutId =
+              player.tryoutId || generateTryoutId(player.season, player.year);
             const existingRegistration = await Registration.findOne({
               player: player._id,
               season: player.season,
               year: player.year,
-              tryoutId: player.tryoutId || null,
+              tryoutId: finalTryoutId,
             }).session(session);
 
             if (existingRegistration) {
@@ -581,32 +593,36 @@ router.post(
       await parent.save({ session });
 
       // Create players with parentId
-      const playerDocs = players.map((player) => ({
-        _id: new mongoose.Types.ObjectId(),
-        fullName: player.fullName.trim(),
-        gender: player.gender,
-        dob: player.dob,
-        schoolName: player.schoolName.trim(),
-        grade: player.grade,
-        healthConcerns: player.healthConcerns || '',
-        aauNumber: player.aauNumber || '',
-        season: player.season,
-        registrationYear: player.year,
-        tryoutId: player.tryoutId || null,
-        parentId: parent._id,
-        registrationComplete: true,
-        seasons: [
-          {
-            season: player.season,
-            year: player.year,
-            tryoutId: player.tryoutId || null,
-            registrationDate: new Date(),
-            paymentStatus: 'pending',
-          },
-        ],
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      }));
+      const playerDocs = players.map((player) => {
+        const finalTryoutId =
+          player.tryoutId || generateTryoutId(player.season, player.year);
+        return {
+          _id: new mongoose.Types.ObjectId(),
+          fullName: player.fullName.trim(),
+          gender: player.gender,
+          dob: player.dob,
+          schoolName: player.schoolName.trim(),
+          grade: player.grade,
+          healthConcerns: player.healthConcerns || '',
+          aauNumber: player.aauNumber || '',
+          season: player.season,
+          registrationYear: player.year,
+          tryoutId: finalTryoutId,
+          parentId: parent._id,
+          registrationComplete: true,
+          seasons: [
+            {
+              season: player.season,
+              year: player.year,
+              tryoutId: finalTryoutId,
+              registrationDate: new Date(),
+              paymentStatus: 'pending',
+            },
+          ],
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+      });
 
       const savedPlayers = await Player.insertMany(playerDocs, { session });
 
@@ -620,7 +636,7 @@ router.post(
         parent: parent._id,
         season: playerDoc.season,
         year: playerDoc.registrationYear,
-        tryoutId: playerDoc.tryoutId || null,
+        tryoutId: playerDoc.tryoutId,
         paymentStatus: 'pending',
         registrationComplete: true,
         createdAt: new Date(),
@@ -2331,7 +2347,7 @@ router.patch(
       .optional()
       .isString()
       .withMessage('Card brand must be a string'),
-    body('updateTopLevel') // Add validation for new flag
+    body('updateTopLevel')
       .optional()
       .isBoolean()
       .withMessage('updateTopLevel must be a boolean'),
@@ -2363,8 +2379,10 @@ router.patch(
         amountPaid,
         cardLast4,
         cardBrand,
-        updateTopLevel = true, // Default to true to ensure top-level updates
+        updateTopLevel = true,
       } = req.body;
+
+      const finalTryoutId = tryoutId || generateTryoutId(season, year); // Generate tryoutId if not provided
 
       if (!mongoose.Types.ObjectId.isValid(playerId)) {
         console.log(
