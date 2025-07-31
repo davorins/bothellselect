@@ -206,7 +206,6 @@ router.post(
       .withMessage('Invalid expiration year'),
   ],
   async (req, res) => {
-    // Validate request
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({
@@ -223,17 +222,18 @@ router.post(
       const { token, sourceId, amount, currency, email, players, cardDetails } =
         req.body;
 
-      // 1. Verify parent exists
+      // Verify parent exists
       const parent = await Parent.findById(req.user.id).session(session);
       if (!parent) {
         throw new Error('Parent not found');
       }
 
-      // 2. Verify all players belong to this parent
+      // Get all player IDs from the request
       const playerIds = players
         .map((p) => p.playerId)
         .filter((id) => id && mongoose.Types.ObjectId.isValid(id));
 
+      // Verify all players belong to this parent
       const playerRecords = await Player.find({
         _id: { $in: playerIds },
         parentId: parent._id,
@@ -245,7 +245,29 @@ router.post(
         );
       }
 
-      // 3. Process payment with Square
+      // Calculate per-player amount
+      const perPlayerAmount = amount / 100 / players.length;
+
+      // Create or retrieve Square customer
+      let customerId = parent.squareCustomerId;
+      if (!customerId) {
+        const { result: customerResult } =
+          await client.customersApi.createCustomer({
+            emailAddress: email,
+            givenName: parent.fullName.split(' ')[0],
+            familyName: parent.fullName.split(' ').slice(1).join(' '),
+          });
+
+        if (!customerResult.customer?.id) {
+          throw new Error('Failed to create customer');
+        }
+
+        customerId = customerResult.customer.id;
+        parent.squareCustomerId = customerId;
+        await parent.save({ session });
+      }
+
+      // Process payment with Square
       const paymentRequest = {
         sourceId: sourceId || token,
         amountMoney: {
@@ -254,15 +276,7 @@ router.post(
         },
         idempotencyKey: crypto.randomUUID(),
         locationId: process.env.SQUARE_LOCATION_ID,
-        customerId:
-          parent.squareCustomerId ||
-          (
-            await client.customersApi.createCustomer({
-              emailAddress: email,
-              givenName: parent.fullName.split(' ')[0],
-              familyName: parent.fullName.split(' ').slice(1).join(' '),
-            })
-          ).result.customer.id,
+        customerId,
         referenceId: `parent:${parent._id}`,
         note: `Tryout payment for ${players.length} player(s)`,
         buyerEmailAddress: email,
@@ -276,7 +290,7 @@ router.post(
         throw new Error(`Payment failed with status: ${paymentResult.status}`);
       }
 
-      // 4. Create Payment record
+      // Create Payment record with playerIds
       const payment = new Payment({
         parentId: parent._id,
         playerCount: players.length,
@@ -294,88 +308,111 @@ router.post(
         processedAt: new Date(),
         receiptUrl: paymentResult.receiptUrl,
         players: players.map((p) => ({
-          playerId: p.playerId,
+          playerId: p.playerId || null,
           season: p.season,
           year: p.year,
           tryoutId: p.tryoutId || null,
         })),
       });
+
       await payment.save({ session });
 
-      // 5. Prepare bulk update operations
-      const bulkPlayerOps = playerRecords.map((player) => ({
-        updateOne: {
-          filter: { _id: player._id },
-          update: {
-            $set: {
-              paymentStatus: 'paid',
-              paymentComplete: true,
-              updatedAt: new Date(),
-              'seasons.$[seasonElem].paymentStatus': 'paid',
-              'seasons.$[seasonElem].paymentComplete': true,
-              'seasons.$[seasonElem].paymentId': paymentResult.id,
-              'seasons.$[seasonElem].paymentDate': new Date(),
-              'seasons.$[seasonElem].cardLast4': cardDetails.last_4,
-              'seasons.$[seasonElem].cardBrand': cardDetails.card_brand,
-            },
-          },
-          arrayFilters: [
+      // Update all related documents
+      const updateOperations = [];
+
+      // 1. Update Players (both document level and season level)
+      playerRecords.forEach((player) => {
+        const seasonData = {
+          season: players[0].season,
+          year: players[0].year,
+          tryoutId: players[0].tryoutId || null,
+          paymentStatus: 'paid',
+          paymentComplete: true,
+          paymentId: paymentResult.id,
+          amountPaid: perPlayerAmount,
+          cardLast4: cardDetails.last_4,
+          cardBrand: cardDetails.card_brand,
+          paymentDate: new Date(),
+        };
+
+        // Find the matching season to update
+        const seasonIndex = player.seasons.findIndex(
+          (s) =>
+            s.season === seasonData.season &&
+            s.year === seasonData.year &&
+            (s.tryoutId === seasonData.tryoutId ||
+              (!s.tryoutId && !seasonData.tryoutId))
+        );
+
+        let updatedSeasons;
+        if (seasonIndex === -1) {
+          updatedSeasons = [...player.seasons, seasonData];
+        } else {
+          updatedSeasons = [...player.seasons];
+          updatedSeasons[seasonIndex] = {
+            ...updatedSeasons[seasonIndex],
+            ...seasonData,
+          };
+        }
+
+        // Add player update to operations
+        updateOperations.push(
+          Player.findByIdAndUpdate(
+            player._id,
             {
-              'seasonElem.season': players[0].season,
-              'seasonElem.year': players[0].year,
-              'seasonElem.tryoutId': players[0].tryoutId || null,
+              $set: {
+                seasons: updatedSeasons,
+                paymentComplete: true,
+                paymentStatus: 'paid',
+                updatedAt: new Date(),
+              },
             },
-          ],
-        },
-      }));
+            { new: true, session }
+          )
+        );
 
-      const bulkRegistrationOps = playerRecords.map((player) => ({
-        updateMany: {
-          filter: {
-            player: player._id,
-            season: players[0].season,
-            year: players[0].year,
-            tryoutId: players[0].tryoutId || null,
-          },
-          update: {
-            $set: {
-              paymentStatus: 'paid',
-              paymentComplete: true,
-              paymentId: paymentResult.id,
-              paymentDate: new Date(),
-              updatedAt: new Date(),
-              'paymentDetails.cardLast4': cardDetails.last_4,
-              'paymentDetails.cardBrand': cardDetails.card_brand,
+        // 2. Update Registrations
+        updateOperations.push(
+          Registration.updateMany(
+            {
+              player: player._id,
+              season: seasonData.season,
+              year: seasonData.year,
+              tryoutId: seasonData.tryoutId || null,
             },
-          },
-        },
-      }));
-
-      // 6. Execute all updates
-      const playerUpdateResult = await Player.bulkWrite(bulkPlayerOps, {
-        session,
+            {
+              $set: {
+                paymentStatus: 'paid',
+                paymentComplete: true,
+                paymentDate: new Date(),
+                paymentId: paymentResult.id,
+                updatedAt: new Date(),
+              },
+            },
+            { session }
+          )
+        );
       });
-      const registrationUpdateResult = await Registration.bulkWrite(
-        bulkRegistrationOps,
-        { session }
+
+      // 3. Update Parent
+      updateOperations.push(
+        Parent.findByIdAndUpdate(
+          parent._id,
+          {
+            $set: {
+              paymentComplete: true,
+              updatedAt: new Date(),
+            },
+          },
+          { session }
+        )
       );
 
-      // 7. Update Parent
-      await Parent.updateOne(
-        { _id: parent._id },
-        { $set: { paymentComplete: true, updatedAt: new Date() } },
-        { session }
-      );
+      // Execute all updates
+      const results = await Promise.all(updateOperations);
+      const updatedPlayers = results.filter((r) => r instanceof Player);
 
-      // 8. Verify updates
-      if (
-        playerUpdateResult.modifiedCount !== playerRecords.length ||
-        registrationUpdateResult.modifiedCount < playerRecords.length
-      ) {
-        throw new Error('Some documents were not updated properly');
-      }
-
-      // 9. Send email receipt
+      // Send email receipt
       try {
         await sendEmail({
           to: email,
@@ -405,15 +442,20 @@ router.post(
 
       await session.commitTransaction();
 
-      // 10. Return success response
       res.status(200).json({
         success: true,
         paymentId: payment._id,
-        updates: {
-          players: playerUpdateResult.modifiedCount,
-          registrations: registrationUpdateResult.modifiedCount,
-          parent: 1,
-        },
+        parentUpdated: true,
+        playersUpdated: updatedPlayers.length,
+        playerIds: updatedPlayers.map((p) => p._id.toString()),
+        players: updatedPlayers.map((p) => ({
+          _id: p._id,
+          fullName: p.fullName,
+          seasons: p.seasons,
+          paymentComplete: p.paymentComplete,
+          paymentStatus: p.paymentStatus,
+        })),
+        status: 'processed',
         receiptUrl: paymentResult.receiptUrl,
       });
     } catch (error) {
