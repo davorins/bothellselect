@@ -245,9 +245,6 @@ router.post(
         );
       }
 
-      // Calculate per-player amount
-      const perPlayerAmount = amount / 100 / players.length;
-
       // Create or retrieve Square customer
       let customerId = parent.squareCustomerId;
       if (!customerId) {
@@ -293,8 +290,8 @@ router.post(
       // Create Payment record with playerIds
       const payment = new Payment({
         parentId: parent._id,
+        playerIds: playerRecords.map((p) => p._id), // Include playerIds
         playerCount: players.length,
-        playerIds: playerRecords.map((p) => p._id),
         paymentId: paymentResult.id,
         locationId: process.env.SQUARE_LOCATION_ID,
         buyerEmail: email,
@@ -317,15 +314,23 @@ router.post(
 
       await payment.save({ session });
 
-      // Update all related documents
-      const updateOperations = [];
+      // Update Parent payment status
+      await Parent.findByIdAndUpdate(
+        parent._id,
+        { $set: { paymentComplete: true, updatedAt: new Date() } },
+        { session }
+      );
 
-      // 1. Update Players (both document level and season level)
-      playerRecords.forEach((player) => {
+      // Update Player seasons and top-level payment status
+      const perPlayerAmount = amount / 100 / players.length;
+      const updatedPlayers = [];
+
+      for (const player of playerRecords) {
         const seasonData = {
           season: players[0].season,
           year: players[0].year,
           tryoutId: players[0].tryoutId || null,
+          registrationDate: new Date(),
           paymentStatus: 'paid',
           paymentComplete: true,
           paymentId: paymentResult.id,
@@ -344,73 +349,50 @@ router.post(
               (!s.tryoutId && !seasonData.tryoutId))
         );
 
-        let updatedSeasons;
         if (seasonIndex === -1) {
-          updatedSeasons = [...player.seasons, seasonData];
+          player.seasons.push(seasonData);
         } else {
-          updatedSeasons = [...player.seasons];
-          updatedSeasons[seasonIndex] = {
-            ...updatedSeasons[seasonIndex],
+          player.seasons[seasonIndex] = {
+            ...player.seasons[seasonIndex],
             ...seasonData,
           };
         }
 
-        // Add player update to operations
-        updateOperations.push(
-          Player.findByIdAndUpdate(
-            player._id,
-            {
-              $set: {
-                seasons: updatedSeasons,
-                paymentComplete: true,
-                paymentStatus: 'paid',
-                updatedAt: new Date(),
-              },
-            },
-            { new: true, session }
-          )
-        );
-
-        // 2. Update Registrations
-        updateOperations.push(
-          Registration.updateMany(
-            {
-              player: player._id,
-              season: seasonData.season,
-              year: seasonData.year,
-              tryoutId: seasonData.tryoutId || null,
-            },
-            {
-              $set: {
-                paymentStatus: 'paid',
-                paymentComplete: true,
-                paymentDate: new Date(),
-                paymentId: paymentResult.id,
-                updatedAt: new Date(),
-              },
-            },
-            { session }
-          )
-        );
-      });
-
-      // 3. Update Parent
-      updateOperations.push(
-        Parent.findByIdAndUpdate(
-          parent._id,
+        // Update player document with top-level payment status
+        const updatedPlayer = await Player.findByIdAndUpdate(
+          player._id,
           {
             $set: {
-              paymentComplete: true,
+              seasons: player.seasons,
+              paymentComplete: true, // Update top-level field
+              paymentStatus: 'paid', // Update top-level field
               updatedAt: new Date(),
             },
           },
-          { session }
-        )
-      );
+          { new: true, session }
+        );
 
-      // Execute all updates
-      const results = await Promise.all(updateOperations);
-      const updatedPlayers = results.filter((r) => r instanceof Player);
+        // Update registration records
+        await Registration.updateMany(
+          {
+            player: player._id,
+            season: seasonData.season,
+            year: seasonData.year,
+            tryoutId: seasonData.tryoutId || null,
+          },
+          {
+            $set: {
+              paymentStatus: 'paid',
+              paymentComplete: true,
+              paymentDate: new Date(),
+              paymentId: paymentResult.id,
+            },
+          },
+          { session }
+        );
+
+        updatedPlayers.push(updatedPlayer);
+      }
 
       // Send email receipt
       try {
