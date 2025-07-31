@@ -316,7 +316,9 @@ router.post(
 
       // Update Player seasons and payment status
       const perPlayerAmount = amount / 100 / players.length;
-      const updatePromises = playerRecords.map(async (player) => {
+      const updatedPlayers = [];
+
+      for (const player of playerRecords) {
         const seasonData = {
           season: players[0].season,
           year: players[0].year,
@@ -340,10 +342,8 @@ router.post(
         );
 
         if (seasonIndex === -1) {
-          // If season doesn't exist, add it
           player.seasons.push(seasonData);
         } else {
-          // Update existing season
           player.seasons[seasonIndex] = {
             ...player.seasons[seasonIndex],
             ...seasonData,
@@ -351,7 +351,7 @@ router.post(
         }
 
         // Update player document
-        await Player.findByIdAndUpdate(
+        const updatedPlayer = await Player.findByIdAndUpdate(
           player._id,
           {
             $set: {
@@ -361,7 +361,7 @@ router.post(
               updatedAt: new Date(),
             },
           },
-          { session }
+          { new: true, session }
         );
 
         // Update registration records
@@ -383,10 +383,8 @@ router.post(
           { session }
         );
 
-        return player;
-      });
-
-      const updatedPlayers = await Promise.all(updatePromises);
+        updatedPlayers.push(updatedPlayer);
+      }
 
       // Update Parent payment status
       await Parent.findByIdAndUpdate(
