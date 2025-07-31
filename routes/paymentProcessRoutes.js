@@ -180,8 +180,9 @@ router.post(
       .isArray({ min: 1 })
       .withMessage('At least one player is required'),
     body('players.*.playerId')
-      .optional()
-      .custom((value) => !value || mongoose.Types.ObjectId.isValid(value))
+      .notEmpty()
+      .withMessage('Player ID is required for all players')
+      .custom((value) => mongoose.Types.ObjectId.isValid(value))
       .withMessage('Invalid player ID format'),
     body('players.*.season').notEmpty().withMessage('Season is required'),
     body('players.*.year')
@@ -206,12 +207,16 @@ router.post(
       .withMessage('Invalid expiration year'),
   ],
   async (req, res) => {
+    console.log('Payment request:', req.body);
+
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.log('Validation errors:', errors.array());
       return res.status(400).json({
         success: false,
         errors: errors.array(),
-        message: 'Validation failed',
+        message:
+          'Validation failed. Please ensure all required fields are provided.',
       });
     }
 
@@ -228,35 +233,36 @@ router.post(
         throw new Error('Parent not found');
       }
 
-      // Verify players (only for those with playerId)
-      const playerIds = players
-        .map((p) => p.playerId)
-        .filter((id) => id && mongoose.Types.ObjectId.isValid(id));
-      let playerRecords = [];
-      if (playerIds.length > 0) {
-        playerRecords = await Player.find({
-          _id: { $in: playerIds },
-          parentId: parent._id,
-        }).session(session);
-        if (playerRecords.length !== playerIds.length) {
-          throw new Error(
-            'One or more players not found or do not belong to this parent'
-          );
-        }
+      // Verify players
+      const playerIds = players.map((p) => p.playerId);
+      const playerRecords = await Player.find({
+        _id: { $in: playerIds },
+        parentId: parent._id,
+      }).session(session);
+
+      if (playerRecords.length !== playerIds.length) {
+        throw new Error(
+          'One or more players not found or do not belong to this parent'
+        );
       }
 
-      // Find players by season, year, and tryoutId for those without playerId
-      const playersWithoutId = players.filter((p) => !p.playerId);
-      for (const player of playersWithoutId) {
-        const playerRecord = await Player.findOne({
-          parentId: parent._id,
-          season: player.season,
-          registrationYear: player.year,
-          'seasons.tryoutId': player.tryoutId || null,
-        }).session(session);
-        if (playerRecord) {
-          player.playerId = playerRecord._id.toString();
-          playerRecords.push(playerRecord);
+      // Verify players are registered for the tryout
+      for (const player of playerRecords) {
+        const matchingSeason = player.seasons?.find(
+          (s) =>
+            s.season === players[0].season &&
+            s.year === players[0].year &&
+            s.tryoutId === (players[0].tryoutId || null)
+        );
+        if (!matchingSeason) {
+          throw new Error(
+            `Player ${player.fullName} is not registered for this tryout`
+          );
+        }
+        if (matchingSeason.paymentStatus === 'paid') {
+          throw new Error(
+            `Player ${player.fullName} is already paid for this tryout`
+          );
         }
       }
 
@@ -269,11 +275,9 @@ router.post(
             givenName: parent.fullName.split(' ')[0],
             familyName: parent.fullName.split(' ').slice(1).join(' '),
           });
-
         if (!customerResult.customer?.id) {
           throw new Error('Failed to create customer');
         }
-
         customerId = customerResult.customer.id;
         parent.squareCustomerId = customerId;
         await parent.save({ session });
@@ -290,9 +294,11 @@ router.post(
         locationId: process.env.SQUARE_LOCATION_ID,
         customerId,
         referenceId: `parent:${parent._id}`,
-        note: `Tryout payment for ${players.length} player(s)`,
+        note: `Tryout payment for ${playerRecords.length} player(s)`,
         buyerEmailAddress: email,
       };
+
+      console.log('Sending payment request to Square:', paymentRequest);
 
       const paymentResponse =
         await client.paymentsApi.createPayment(paymentRequest);
@@ -302,11 +308,11 @@ router.post(
         throw new Error(`Payment failed with status: ${paymentResult.status}`);
       }
 
-      // Create Payment record with playerIds
+      // Create Payment record
       const payment = new Payment({
         parentId: parent._id,
-        playerCount: players.length,
-        playerIds: playerRecords.map((p) => p._id), // Store playerIds
+        playerCount: playerRecords.length,
+        playerIds: playerRecords.map((p) => p._id),
         paymentId: paymentResult.id,
         locationId: process.env.SQUARE_LOCATION_ID,
         buyerEmail: email,
@@ -320,7 +326,7 @@ router.post(
         processedAt: new Date(),
         receiptUrl: paymentResult.receiptUrl,
         players: players.map((p) => ({
-          playerId: p.playerId || null,
+          playerId: p.playerId,
           season: p.season,
           year: p.year,
           tryoutId: p.tryoutId || null,
@@ -338,13 +344,12 @@ router.post(
           paymentStatus: 'paid',
           paymentComplete: true,
           paymentId: paymentResult.id,
-          amountPaid: amount / 100 / players.length,
+          amountPaid: amount / 100 / playerRecords.length,
           cardLast4: cardDetails.last_4,
           cardBrand: cardDetails.card_brand,
           paymentDate: new Date(),
         };
 
-        // Update player document
         await Player.findByIdAndUpdate(
           player._id,
           {
@@ -352,7 +357,8 @@ router.post(
               'seasons.$[season].paymentStatus': 'paid',
               'seasons.$[season].paymentComplete': true,
               'seasons.$[season].paymentId': paymentResult.id,
-              'seasons.$[season].amountPaid': amount / 100 / players.length,
+              'seasons.$[season].amountPaid':
+                amount / 100 / playerRecords.length,
               'seasons.$[season].cardLast4': cardDetails.last_4,
               'seasons.$[season].cardBrand': cardDetails.card_brand,
               'seasons.$[season].paymentDate': new Date(),
@@ -373,24 +379,42 @@ router.post(
           }
         );
 
-        // Update registration records
-        await Registration.updateMany(
-          {
+        // Create or update Registration record
+        const registration = await Registration.findOne({
+          player: player._id,
+          season: seasonData.season,
+          year: seasonData.year,
+          tryoutId: seasonData.tryoutId || null,
+        }).session(session);
+
+        if (registration) {
+          await Registration.findByIdAndUpdate(
+            registration._id,
+            {
+              $set: {
+                paymentStatus: 'paid',
+                paymentComplete: true,
+                paymentDate: new Date(),
+                paymentId: paymentResult.id,
+              },
+            },
+            { session }
+          );
+        } else {
+          const newRegistration = new Registration({
             player: player._id,
+            parentId: parent._id,
             season: seasonData.season,
             year: seasonData.year,
             tryoutId: seasonData.tryoutId || null,
-          },
-          {
-            $set: {
-              paymentStatus: 'paid',
-              paymentComplete: true,
-              paymentDate: new Date(),
-              paymentId: paymentResult.id,
-            },
-          },
-          { session }
-        );
+            registrationDate: new Date(),
+            paymentStatus: 'paid',
+            paymentComplete: true,
+            paymentDate: new Date(),
+            paymentId: paymentResult.id,
+          });
+          await newRegistration.save({ session });
+        }
       });
 
       await Promise.all(updatePromises);
@@ -402,7 +426,7 @@ router.post(
         { session }
       );
 
-      // Fetch updated player records to return
+      // Fetch updated player records
       const updatedPlayers = await Player.find({
         _id: { $in: playerRecords.map((p) => p._id) },
       }).session(session);
@@ -415,9 +439,11 @@ router.post(
           html: `
             <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto;">
               <h2 style="color: #2c3e50;">Thank you for your tryout payment!</h2>
-              <p style="font-size: 16px;">We've successfully processed your payment for <strong>${players.length}</strong> player(s).</p>
+              <p style="font-size: 16px;">We've successfully processed your payment for <strong>${playerRecords.length}</strong> player(s).</p>
               <hr style="margin: 20px 0;" />
-              <p><strong>Amount Paid:</strong> $${(amount / 100).toFixed(2)}</p>
+              <p><strong>Fee per player:</strong> $${(amount / 100 / playerRecords.length).toFixed(2)}</p>
+              <p><strong>Number of players:</strong> ${playerRecords.length}</p>
+              <p><strong>Total amount:</strong> $${(amount / 100).toFixed(2)}</p>
               <p><strong>Payment ID:</strong> ${paymentResult.id}</p>
               <p><strong>Date:</strong> ${new Date().toLocaleDateString()}</p>
               <p>
@@ -437,13 +463,18 @@ router.post(
 
       await session.commitTransaction();
 
+      console.log(
+        'Payment processed successfully, updated players:',
+        updatedPlayers
+      );
+
       res.status(200).json({
         success: true,
         paymentId: payment._id,
         parentUpdated: true,
         playersUpdated: playerRecords.length,
         playerIds: playerRecords.map((p) => p._id.toString()),
-        players: updatedPlayers, // Return updated player data
+        players: updatedPlayers,
         status: 'processed',
         receiptUrl: paymentResult.receiptUrl,
       });
@@ -465,5 +496,4 @@ router.post(
     }
   }
 );
-
 module.exports = router;
