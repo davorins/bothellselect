@@ -241,30 +241,47 @@ router.post(
           _id: { $in: playerIds },
           parentId: parent._id,
         }).session(session);
-        if (playerRecords.length !== playerIds.length) {
-          throw new Error(
-            'One or more players not found or do not belong to this parent'
-          );
+        if (playerIds.length > 0 && playerRecords.length === 0) {
+          throw new Error('No players found for provided IDs');
         }
       }
 
       // Handle players without IDs
       const playersWithoutId = players.filter((p) => !p.playerId);
       for (const player of playersWithoutId) {
-        const playerRecord = await Player.findOne({
+        let playerRecord = await Player.findOne({
           parentId: parent._id,
-          season: player.season,
-          registrationYear: player.year,
+          'seasons.season': player.season,
+          'seasons.year': player.year,
           'seasons.tryoutId': player.tryoutId || null,
         }).session(session);
-        if (playerRecord) {
-          player.playerId = playerRecord._id.toString();
-          playerRecords.push(playerRecord);
-        } else {
-          throw new Error(
-            `No player found for season ${player.season}, year ${player.year}`
+
+        if (!playerRecord) {
+          // Create a new player if none exists (fallback)
+          playerRecord = new Player({
+            parentId: parent._id,
+            fullName: player.fullName || 'Unknown Player', // Adjust based on schema
+            season: player.season,
+            registrationYear: player.year,
+            seasons: [
+              {
+                season: player.season,
+                year: player.year,
+                tryoutId: player.tryoutId || null,
+                registrationDate: new Date(),
+              },
+            ],
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+          await playerRecord.save({ session });
+          console.log(
+            `Created new player for ${player.season}, ${player.year}:`,
+            playerRecord._id
           );
         }
+        player.playerId = playerRecord._id.toString();
+        playerRecords.push(playerRecord);
       }
 
       if (playerRecords.length === 0) {
@@ -277,8 +294,12 @@ router.post(
         const { result: customerResult } =
           await client.customersApi.createCustomer({
             emailAddress: email,
-            givenName: parent.fullName.split(' ')[0],
-            familyName: parent.fullName.split(' ').slice(1).join(' '),
+            givenName: parent.fullName
+              ? parent.fullName.split(' ')[0]
+              : 'Unknown',
+            familyName: parent.fullName
+              ? parent.fullName.split(' ').slice(1).join(' ')
+              : 'Parent',
           });
 
         if (!customerResult.customer?.id) {
@@ -301,9 +322,11 @@ router.post(
         locationId: process.env.SQUARE_LOCATION_ID,
         customerId,
         referenceId: `parent:${parent._id}`,
-        note: `Tryout payment for ${players.length} player(s)`,
+        note: `Tryout payment for ${playerRecords.length} player(s)`,
         buyerEmailAddress: email,
       };
+
+      console.log('Square payment request:', paymentRequest);
 
       const paymentResponse =
         await client.paymentsApi.createPayment(paymentRequest);
@@ -555,8 +578,7 @@ router.post(
       res.status(400).json({
         success: false,
         error: 'Tryout payment processing failed',
-        details:
-          process.env.NODE_ENV === 'development' ? error.message : undefined,
+        details: error.message, // Always return details for debugging
       });
     } finally {
       session.endSession();
