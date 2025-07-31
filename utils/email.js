@@ -142,6 +142,58 @@ async function sendWelcomeEmail(parentId, playerId) {
   }
 }
 
+// sendTryoutEmail function
+async function sendTryoutEmail(parentId, playerId) {
+  try {
+    // 1. Find the "Welcome Tryout" template from your database
+    const template = await EmailTemplate.findOne({ title: 'Welcome Tryout' });
+
+    if (!template) {
+      throw new Error('Welcome Tryout email template not found in database');
+    }
+
+    // 2. Get the parent and player data
+    const parent = await Parent.findById(parentId);
+    if (!parent) {
+      throw new Error(`Parent not found with ID: ${parentId}`);
+    }
+
+    const player = await Player.findById(playerId);
+    if (!player) {
+      throw new Error(`Player not found with ID: ${playerId}`);
+    }
+
+    // 3. Replace template variables
+    const populatedContent = await replaceTemplateVariables(template.content, {
+      parentId,
+      playerId,
+    });
+
+    // 4. Send the email
+    const result = await sendEmail({
+      to: parent.email,
+      subject: template.subject,
+      html: populatedContent,
+      parentId,
+      playerId,
+    });
+
+    console.log(
+      'Welcome Tryout email sent successfully using template:',
+      result
+    );
+    return result;
+  } catch (err) {
+    console.error('Error in sendTryoutEmail:', {
+      error: err,
+      parentId,
+      playerId,
+      timestamp: new Date().toISOString(),
+    });
+    throw err;
+  }
+}
+
 // Send password reset email using Resend
 async function sendResetEmail(email, resetToken) {
   const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
@@ -178,4 +230,5 @@ module.exports = {
   sendEmail,
   sendResetEmail,
   sendWelcomeEmail,
+  sendTryoutEmail,
 };

@@ -245,6 +245,9 @@ router.post(
         );
       }
 
+      // Calculate per-player amount
+      const perPlayerAmount = amount / 100 / players.length;
+
       // Create or retrieve Square customer
       let customerId = parent.squareCustomerId;
       if (!customerId) {
@@ -314,11 +317,11 @@ router.post(
 
       await payment.save({ session });
 
-      // Update Player seasons and payment status
-      const perPlayerAmount = amount / 100 / players.length;
-      const updatedPlayers = [];
+      // Update all related documents
+      const updateOperations = [];
 
-      for (const player of playerRecords) {
+      // 1. Update Players (both document level and season level)
+      playerRecords.forEach((player) => {
         const seasonData = {
           season: players[0].season,
           year: players[0].year,
@@ -341,57 +344,73 @@ router.post(
               (!s.tryoutId && !seasonData.tryoutId))
         );
 
+        let updatedSeasons;
         if (seasonIndex === -1) {
-          player.seasons.push(seasonData);
+          updatedSeasons = [...player.seasons, seasonData];
         } else {
-          player.seasons[seasonIndex] = {
-            ...player.seasons[seasonIndex],
+          updatedSeasons = [...player.seasons];
+          updatedSeasons[seasonIndex] = {
+            ...updatedSeasons[seasonIndex],
             ...seasonData,
           };
         }
 
-        // Update player document
-        const updatedPlayer = await Player.findByIdAndUpdate(
-          player._id,
+        // Add player update to operations
+        updateOperations.push(
+          Player.findByIdAndUpdate(
+            player._id,
+            {
+              $set: {
+                seasons: updatedSeasons,
+                paymentComplete: true,
+                paymentStatus: 'paid',
+                updatedAt: new Date(),
+              },
+            },
+            { new: true, session }
+          )
+        );
+
+        // 2. Update Registrations
+        updateOperations.push(
+          Registration.updateMany(
+            {
+              player: player._id,
+              season: seasonData.season,
+              year: seasonData.year,
+              tryoutId: seasonData.tryoutId || null,
+            },
+            {
+              $set: {
+                paymentStatus: 'paid',
+                paymentComplete: true,
+                paymentDate: new Date(),
+                paymentId: paymentResult.id,
+                updatedAt: new Date(),
+              },
+            },
+            { session }
+          )
+        );
+      });
+
+      // 3. Update Parent
+      updateOperations.push(
+        Parent.findByIdAndUpdate(
+          parent._id,
           {
             $set: {
-              seasons: player.seasons,
               paymentComplete: true,
-              paymentStatus: 'paid',
               updatedAt: new Date(),
             },
           },
-          { new: true, session }
-        );
-
-        // Update registration records
-        await Registration.updateMany(
-          {
-            player: player._id,
-            season: seasonData.season,
-            year: seasonData.year,
-            tryoutId: seasonData.tryoutId || null,
-          },
-          {
-            $set: {
-              paymentStatus: 'paid',
-              paymentComplete: true,
-              paymentDate: new Date(),
-              paymentId: paymentResult.id,
-            },
-          },
           { session }
-        );
-
-        updatedPlayers.push(updatedPlayer);
-      }
-
-      // Update Parent payment status
-      await Parent.findByIdAndUpdate(
-        parent._id,
-        { $set: { paymentComplete: true, updatedAt: new Date() } },
-        { session }
+        )
       );
+
+      // Execute all updates
+      const results = await Promise.all(updateOperations);
+      const updatedPlayers = results.filter((r) => r instanceof Player);
 
       // Send email receipt
       try {
