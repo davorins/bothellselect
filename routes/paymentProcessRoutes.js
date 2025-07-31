@@ -233,7 +233,7 @@ router.post(
         .map((p) => p.playerId)
         .filter((id) => id && mongoose.Types.ObjectId.isValid(id));
 
-      // Verify all players belong to this parent
+      // Verify all players belong to this parent and are registered for the tryout
       const playerRecords = await Player.find({
         _id: { $in: playerIds },
         parentId: parent._id,
@@ -243,6 +243,25 @@ router.post(
         throw new Error(
           'One or more players not found or do not belong to this parent'
         );
+      }
+
+      // Verify that players are registered for the specified season and tryout
+      const season = players[0].season;
+      const year = players[0].year;
+      const tryoutId = players[0].tryoutId || null;
+
+      for (const player of playerRecords) {
+        const hasSeason = player.seasons.some(
+          (s) =>
+            s.season === season &&
+            s.year === year &&
+            (s.tryoutId === tryoutId || (!s.tryoutId && !tryoutId))
+        );
+        if (!hasSeason) {
+          throw new Error(
+            `Player ${player.fullName} is not registered for ${season} ${year}`
+          );
+        }
       }
 
       // Create or retrieve Square customer
@@ -290,8 +309,8 @@ router.post(
       // Create Payment record with playerIds
       const payment = new Payment({
         parentId: parent._id,
-        playerIds: playerRecords.map((p) => p._id), // Include playerIds
         playerCount: players.length,
+        playerIds: playerRecords.map((p) => p._id),
         paymentId: paymentResult.id,
         locationId: process.env.SQUARE_LOCATION_ID,
         buyerEmail: email,
@@ -314,14 +333,7 @@ router.post(
 
       await payment.save({ session });
 
-      // Update Parent payment status
-      await Parent.findByIdAndUpdate(
-        parent._id,
-        { $set: { paymentComplete: true, updatedAt: new Date() } },
-        { session }
-      );
-
-      // Update Player seasons and top-level payment status
+      // Update Player seasons and payment status
       const perPlayerAmount = amount / 100 / players.length;
       const updatedPlayers = [];
 
@@ -330,7 +342,6 @@ router.post(
           season: players[0].season,
           year: players[0].year,
           tryoutId: players[0].tryoutId || null,
-          registrationDate: new Date(),
           paymentStatus: 'paid',
           paymentComplete: true,
           paymentId: paymentResult.id,
@@ -358,14 +369,19 @@ router.post(
           };
         }
 
-        // Update player document with top-level payment status
+        // Update top-level payment status if all seasons are paid
+        const allSeasonsPaid = player.seasons.every(
+          (s) => s.paymentStatus === 'paid'
+        );
+
+        // Update player document
         const updatedPlayer = await Player.findByIdAndUpdate(
           player._id,
           {
             $set: {
               seasons: player.seasons,
-              paymentComplete: true, // Update top-level field
-              paymentStatus: 'paid', // Update top-level field
+              paymentComplete: allSeasonsPaid,
+              paymentStatus: allSeasonsPaid ? 'paid' : 'pending',
               updatedAt: new Date(),
             },
           },
@@ -373,7 +389,7 @@ router.post(
         );
 
         // Update registration records
-        await Registration.updateMany(
+        const registrationUpdateResult = await Registration.updateMany(
           {
             player: player._id,
             season: seasonData.season,
@@ -391,8 +407,29 @@ router.post(
           { session }
         );
 
+        console.log(`Registration update for player ${player._id}:`, {
+          matchedCount: registrationUpdateResult.matchedCount,
+          modifiedCount: registrationUpdateResult.modifiedCount,
+        });
+
         updatedPlayers.push(updatedPlayer);
       }
+
+      // Update Parent payment status
+      const allPlayersPaid = updatedPlayers.every(
+        (p) => p.paymentComplete === true
+      );
+
+      await Parent.findByIdAndUpdate(
+        parent._id,
+        {
+          $set: {
+            paymentComplete: allPlayersPaid,
+            updatedAt: new Date(),
+          },
+        },
+        { session }
+      );
 
       // Send email receipt
       try {
