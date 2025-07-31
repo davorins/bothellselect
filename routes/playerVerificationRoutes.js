@@ -1,10 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const Player = require('../models/Player');
-const { authenticateParent } = require('../middleware/auth');
+const { authenticate } = require('../utils/auth');
 
 // Verify multiple players belong to a parent
-router.post('/verify-batch', authenticateParent, async (req, res) => {
+router.post('/verify-batch', authenticate, async (req, res) => {
   try {
     const { playerIds, parentId } = req.body;
 
