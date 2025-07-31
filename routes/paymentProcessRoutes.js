@@ -180,9 +180,8 @@ router.post(
       .isArray({ min: 1 })
       .withMessage('At least one player is required'),
     body('players.*.playerId')
-      .notEmpty()
-      .withMessage('Player ID is required for all players')
-      .custom((value) => mongoose.Types.ObjectId.isValid(value))
+      .optional()
+      .custom((value) => !value || mongoose.Types.ObjectId.isValid(value))
       .withMessage('Invalid player ID format'),
     body('players.*.season').notEmpty().withMessage('Season is required'),
     body('players.*.year')
