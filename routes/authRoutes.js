@@ -1822,7 +1822,6 @@ router.get('/payments/parent/:parentId', authenticate, async (req, res) => {
 });
 
 // Update payment status for players
-// Update payment status for players
 router.post('/payments/update-players', authenticate, async (req, res) => {
   const {
     parentId,
@@ -2534,47 +2533,6 @@ router.patch(
     }
   }
 );
-
-// Add this route to authRoutes.js
-router.post('/payments/validate-players', authenticate, async (req, res) => {
-  try {
-    const { playerIds } = req.body;
-    const parentId = req.user.id;
-
-    if (!playerIds || !Array.isArray(playerIds)) {
-      return res.status(400).json({
-        error: 'Player IDs array is required',
-      });
-    }
-
-    // Validate all player IDs belong to this parent
-    const validPlayers = await Player.find({
-      _id: { $in: playerIds },
-      parentId: parentId,
-    });
-
-    if (validPlayers.length !== playerIds.length) {
-      const invalidPlayers = playerIds.filter(
-        (id) => !validPlayers.some((p) => p._id.toString() === id)
-      );
-      return res.status(400).json({
-        error: 'Some players not found or belong to different parent',
-        invalidPlayers,
-      });
-    }
-
-    res.json({
-      success: true,
-      validPlayers: validPlayers.map((p) => p._id.toString()),
-    });
-  } catch (error) {
-    console.error('Player validation error:', error);
-    res.status(500).json({
-      error: 'Player validation failed',
-      details: error.message,
-    });
-  }
-});
 
 // Error handling middleware
 router.use((err, req, res, next) => {
