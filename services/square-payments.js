@@ -19,64 +19,50 @@ const client = new Client({
 
 const { paymentsApi, customersApi } = client;
 
-/**
- * Processes a payment and updates all related records in MongoDB
- * @param {string} sourceId - Square payment source token
- * @param {number} amount - Amount in cents (e.g., $10.00 = 1000)
- * @param {Object} params - Payment parameters
- * @param {string} params.parentId - Parent ID making the payment
- * @param {string[]} params.playerIds - Array of player IDs
- * @param {string} params.season - Season identifier
- * @param {number} params.year - Year
- * @param {string} params.tryoutId - Tryout ID
- * @param {Object} params.cardDetails - Card details
- * @param {string} params.cardDetails.last_4 - Last 4 digits
- * @param {string} params.cardDetails.card_brand - Card brand
- * @param {string} params.cardDetails.exp_month - Expiration month
- * @param {string} params.cardDetails.exp_year - Expiration year
- * @param {string} params.buyerEmailAddress - Email for receipt
- * @returns {Promise<Object>} Payment result
- */
-async function processTryoutPayment(
+async function submitPayment(
   sourceId,
   amount,
   {
     parentId,
-    playerIds,
-    season,
-    year,
-    tryoutId,
+    playerIds = [], // Default to empty array
+    season, // Added season
+    year, // Added year
+    tryoutId, // Added tryoutId
     cardDetails,
     buyerEmailAddress,
+    description = 'Form submission payment',
   }
 ) {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    // Validate input
-    if (!sourceId) throw new Error('Payment source token is required');
+    // Validate minimum requirements
+    if (!sourceId) throw new Error('Source ID is required');
     if (!amount || isNaN(amount)) throw new Error('Valid amount is required');
     if (!parentId) throw new Error('Parent ID is required');
-    if (!playerIds || !Array.isArray(playerIds) || playerIds.length === 0) {
-      throw new Error('At least one player ID is required');
-    }
-    if (!season || !year || !tryoutId) {
-      throw new Error('Season, year, and tryout ID are required');
+    if (!buyerEmailAddress) throw new Error('Email is required for receipt');
+    if (!cardDetails?.last_4) throw new Error('Card details incomplete');
+    if (!Array.isArray(playerIds))
+      throw new Error('Player IDs must be an array');
+    if (!process.env.SQUARE_LOCATION_ID)
+      throw new Error('Square location ID not configured');
+
+    // Validate player IDs if provided
+    if (playerIds.length > 0) {
+      const validPlayers = await Player.countDocuments({
+        _id: { $in: playerIds },
+        parentId,
+      }).session(session);
+
+      if (validPlayers !== playerIds.length) {
+        throw new Error(
+          'One or more players not found or do not belong to parent'
+        );
+      }
     }
 
-    // Verify all players belong to this parent
-    const players = await Player.find({ _id: { $in: playerIds } }).session(
-      session
-    );
-    if (players.length !== playerIds.length) {
-      throw new Error('One or more players not found');
-    }
-    if (players.some((p) => p.parentId.toString() !== parentId)) {
-      throw new Error('One or more players belong to a different parent');
-    }
-
-    // Create Square customer
+    // Create or find Square customer
     const { result: customerResult } = await customersApi.createCustomer({
       emailAddress: buyerEmailAddress,
       idempotencyKey: randomUUID(),
@@ -84,7 +70,7 @@ async function processTryoutPayment(
     const customerId = customerResult.customer?.id;
     if (!customerId) throw new Error('Failed to create customer record');
 
-    // Create Square payment
+    // Create payment request
     const paymentRequest = {
       idempotencyKey: randomUUID(),
       sourceId,
@@ -93,13 +79,17 @@ async function processTryoutPayment(
         currency: 'USD',
       },
       customerId,
-      locationId: process.env.SQUARE_LOCATION_ID,
+      locationId: process.env.SQUARE_LOCATION_ID, // Always use from env
       autocomplete: true,
       referenceId: `parent:${parentId}`,
-      note: `Tryout payment for ${playerIds.length} player(s)`,
+      note:
+        playerIds.length > 0
+          ? `Payment for ${playerIds.length} player(s)`
+          : description,
       buyerEmailAddress,
     };
 
+    // Process payment with Square
     const { result } = await paymentsApi.createPayment(paymentRequest);
     const squarePayment = result.payment;
 
@@ -107,10 +97,10 @@ async function processTryoutPayment(
       throw new Error(`Payment failed with status: ${squarePayment?.status}`);
     }
 
-    // Create payment record
+    // Store payment details
     const paymentRecord = new Payment({
-      parentId,
       playerIds,
+      parentId,
       paymentId: squarePayment.id,
       amount: amount / 100,
       status: squarePayment.status.toLowerCase(),
@@ -119,7 +109,7 @@ async function processTryoutPayment(
       cardBrand: cardDetails.card_brand || 'UNKNOWN',
       cardExpMonth: cardDetails.exp_month || '00',
       cardExpYear: cardDetails.exp_year || '00',
-      locationId: squarePayment.locationId,
+      locationId: process.env.SQUARE_LOCATION_ID,
       buyerEmail: buyerEmailAddress,
       players: playerIds.map((id) => ({
         playerId: id,
@@ -131,75 +121,72 @@ async function processTryoutPayment(
 
     await paymentRecord.save({ session });
 
-    // Update all related records in parallel
-    await Promise.all([
-      // Update parent
-      Parent.updateOne(
-        { _id: parentId },
-        {
-          $set: {
-            paymentComplete: true,
-            lastPaymentDate: new Date(),
-          },
-          $push: {
-            payments: paymentRecord._id,
-          },
+    // Update parent payment status
+    await Parent.updateOne(
+      { _id: parentId },
+      {
+        $set: {
+          paymentComplete: true,
+          lastPaymentDate: new Date(),
         },
-        { session }
-      ),
+        $push: { payments: paymentRecord._id },
+      },
+      { session }
+    );
 
-      // Update players
-      Player.updateMany(
-        { _id: { $in: playerIds } },
-        {
-          $set: {
-            paymentComplete: true,
-            paymentStatus: 'paid',
-          },
-          $push: {
-            seasons: {
-              season,
-              year,
-              tryoutId,
+    // Update players if specified
+    if (playerIds.length > 0) {
+      await Promise.all([
+        // Update player documents
+        Player.updateMany(
+          { _id: { $in: playerIds } },
+          {
+            $set: {
+              paymentComplete: true,
               paymentStatus: 'paid',
+            },
+            $push: {
+              seasons: {
+                season,
+                year,
+                tryoutId,
+                paymentStatus: 'paid',
+                paymentDate: new Date(),
+                paymentId: paymentRecord._id,
+              },
+            },
+          },
+          { session }
+        ),
+        // Update registrations
+        Registration.updateMany(
+          {
+            player: { $in: playerIds },
+            season,
+            year,
+            tryoutId,
+          },
+          {
+            $set: {
+              paymentStatus: 'paid',
+              paymentComplete: true,
               paymentDate: new Date(),
               paymentId: paymentRecord._id,
             },
-            payments: paymentRecord._id,
           },
-        },
-        { session }
-      ),
+          { session }
+        ),
+      ]);
+    }
 
-      // Update registrations
-      Registration.updateMany(
-        {
-          player: { $in: playerIds },
-          season,
-          year,
-          tryoutId,
-        },
-        {
-          $set: {
-            paymentStatus: 'paid',
-            paymentComplete: true,
-            paymentDate: new Date(),
-            paymentId: paymentRecord._id,
-          },
-        },
-        { session }
-      ),
-    ]);
-
-    // Send confirmation email
+    // Send receipt email
     await sendEmail({
       to: buyerEmailAddress,
-      subject: `Payment Confirmation - ${season} ${year} Tryouts`,
+      subject: 'Payment Confirmation - Basketball Camp',
       html: `
         <h2>Payment Successful</h2>
         <p>Amount: $${(amount / 100).toFixed(2)}</p>
-        <p>Players: ${playerIds.length}</p>
-        <p>Season: ${season} ${year}</p>
+        ${playerIds.length > 0 ? `<p>Players: ${playerIds.length}</p>` : ''}
         <p>Payment ID: ${squarePayment.id}</p>
         <p>Date: ${new Date().toLocaleDateString()}</p>
         <p><a href="${squarePayment.receiptUrl}">View Receipt</a></p>
@@ -207,31 +194,34 @@ async function processTryoutPayment(
     });
 
     await session.commitTransaction();
-    console.log('Transaction successfully committed');
 
     return {
       success: true,
-      paymentId: paymentRecord._id,
-      squarePaymentId: squarePayment.id,
-      amount: amount / 100,
-      playersUpdated: playerIds.length,
-      receiptUrl: squarePayment.receiptUrl,
+      payment: {
+        id: paymentRecord._id,
+        squareId: squarePayment.id,
+        amount: amount / 100,
+        status: squarePayment.status,
+        receiptUrl: squarePayment.receiptUrl,
+        playersUpdated: playerIds.length,
+        parentUpdated: true,
+      },
     };
   } catch (error) {
     await session.abortTransaction();
-    console.error('Payment transaction failed:', {
+    console.error('Payment processing failed:', {
       error: error.message,
       stack: error.stack,
       parentId,
       playerIds,
     });
-    throw error;
+    throw error; // Re-throw the original error to preserve stack trace
   } finally {
     session.endSession();
   }
 }
 
 module.exports = {
-  processTryoutPayment,
+  submitPayment,
   client,
 };

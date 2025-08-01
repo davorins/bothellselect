@@ -231,12 +231,26 @@ router.post(
         throw new Error('Parent not found');
       }
 
-      // 2. Process payment with Square
+      // 2. Validate all players exist and belong to this parent
+      const playerIds = players.map((p) => p.playerId);
+      const playerRecords = await Player.find({
+        _id: { $in: playerIds },
+        parentId: parentId,
+      }).session(session);
+
+      if (playerRecords.length !== playerIds.length) {
+        throw new Error('Some players not found or belong to different parent');
+      }
+
+      // 3. Process payment with Square
       const paymentRequest = {
         sourceId: token,
-        amountMoney: { amount: parseInt(amount), currency: 'USD' },
+        amountMoney: {
+          amount: parseInt(amount),
+          currency: 'USD',
+        },
         idempotencyKey: crypto.randomUUID(),
-        locationId: process.env.SQUARE_LOCATION_ID,
+        locationId: process.env.SQUARE_LOCATION_ID, // Always use from env
         referenceId: `parent:${parentId}`,
         note: `Tryout payment for ${players.length} player(s)`,
         buyerEmailAddress: email,
@@ -249,11 +263,12 @@ router.post(
         throw new Error(`Payment failed with status: ${squarePayment?.status}`);
       }
 
-      // 3. Create payment record
+      // 4. Create payment record
       const paymentRecord = new Payment({
         parentId,
-        playerIds: players.map((p) => p.playerId),
+        playerIds,
         paymentId: squarePayment.id,
+        locationId: process.env.SQUARE_LOCATION_ID,
         amount: amount / 100,
         status: squarePayment.status.toLowerCase(),
         receiptUrl: squarePayment.receiptUrl,
@@ -272,9 +287,8 @@ router.post(
 
       await paymentRecord.save({ session });
 
-      // 4. Update all related documents in parallel
+      // 5. Update all related documents
       const updateOperations = [
-        // Update parent
         Parent.updateOne(
           { _id: parentId },
           {
@@ -286,10 +300,8 @@ router.post(
           },
           { session }
         ),
-
-        // Update players
         Player.updateMany(
-          { _id: { $in: players.map((p) => p.playerId) } },
+          { _id: { $in: playerIds } },
           {
             $set: {
               paymentComplete: true,
@@ -309,11 +321,9 @@ router.post(
           },
           { session }
         ),
-
-        // Update registrations
         Registration.updateMany(
           {
-            player: { $in: players.map((p) => p.playerId) },
+            player: { $in: playerIds },
             season: players[0].season,
             year: players[0].year,
             tryoutId: players[0].tryoutId,
@@ -332,53 +342,32 @@ router.post(
 
       await Promise.all(updateOperations);
 
-      // Send email receipt
+      // 6. Send confirmation email
       try {
         await sendEmail({
           to: email,
-          subject: 'Your Tryout Payment Receipt',
+          subject: `Payment Confirmation - ${players[0].season} Tryouts`,
           html: `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto;">
-              <h2 style="color: #2c3e50;">Thank you for your tryout payment!</h2>
-              <p style="font-size: 16px;">We've successfully processed your payment for <strong>${players.length}</strong> player(s).</p>
-              <hr style="margin: 20px 0;" />
-              <p><strong>Amount Paid:</strong> $${(amount / 100).toFixed(2)}</p>
-              <p><strong>Payment ID:</strong> ${squarePayment.id}</p>
-              <p><strong>Date:</strong> ${new Date().toLocaleDateString()}</p>
-              <p>
-                <strong>Receipt:</strong>
-                <a href="${squarePayment.receiptUrl}" target="_blank">
-                  View your payment receipt
-                </a>
-              </p>
-              <hr style="margin: 20px 0;" />
-              <p style="font-size: 14px; color: #555;">If you have any questions, feel free to reply to this email.</p>
-            </div>
+            <h2>Payment Successful</h2>
+            <p>Amount: $${(amount / 100).toFixed(2)}</p>
+            <p>Players: ${players.length}</p>
+            <p>Season: ${players[0].season} ${players[0].year}</p>
+            <p>Payment ID: ${squarePayment.id}</p>
+            <p>Date: ${new Date().toLocaleDateString()}</p>
+            <p><a href="${squarePayment.receiptUrl}">View Receipt</a></p>
           `,
         });
       } catch (emailError) {
         console.error('Failed to send email:', emailError);
       }
 
-      // 6. Commit transaction
       await session.commitTransaction();
-
-      // 7. Return updated player data
-      const updatedPlayers = await Player.find({
-        _id: { $in: players.map((p) => p.playerId) },
-      }).session(session);
 
       res.json({
         success: true,
         paymentId: paymentRecord._id,
         receiptUrl: squarePayment.receiptUrl,
-        players: updatedPlayers.map((p) => ({
-          _id: p._id,
-          fullName: p.fullName,
-          paymentComplete: p.paymentComplete,
-          paymentStatus: p.paymentStatus,
-          seasons: p.seasons,
-        })),
+        playersUpdated: playerIds.length,
       });
     } catch (error) {
       await session.abortTransaction();
