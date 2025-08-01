@@ -88,12 +88,12 @@ const paymentSchema = new mongoose.Schema(
   }
 );
 
-// Add index for faster queries
-paymentSchema.index({ playerId: 1 });
-paymentSchema.index({ parentId: 1 });
 paymentSchema.index({ paymentId: 1 }, { unique: true });
-paymentSchema.index({ status: 1 });
 paymentSchema.index({ createdAt: -1 });
+paymentSchema.index({ parentId: 1, status: 1 });
+paymentSchema.index({ parentId: 1, createdAt: -1 });
+paymentSchema.index({ playerIds: 1 });
+paymentSchema.index({ status: 1, createdAt: -1 });
 
 const Payment = mongoose.model('Payment', paymentSchema);
 

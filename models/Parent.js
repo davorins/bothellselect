@@ -339,16 +339,16 @@ parentSchema.pre('save', async function (next) {
       if (this.players && this.players.length > 0) {
         const players = await mongoose
           .model('Player')
-          .find(
-            { _id: { $in: this.players } },
-            { season: 1, registrationYear: 1 }
-          );
+          .find({ _id: { $in: this.players } }, { seasons: 1 });
 
-        // Ensure seasons are strings and years are numbers
-        this.playersSeason = [...new Set(players.map((p) => String(p.season)))];
-        this.playersYear = [
-          ...new Set(players.map((p) => Number(p.registrationYear))),
-        ];
+        // Extract all unique seasons and years from players' seasons
+        const allSeasons = players.flatMap((p) =>
+          p.seasons.map((s) => s.season)
+        );
+        const allYears = players.flatMap((p) => p.seasons.map((s) => s.year));
+
+        this.playersSeason = [...new Set(allSeasons)];
+        this.playersYear = [...new Set(allYears)];
       } else {
         this.playersSeason = [];
         this.playersYear = [];

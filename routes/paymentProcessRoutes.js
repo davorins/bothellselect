@@ -22,6 +22,7 @@ router.post('/process', authenticate, async (req, res) => {
       sourceId,
       amount,
       parentId,
+      playerIds,
       playerCount,
       cardDetails,
       locationId,
@@ -35,6 +36,16 @@ router.post('/process', authenticate, async (req, res) => {
     const parentExists = await Parent.findById(parentId).session(session);
     if (!parentExists) {
       throw new Error('Parent not found');
+    }
+
+    // Get all player records
+    const playerRecords = await Player.find({
+      _id: { $in: playerIds },
+      parentId: parentId,
+    }).session(session);
+
+    if (playerRecords.length === 0) {
+      throw new Error('No valid players found for this payment');
     }
 
     const { result: customerResult } = await client.customersApi.createCustomer(
@@ -72,7 +83,8 @@ router.post('/process', authenticate, async (req, res) => {
 
     const payment = new Payment({
       parentId,
-      playerCount,
+      playerIds: playerRecords.map((p) => p._id),
+      playerCount: playerRecords.length,
       paymentId: paymentResponse.result.payment.id,
       locationId,
       buyerEmail: buyerEmailAddress,
@@ -97,12 +109,6 @@ router.post('/process', authenticate, async (req, res) => {
     );
 
     // Update all related players' payment status
-    const players = await Player.find({ parentId }).session(session);
-    if (players.length === 0) {
-      throw new Error('No players found for this parent');
-    }
-
-    const playerIds = players.map((player) => player._id);
     const updateResult = await Player.updateMany(
       { _id: { $in: playerIds } },
       { $set: { paymentComplete: true } },
