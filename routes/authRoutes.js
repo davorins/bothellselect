@@ -1822,6 +1822,7 @@ router.get('/payments/parent/:parentId', authenticate, async (req, res) => {
 });
 
 // Update payment status for players
+// Update payment status for players
 router.post('/payments/update-players', authenticate, async (req, res) => {
   const {
     parentId,
@@ -1837,10 +1838,10 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
     cardBrand,
   } = req.body;
 
-  if (!parentId || !playerIds || !season || !year) {
-    return res
-      .status(400)
-      .json({ error: 'Parent ID, player IDs, season, and year are required' });
+  if (!parentId || !playerIds || !season || !year || !tryoutId) {
+    return res.status(400).json({
+      error: 'Parent ID, player IDs, season, year, and tryoutId are required',
+    });
   }
 
   const session = await mongoose.startSession();
@@ -1857,16 +1858,18 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
       paymentStatus,
       paymentId,
       amountPaid,
+      paymentMethod,
       cardLast4,
       cardBrand,
     });
 
+    // Update Player.seasons
     const playersUpdate = await Player.updateMany(
       {
         _id: { $in: playerIds },
         'seasons.season': season,
-        'seasons.year': year,
-        'seasons.tryoutId': tryoutId || null,
+        'seasons.year': parseInt(year),
+        'seasons.tryoutId': tryoutId,
       },
       {
         $set: {
@@ -1889,12 +1892,13 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
     // Debug: Log the result of players update
     console.log('Players update result:', playersUpdate);
 
+    // Update Registration documents
     const registrationsUpdate = await Registration.updateMany(
       {
         player: { $in: playerIds },
         season,
-        year,
-        tryoutId: tryoutId || null,
+        year: parseInt(year),
+        tryoutId,
       },
       {
         $set: {
@@ -1909,6 +1913,7 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
     // Debug: Log the result of registrations update
     console.log('Registrations update result:', registrationsUpdate);
 
+    // Update Parent payment status
     const parentUpdate = await Parent.findByIdAndUpdate(
       parentId,
       {
