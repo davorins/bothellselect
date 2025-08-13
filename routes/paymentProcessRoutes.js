@@ -352,8 +352,10 @@ router.post(
 
         let updatedSeasons;
         if (seasonIndex === -1) {
+          // Add new season entry if not found (shouldn't happen for tryouts)
           updatedSeasons = [...player.seasons, seasonData];
         } else {
+          // Update the specific season entry
           updatedSeasons = [...player.seasons];
           updatedSeasons[seasonIndex] = {
             ...updatedSeasons[seasonIndex],
@@ -374,9 +376,8 @@ router.post(
               },
             },
             { new: true, session }
-          )
+          ).exec()
         );
-
         // 2. Update Registrations
         updateOperations.push(
           Registration.updateMany(
@@ -396,7 +397,7 @@ router.post(
               },
             },
             { session }
-          )
+          ).exec()
         );
       });
 

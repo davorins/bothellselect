@@ -75,18 +75,29 @@ const playerSchema = new mongoose.Schema(
 // Middleware to update top-level fields when seasons array changes
 playerSchema.pre('save', function (next) {
   if (this.isModified('seasons') && this.seasons.length > 0) {
-    const latestSeason = this.seasons.reduce((latest, current) =>
-      !latest ||
-      new Date(current.registrationDate) > new Date(latest.registrationDate)
-        ? current
-        : latest
-    );
+    // Find the most recent season with payment status
+    const paidSeasons = this.seasons.filter((s) => s.paymentStatus === 'paid');
+    const latestSeason =
+      paidSeasons.length > 0
+        ? paidSeasons.reduce((latest, current) =>
+            new Date(current.registrationDate) >
+            new Date(latest.registrationDate)
+              ? current
+              : latest
+          )
+        : this.seasons.reduce((latest, current) =>
+            new Date(current.registrationDate) >
+            new Date(latest.registrationDate)
+              ? current
+              : latest
+          );
 
     this.season = latestSeason.season;
     this.registrationYear = latestSeason.year;
     this.paymentStatus = latestSeason.paymentStatus;
     this.paymentComplete = latestSeason.paymentStatus === 'paid';
-    if (latestSeason.paymentStatus !== 'pending') {
+
+    if (latestSeason.paymentStatus === 'paid') {
       this.lastPaymentDate = latestSeason.registrationDate;
     }
   }
