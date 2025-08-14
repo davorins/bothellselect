@@ -45,7 +45,7 @@ const registrationSchema = new mongoose.Schema(
       min: [2020, 'Year must be 2020 or later'],
       max: [2030, 'Year must be 2030 or earlier'],
     },
-    tryoutId: { type: String, required: true }, // Remove default: null, make required
+    tryoutId: { type: String, required: true },
     paymentStatus: {
       type: String,
       enum: ['pending', 'paid', 'failed', 'refunded'],
@@ -78,9 +78,17 @@ const generateRandomPassword = () => {
 };
 
 // Generate unique tryoutId based on season and year
+// const generateTryoutId = (season, year) => {
+//   const randomString = crypto.randomBytes(4).toString('hex');
+//   return `${season.toLowerCase().replace(/\s+/g, '-')}-${year}-tryout-${randomString}`;
+// };
 const generateTryoutId = (season, year) => {
-  const randomString = crypto.randomBytes(4).toString('hex');
-  return `${season.toLowerCase().replace(/\s+/g, '-')}-${year}-tryout-${randomString}`;
+  // Return hardcoded tryoutId for the 2025 Basketball Select Tryout
+  if (season === 'Basketball Select Tryout' && year === 2025) {
+    return 'basketballselect-tryout';
+  }
+  // Fallback for other seasons/years (optional)
+  return `${season.toLowerCase().replace(/\s+/g, '-')}-${year}-tryout-default`;
 };
 
 module.exports = {
@@ -323,7 +331,7 @@ router.post(
     body('tryoutId')
       .optional()
       .isString()
-      .withMessage('Tryout ID must be a string'), // Make tryoutId optional
+      .withMessage('Tryout ID must be a string'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -354,25 +362,35 @@ router.post(
       const finalTryoutId =
         tryoutId || generateTryoutId(season, registrationYear);
 
-      const existingRegistration = await Registration.findOne({
-        player: { $exists: true },
-        parent: parentId,
-        season,
-        year: registrationYear,
-        tryoutId: finalTryoutId,
+      // Check if a player with the same fullName and dob is already registered for this tryout
+      const existingPlayer = await Player.findOne({
+        parentId,
+        fullName,
+        dob: new Date(dob),
+        'seasons.season': season,
+        'seasons.year': registrationYear,
+        'seasons.tryoutId': finalTryoutId,
       }).session(session);
 
-      if (existingRegistration) {
+      if (existingPlayer) {
         await session.abortTransaction();
-        return res
-          .status(400)
-          .json({ error: 'Player already registered for this tryout' });
+        return res.status(400).json({
+          error: `Player ${fullName} is already registered for this tryout`,
+        });
       }
 
+      // Verify parent exists
+      const parent = await Parent.findById(parentId).session(session);
+      if (!parent) {
+        await session.abortTransaction();
+        return res.status(400).json({ error: 'Parent not found' });
+      }
+
+      // Create new player
       const player = new Player({
         fullName,
         gender,
-        dob,
+        dob: new Date(dob),
         schoolName,
         healthConcerns: healthConcerns || '',
         aauNumber: aauNumber || '',
@@ -393,12 +411,14 @@ router.post(
 
       await player.save({ session });
 
+      // Update parent's players array
       await Parent.findByIdAndUpdate(
         parentId,
         { $push: { players: player._id } },
         { new: true, session }
       );
 
+      // Create registration document
       const registration = new Registration({
         player: player._id,
         parent: parentId,
@@ -412,8 +432,30 @@ router.post(
 
       await session.commitTransaction();
 
-      console.log('Registered player:', player);
-      console.log('Created registration:', registration);
+      console.log('Registered player:', {
+        playerId: player._id,
+        fullName,
+        parentId,
+        season,
+        year: registrationYear,
+        tryoutId: finalTryoutId,
+      });
+      console.log('Created registration:', {
+        registrationId: registration._id,
+        playerId: player._id,
+        parentId,
+        season,
+        year: registrationYear,
+        tryoutId: finalTryoutId,
+      });
+
+      // Send tryout confirmation email (async)
+      sendTryoutEmail(
+        parent.email,
+        player.fullName,
+        season,
+        registrationYear
+      ).catch((err) => console.error('Tryout email failed:', err));
 
       res.status(201).json({
         message: 'Player registered successfully',
@@ -423,13 +465,24 @@ router.post(
           registrationYear,
           tryoutId: finalTryoutId,
         },
+        registration: {
+          id: registration._id,
+          playerId: player._id,
+          parentId,
+          season,
+          year: registrationYear,
+          tryoutId: finalTryoutId,
+          paymentStatus: 'pending',
+        },
       });
     } catch (error) {
       await session.abortTransaction();
       console.error('Error registering player:', error.message, error.stack);
-      res
-        .status(500)
-        .json({ error: 'Failed to register player', details: error.message });
+      res.status(500).json({
+        error: 'Failed to register player',
+        details:
+          process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
     } finally {
       session.endSession();
     }
@@ -679,11 +732,21 @@ router.post(
           paymentComplete: false,
         },
         players: savedPlayers.map((p) => ({
-          id: p._id,
-          name: p.fullName,
+          _id: p._id,
+          fullName: p.fullName,
+          gender: p.gender,
+          dob: p.dob,
+          schoolName: p.schoolName,
+          grade: p.grade,
+          healthConcerns: p.healthConcerns,
+          aauNumber: p.aauNumber,
+          registrationYear: p.registrationYear,
+          season: p.season,
+          seasons: p.seasons,
           registrationComplete: true,
           paymentComplete: false,
-          tryoutId: p.tryoutId,
+          paymentStatus: 'pending',
+          tryoutId: p.seasons[0]?.tryoutId || null,
         })),
         registrations: registrations.map((r) => ({
           id: r._id,
@@ -1843,12 +1906,17 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
     });
   }
 
+  if (!Array.isArray(playerIds) || playerIds.length === 0) {
+    return res
+      .status(400)
+      .json({ error: 'Player IDs must be a non-empty array' });
+  }
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    // Debug: Log the incoming request body
-    console.log('Updating payment status with:', {
+    console.log('Processing payment update:', {
       parentId,
       playerIds,
       season,
@@ -1861,6 +1929,31 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
       cardLast4,
       cardBrand,
     });
+
+    // Verify players exist and match criteria
+    const players = await Player.find({
+      _id: { $in: playerIds },
+      parentId,
+      'seasons.season': season,
+      'seasons.year': parseInt(year),
+      'seasons.tryoutId': tryoutId,
+    }).session(session);
+
+    if (players.length !== playerIds.length) {
+      console.warn('Some players not found or mismatched:', {
+        requestedPlayerIds: playerIds,
+        foundPlayerIds: players.map((p) => p._id.toString()),
+      });
+      await session.abortTransaction();
+      return res.status(404).json({
+        error:
+          'One or more players not found or not registered for this tryout',
+        details: {
+          requestedPlayerIds: playerIds,
+          foundPlayerIds: players.map((p) => p._id.toString()),
+        },
+      });
+    }
 
     // Update Player.seasons
     const playersUpdate = await Player.updateMany(
@@ -1878,9 +1971,10 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
             ? amountPaid / playerIds.length
             : undefined,
           'seasons.$.paymentId': paymentId,
-          'seasons.$.paymentMethod': paymentMethod,
           'seasons.$.cardLast4': cardLast4,
           'seasons.$.cardBrand': cardBrand,
+          'seasons.$.paymentDate':
+            paymentStatus === 'paid' ? new Date() : undefined,
           paymentComplete: paymentStatus === 'paid',
           paymentStatus,
         },
@@ -1888,13 +1982,11 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
       { session }
     );
 
-    // Debug: Log the result of players update
-    console.log('Players update result:', playersUpdate);
-
     // Update Registration documents
     const registrationsUpdate = await Registration.updateMany(
       {
         player: { $in: playerIds },
+        parent: parentId,
         season,
         year: parseInt(year),
         tryoutId,
@@ -1904,33 +1996,47 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
           paymentStatus,
           paymentComplete: paymentStatus === 'paid',
           paymentDate: paymentStatus === 'paid' ? new Date() : undefined,
+          paymentId,
+          amountPaid: amountPaid ? amountPaid / playerIds.length : undefined,
+          cardLast4,
+          cardBrand,
         },
       },
       { session }
     );
 
-    // Debug: Log the result of registrations update
-    console.log('Registrations update result:', registrationsUpdate);
-
     // Update Parent payment status
+    const allRegistrations = await Registration.find({
+      parent: parentId,
+      season,
+      year: parseInt(year),
+      tryoutId,
+    }).session(session);
+
+    const allPaid = allRegistrations.every(
+      (reg) => reg.paymentStatus === 'paid'
+    );
+
     const parentUpdate = await Parent.findByIdAndUpdate(
       parentId,
       {
         $set: {
-          paymentComplete: paymentStatus === 'paid',
+          paymentComplete: allPaid,
           updatedAt: new Date(),
         },
       },
       { new: true, session }
     );
 
-    // Debug: Log parent update result
-    console.log('Parent update result:', parentUpdate);
-
     if (
       playersUpdate.modifiedCount === 0 ||
       registrationsUpdate.modifiedCount === 0
     ) {
+      console.warn('No documents updated:', {
+        playersModified: playersUpdate.modifiedCount,
+        registrationsModified: registrationsUpdate.modifiedCount,
+        query: { playerIds, season, year, tryoutId },
+      });
       await session.abortTransaction();
       return res.status(404).json({
         error: 'No matching players or registrations found',
@@ -1944,6 +2050,12 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
 
     await session.commitTransaction();
 
+    console.log('Payment update successful:', {
+      playersUpdated: playersUpdate.modifiedCount,
+      registrationsUpdated: registrationsUpdate.modifiedCount,
+      parentId,
+    });
+
     res.json({
       success: true,
       playersUpdated: playersUpdate.modifiedCount,
@@ -1952,11 +2064,12 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
     });
   } catch (error) {
     await session.abortTransaction();
-    console.error('Payment status update error:', error);
+    console.error('Payment status update error:', error.message, error.stack);
     res.status(500).json({
       success: false,
       error: 'Failed to update payment status',
-      details: error.message,
+      details:
+        process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   } finally {
     session.endSession();
