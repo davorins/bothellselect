@@ -87,6 +87,9 @@ const generateTryoutId = (season, year) => {
   if (season === 'Basketball Select Tryout' && year === 2025) {
     return 'basketballselect-tryout';
   }
+  if (season === 'Fall Training' && year === 2025) {
+    return 'falltraining-2025';
+  }
   // Fallback for other seasons/years (optional)
   return `${season.toLowerCase().replace(/\s+/g, '-')}-${year}-tryout-default`;
 };
