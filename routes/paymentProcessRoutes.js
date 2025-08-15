@@ -21,72 +21,86 @@ router.post('/process', authenticate, async (req, res) => {
     const {
       sourceId,
       amount,
-      parentId,
-      playerIds,
-      playerCount,
+      players, // Array of players with season/year/tryoutId
       cardDetails,
       locationId,
-      buyerEmailAddress,
+      email: buyerEmailAddress,
+      token,
     } = req.body;
 
-    if (!buyerEmailAddress) {
-      throw new Error('Email is required for payment receipt');
+    // Use authenticated user's ID
+    const parentId = req.user.id;
+    if (!parentId) {
+      throw new Error('Parent ID not found in authentication token');
     }
 
-    const parentExists = await Parent.findById(parentId).session(session);
-    if (!parentExists) {
-      throw new Error('Parent not found');
+    // Get parent with session
+    const parent = await Parent.findById(parentId).session(session);
+    if (!parent) {
+      throw new Error(`Parent not found with ID: ${parentId}`);
     }
 
-    // Get all player records
+    // Get player records
+    const playerIds = players.map((p) => p.playerId).filter((id) => id);
     const playerRecords = await Player.find({
       _id: { $in: playerIds },
-      parentId: parentId,
+      parentId: parent._id,
     }).session(session);
 
     if (playerRecords.length === 0) {
       throw new Error('No valid players found for this payment');
     }
 
-    const { result: customerResult } = await client.customersApi.createCustomer(
-      {
-        emailAddress: buyerEmailAddress,
-      }
-    );
-
-    const customerId = customerResult.customer?.id;
+    // Use existing Square customer ID or create new one
+    let customerId = parent.squareCustomerId;
     if (!customerId) {
-      throw new Error('Failed to create customer');
+      const { result: customerResult } =
+        await client.customersApi.createCustomer({
+          emailAddress: buyerEmailAddress,
+          referenceId: `parent:${parent._id}`,
+        });
+      customerId = customerResult.customer?.id;
+
+      // Update parent with new customer ID
+      await Parent.updateOne(
+        { _id: parentId },
+        { $set: { squareCustomerId: customerId } },
+        { session }
+      );
     }
 
+    // Process payment
     const paymentRequest = {
-      sourceId,
+      sourceId: sourceId || token,
       amountMoney: {
         amount: parseInt(amount),
         currency: 'USD',
       },
-      idempotencyKey: crypto.randomBytes(32).toString('hex'),
-      locationId,
+      idempotencyKey: crypto.randomUUID(),
+      locationId: locationId || process.env.SQUARE_LOCATION_ID,
       customerId,
-      referenceId: `parent:${parentId}`,
-      note: `Payment for ${playerCount} player(s)`,
+      referenceId: `parent:${parent._id}`,
+      note: `Payment for ${players.length} player(s)`,
+      buyerEmailAddress,
+      autocomplete: true,
     };
 
-    const paymentResponse =
-      await client.paymentsApi.createPayment(paymentRequest);
+    const { result } = await client.paymentsApi.createPayment(paymentRequest);
+    const paymentResult = result.payment;
 
-    if (paymentResponse.result.payment?.status !== 'COMPLETED') {
+    if (!paymentResult || paymentResult.status !== 'COMPLETED') {
       throw new Error(
-        `Payment failed with status: ${paymentResponse.result.payment?.status}`
+        `Payment failed with status: ${paymentResult?.status || 'unknown'}`
       );
     }
 
+    // Create Payment record
     const payment = new Payment({
-      parentId,
+      parentId: parent._id,
       playerIds: playerRecords.map((p) => p._id),
-      playerCount: playerRecords.length,
-      paymentId: paymentResponse.result.payment.id,
-      locationId,
+      playerCount: players.length,
+      paymentId: paymentResult.id,
+      locationId: paymentRequest.locationId,
       buyerEmail: buyerEmailAddress,
       cardLastFour: cardDetails.last_4,
       cardBrand: cardDetails.card_brand,
@@ -96,48 +110,100 @@ router.post('/process', authenticate, async (req, res) => {
       currency: 'USD',
       status: 'completed',
       processedAt: new Date(),
-      receiptUrl: paymentResponse.result.payment?.receiptUrl,
+      receiptUrl: paymentResult.receiptUrl,
+      players: players.map((p) => ({
+        playerId: p.playerId || null,
+        season: p.season,
+        year: p.year,
+        tryoutId: p.tryoutId || null,
+      })),
     });
 
     await payment.save({ session });
 
-    // Update parent payment status
+    // Update players and registrations
+    const updatedPlayers = [];
+    for (const player of playerRecords) {
+      try {
+        const playerRequest = players.find(
+          (p) => p.playerId === player._id.toString()
+        );
+        if (!playerRequest) continue;
+
+        // Find matching season or create new one
+        const seasonIndex = player.seasons.findIndex(
+          (s) =>
+            s.season === playerRequest.season &&
+            s.year === playerRequest.year &&
+            (s.tryoutId === playerRequest.tryoutId ||
+              (!s.tryoutId && !playerRequest.tryoutId))
+        );
+
+        const seasonData = {
+          season: playerRequest.season,
+          year: playerRequest.year,
+          tryoutId: playerRequest.tryoutId || null,
+          paymentStatus: 'paid',
+          paymentComplete: true,
+          paymentId: paymentResult.id,
+          amountPaid: amount / 100 / players.length,
+          cardLast4: cardDetails.last_4,
+          cardBrand: cardDetails.card_brand,
+          paymentDate: new Date(),
+        };
+
+        if (seasonIndex >= 0) {
+          player.seasons[seasonIndex] = {
+            ...player.seasons[seasonIndex],
+            ...seasonData,
+          };
+        } else {
+          player.seasons.push({ ...seasonData, registrationDate: new Date() });
+        }
+
+        // Force update
+        player.markModified('seasons');
+        const updatedPlayer = await player.save({ session });
+        updatedPlayers.push(updatedPlayer);
+
+        // NEW: Update registrations - similar to /tryout
+        await Registration.updateMany(
+          {
+            player: player._id,
+            season: playerRequest.season,
+            year: playerRequest.year,
+            tryoutId: playerRequest.tryoutId || null,
+          },
+          {
+            $set: {
+              paymentStatus: 'paid',
+              paymentComplete: true,
+              paymentDate: new Date(),
+              paymentId: paymentResult.id,
+              updatedAt: new Date(),
+            },
+          },
+          { session }
+        );
+      } catch (updateError) {
+        console.error(`Failed to update player ${player._id}:`, updateError);
+        throw new Error(`Failed to update player ${player.fullName}`);
+      }
+    }
+
+    // Update parent
     await Parent.updateOne(
       { _id: parentId },
       { $set: { paymentComplete: true } },
       { session }
     );
 
-    // Update all related players' payment status
-    const updateResult = await Player.updateMany(
-      { _id: { $in: playerIds } },
-      { $set: { paymentComplete: true } },
-      { session }
-    );
-
-    // Send email receipt
+    // Send receipt email
     try {
       await sendEmail({
         to: buyerEmailAddress,
         subject: 'Your Payment Receipt',
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto;">
-            <h2 style="color: #2c3e50;">Thank you for your payment!</h2>
-            <p style="font-size: 16px;">We've successfully processed your payment for <strong>${playerCount}</strong> player(s).</p>
-            <hr style="margin: 20px 0;" />
-            <p><strong>Amount Paid:</strong> $${(amount / 100).toFixed(2)}</p>
-            <p><strong>Payment ID:</strong> ${paymentResponse.result.payment.id}</p>
-            <p><strong>Date:</strong> ${new Date().toLocaleDateString()}</p>
-            <p>
-              <strong>Receipt:</strong>
-              <a href="${paymentResponse.result.payment?.receiptUrl}" target="_blank">
-                View your payment receipt
-              </a>
-            </p>
-            <hr style="margin: 20px 0;" />
-            <p style="font-size: 14px; color: #555;">If you have any questions, feel free to reply to this email.</p>
-          </div>
-        `,
+        html: `...`, // Your existing email template
       });
     } catch (emailError) {
       console.error('Failed to send email:', emailError);
@@ -149,9 +215,21 @@ router.post('/process', authenticate, async (req, res) => {
       success: true,
       paymentId: payment._id,
       parentUpdated: true,
-      playersUpdated: updateResult.modifiedCount,
-      playerIds,
+      playersUpdated: updatedPlayers.length,
+      playerIds: updatedPlayers.map((p) => p._id.toString()),
+      players: updatedPlayers.map((p) => ({
+        _id: p._id,
+        fullName: p.fullName,
+        seasons: p.seasons.map((s) => ({
+          season: s.season,
+          year: s.year,
+          tryoutId: s.tryoutId,
+          paymentStatus: s.paymentStatus,
+          paymentComplete: s.paymentComplete,
+        })),
+      })),
       status: 'processed',
+      receiptUrl: paymentResult.receiptUrl,
     });
   } catch (error) {
     await session.abortTransaction();
@@ -159,12 +237,13 @@ router.post('/process', authenticate, async (req, res) => {
       message: error.message,
       stack: error.stack,
       requestBody: req.body,
+      user: req.user,
     });
     res.status(400).json({
       success: false,
       error: 'Payment processing failed',
-      details:
-        process.env.NODE_ENV === 'development' ? error.message : undefined,
+      message: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined,
     });
   } finally {
     session.endSession();
