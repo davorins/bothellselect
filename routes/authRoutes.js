@@ -365,18 +365,29 @@ router.post(
       const finalTryoutId =
         tryoutId || generateTryoutId(season, registrationYear);
 
+      // Normalize inputs for consistency
+      const normalizedSeason = season.trim();
+      const normalizedTryoutId = finalTryoutId.trim();
+
       // Check if a player with the same fullName and dob is already registered for this tryout
       const existingPlayer = await Player.findOne({
         parentId,
         fullName,
         dob: new Date(dob),
-        'seasons.season': season,
+        'seasons.season': normalizedSeason,
         'seasons.year': registrationYear,
-        'seasons.tryoutId': finalTryoutId,
+        'seasons.tryoutId': normalizedTryoutId,
       }).session(session);
 
       if (existingPlayer) {
         await session.abortTransaction();
+        console.log('Duplicate player registration attempt:', {
+          fullName,
+          parentId,
+          season: normalizedSeason,
+          year: registrationYear,
+          tryoutId: normalizedTryoutId,
+        });
         return res.status(400).json({
           error: `Player ${fullName} is already registered for this tryout`,
         });
@@ -386,6 +397,7 @@ router.post(
       const parent = await Parent.findById(parentId).session(session);
       if (!parent) {
         await session.abortTransaction();
+        console.log('Parent not found:', { parentId });
         return res.status(400).json({ error: 'Parent not found' });
       }
 
@@ -398,18 +410,24 @@ router.post(
         healthConcerns: healthConcerns || '',
         aauNumber: aauNumber || '',
         registrationYear,
-        season,
+        season: normalizedSeason,
         parentId,
         grade,
+        paymentStatus: 'pending',
+        paymentComplete: false,
+        registrationComplete: true,
         seasons: [
           {
-            season,
+            season: normalizedSeason,
             year: registrationYear,
-            tryoutId: finalTryoutId,
+            tryoutId: normalizedTryoutId,
             registrationDate: new Date(),
             paymentStatus: 'pending',
+            paymentComplete: false,
           },
         ],
+        createdAt: new Date(),
+        updatedAt: new Date(),
       });
 
       await player.save({ session });
@@ -425,10 +443,14 @@ router.post(
       const registration = new Registration({
         player: player._id,
         parent: parentId,
-        season,
+        season: normalizedSeason,
         year: registrationYear,
-        tryoutId: finalTryoutId,
+        tryoutId: normalizedTryoutId,
         paymentStatus: 'pending',
+        paymentComplete: false,
+        registrationComplete: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
       });
 
       await registration.save({ session });
@@ -439,24 +461,31 @@ router.post(
         playerId: player._id,
         fullName,
         parentId,
-        season,
+        season: normalizedSeason,
         year: registrationYear,
-        tryoutId: finalTryoutId,
+        tryoutId: normalizedTryoutId,
+        paymentStatus: player.paymentStatus,
+        paymentComplete: player.paymentComplete,
+        registrationComplete: player.registrationComplete,
+        seasons: player.seasons,
       });
       console.log('Created registration:', {
         registrationId: registration._id,
         playerId: player._id,
         parentId,
-        season,
+        season: normalizedSeason,
         year: registrationYear,
-        tryoutId: finalTryoutId,
+        tryoutId: normalizedTryoutId,
+        paymentStatus: registration.paymentStatus,
+        paymentComplete: registration.paymentComplete,
+        registrationComplete: registration.registrationComplete,
       });
 
       // Send tryout confirmation email (async)
       sendTryoutEmail(
         parent.email,
         player.fullName,
-        season,
+        normalizedSeason,
         registrationYear
       ).catch((err) => console.error('Tryout email failed:', err));
 
@@ -464,18 +493,23 @@ router.post(
         message: 'Player registered successfully',
         player: {
           ...player.toObject(),
-          season,
+          season: normalizedSeason,
           registrationYear,
-          tryoutId: finalTryoutId,
+          tryoutId: normalizedTryoutId,
+          paymentStatus: player.paymentStatus,
+          paymentComplete: player.paymentComplete,
+          registrationComplete: player.registrationComplete,
         },
         registration: {
           id: registration._id,
           playerId: player._id,
           parentId,
-          season,
+          season: normalizedSeason,
           year: registrationYear,
-          tryoutId: finalTryoutId,
-          paymentStatus: 'pending',
+          tryoutId: normalizedTryoutId,
+          paymentStatus: registration.paymentStatus,
+          paymentComplete: registration.paymentComplete,
+          registrationComplete: registration.registrationComplete,
         },
       });
     } catch (error) {
@@ -620,7 +654,7 @@ router.post(
       // Create parent first to get parentId
       const parent = new Parent({
         email: normalizedEmail,
-        password: rawPassword, // Assume password hashing in Parent model's pre-save hook
+        password: rawPassword,
         fullName: fullName.trim(),
         relationship: relationship.trim(),
         phone: phone.replace(/\D/g, ''),
@@ -666,6 +700,8 @@ router.post(
           tryoutId: finalTryoutId,
           parentId: parent._id,
           registrationComplete: true,
+          paymentStatus: 'pending',
+          paymentComplete: false,
           seasons: [
             {
               season: player.season,
@@ -673,6 +709,7 @@ router.post(
               tryoutId: finalTryoutId,
               registrationDate: new Date(),
               paymentStatus: 'pending',
+              paymentComplete: false,
             },
           ],
           createdAt: new Date(),
@@ -694,6 +731,7 @@ router.post(
         year: playerDoc.registrationYear,
         tryoutId: playerDoc.tryoutId,
         paymentStatus: 'pending',
+        paymentComplete: false,
         registrationComplete: true,
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -747,8 +785,8 @@ router.post(
           season: p.season,
           seasons: p.seasons,
           registrationComplete: true,
-          paymentComplete: false,
-          paymentStatus: 'pending',
+          paymentComplete: p.paymentComplete,
+          paymentStatus: p.paymentStatus,
           tryoutId: p.seasons[0]?.tryoutId || null,
         })),
         registrations: registrations.map((r) => ({
@@ -758,8 +796,8 @@ router.post(
           year: r.year,
           tryoutId: r.tryoutId,
           paymentStatus: r.paymentStatus,
+          paymentComplete: r.paymentComplete,
           registrationComplete: true,
-          paymentComplete: false,
         })),
         token,
       });

@@ -39,7 +39,7 @@ const playerSchema = new mongoose.Schema(
     registrationYear: { type: Number },
     season: { type: String },
     seasons: [seasonRegistrationSchema],
-    registrationComplete: { type: Boolean, default: false },
+    registrationComplete: { type: Boolean, default: true },
     paymentComplete: { type: Boolean, default: false },
     paymentStatus: {
       type: String,
@@ -58,10 +58,16 @@ const playerSchema = new mongoose.Schema(
 
 // Enhanced pre-save middleware
 playerSchema.pre('save', function (next) {
-  if (this.isModified('seasons')) {
-    if (this.seasons && this.seasons.length > 0) {
-      // Find the most recent season with payment or registration date
-      const latestSeason = this.seasons.reduce((latest, current) => {
+  if (this.isModified('seasons') && this.seasons && this.seasons.length > 0) {
+    // Prioritize the season being modified (if provided in context) or the latest by registrationDate
+    const modifiedSeason = this.seasons.find((s) =>
+      this.isModified(`seasons.${this.seasons.indexOf(s)}`)
+    );
+
+    let targetSeason = modifiedSeason;
+    if (!targetSeason) {
+      // Fallback to the latest season by registrationDate or paymentDate
+      targetSeason = this.seasons.reduce((latest, current) => {
         const currentDate = current.paymentDate || current.registrationDate;
         const latestDate = latest?.paymentDate || latest?.registrationDate;
 
@@ -73,22 +79,46 @@ playerSchema.pre('save', function (next) {
         }
         return latest;
       });
+    }
 
-      // Update top-level fields
-      this.season = latestSeason.season;
-      this.registrationYear = latestSeason.year;
-      this.paymentStatus = latestSeason.paymentStatus;
-      this.paymentComplete = latestSeason.paymentStatus === 'paid';
-
-      if (latestSeason.paymentDate) {
-        this.lastPaymentDate = latestSeason.paymentDate;
+    // Update top-level fields based on target season
+    if (targetSeason) {
+      this.season = targetSeason.season;
+      this.registrationYear = targetSeason.year;
+      this.paymentStatus = targetSeason.paymentStatus;
+      this.paymentComplete = targetSeason.paymentStatus === 'paid';
+      this.registrationComplete = true;
+      if (targetSeason.paymentDate) {
+        this.lastPaymentDate = targetSeason.paymentDate;
       } else if (
-        latestSeason.registrationDate &&
-        latestSeason.paymentStatus === 'paid'
+        targetSeason.registrationDate &&
+        targetSeason.paymentStatus === 'paid'
       ) {
-        this.lastPaymentDate = latestSeason.registrationDate;
+        this.lastPaymentDate = targetSeason.registrationDate;
       }
     }
+
+    console.log('Pre-save middleware:', {
+      playerId: this._id,
+      fullName: this.fullName,
+      targetSeason: targetSeason
+        ? {
+            season: targetSeason.season,
+            year: targetSeason.year,
+            tryoutId: targetSeason.tryoutId,
+            paymentStatus: targetSeason.paymentStatus,
+            paymentComplete: targetSeason.paymentComplete,
+          }
+        : 'none',
+      updatedFields: {
+        season: this.season,
+        registrationYear: this.registrationYear,
+        paymentStatus: this.paymentStatus,
+        paymentComplete: this.paymentComplete,
+        registrationComplete: this.registrationComplete,
+        lastPaymentDate: this.lastPaymentDate,
+      },
+    });
   }
   next();
 });
@@ -100,6 +130,7 @@ playerSchema.post('save', function (doc) {
     fullName: doc.fullName,
     paymentStatus: doc.paymentStatus,
     paymentComplete: doc.paymentComplete,
+    registrationComplete: doc.registrationComplete,
     seasons: doc.seasons.map((s) => ({
       season: s.season,
       year: s.year,
@@ -107,15 +138,23 @@ playerSchema.post('save', function (doc) {
       paymentStatus: s.paymentStatus,
       paymentComplete: s.paymentComplete,
       paymentDate: s.paymentDate,
+      registrationDate: s.registrationDate,
     })),
   });
 });
 
-playerSchema.index({ parentId: 1 });
-playerSchema.index({
-  'seasons.season': 1,
-  'seasons.year': 1,
-  'seasons.tryoutId': 1,
-});
+// Ensure unique index for season registrations per player
+playerSchema.index(
+  {
+    parentId: 1,
+    'seasons.season': 1,
+    'seasons.year': 1,
+    'seasons.tryoutId': 1,
+  },
+  {
+    unique: true,
+    partialFilterExpression: { 'seasons.season': { $exists: true } },
+  }
+);
 
 module.exports = mongoose.model('Player', playerSchema);
