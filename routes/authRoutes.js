@@ -20,6 +20,7 @@ const {
   sendResetEmail,
   sendTryoutEmail,
 } = require('../utils/email');
+const { calculateGradeFromDOB } = require('../utils/gradeUtils');
 
 const registrationSchema = new mongoose.Schema(
   {
@@ -330,7 +331,8 @@ router.post(
       .withMessage('Registration year must be a number'),
     body('season').notEmpty().withMessage('Season is required'),
     body('parentId').notEmpty().withMessage('Parent ID is required'),
-    body('grade').notEmpty().withMessage('Grade is required'),
+    body('grade').optional().isString(),
+    body('isGradeOverridden').optional().isBoolean(),
     body('tryoutId')
       .optional()
       .isString()
@@ -354,8 +356,14 @@ router.post(
       season,
       parentId,
       grade,
+      isGradeOverridden = false,
       tryoutId,
     } = req.body;
+
+    // Calculate grade if not overridden
+    const calculatedGrade = isGradeOverridden
+      ? grade
+      : calculateGradeFromDOB(dob, registrationYear);
 
     const session = await mongoose.startSession();
     session.startTransaction();
@@ -412,7 +420,8 @@ router.post(
         registrationYear,
         season: normalizedSeason,
         parentId,
-        grade,
+        grade: calculatedGrade,
+        isGradeOverridden,
         paymentStatus: 'pending',
         paymentComplete: false,
         registrationComplete: true,
@@ -567,7 +576,8 @@ router.post(
       .notEmpty()
       .withMessage('Player date of birth required'),
     body('players.*.schoolName').notEmpty().withMessage('School name required'),
-    body('players.*.grade').notEmpty().withMessage('Player grade required'),
+    body('players.*.grade').optional().isString(),
+    body('players.*.isGradeOverridden').optional().isBoolean(),
     body('players.*.healthConcerns').optional().isString(),
     body('players.*.aauNumber').optional().isString(),
     body('players.*.season').notEmpty().withMessage('Season is required'),
@@ -686,13 +696,20 @@ router.post(
       const playerDocs = players.map((player) => {
         const finalTryoutId =
           player.tryoutId || generateTryoutId(player.season, player.year);
+
+        // Calculate grade if not overridden
+        const calculatedGrade = player.isGradeOverridden
+          ? player.grade
+          : calculateGradeFromDOB(player.dob, player.year);
+
         return {
           _id: new mongoose.Types.ObjectId(),
           fullName: player.fullName.trim(),
           gender: player.gender,
           dob: player.dob,
           schoolName: player.schoolName.trim(),
-          grade: player.grade,
+          grade: calculatedGrade,
+          isGradeOverridden: player.isGradeOverridden || false,
           healthConcerns: player.healthConcerns || '',
           aauNumber: player.aauNumber || '',
           season: player.season,
@@ -779,6 +796,7 @@ router.post(
           dob: p.dob,
           schoolName: p.schoolName,
           grade: p.grade,
+          isGradeOverridden: p.isGradeOverridden,
           healthConcerns: p.healthConcerns,
           aauNumber: p.aauNumber,
           registrationYear: p.registrationYear,
@@ -1239,6 +1257,7 @@ router.put('/parent/:parentId/guardians', authenticate, async (req, res) => {
 });
 
 // Fetch players by IDs or all players if admin
+// Fetch players by IDs or all players if admin
 router.get(
   '/players',
   authenticate,
@@ -1267,11 +1286,18 @@ router.get(
       }
 
       if (season && year) {
-        query['seasons.season'] = season;
-        query['seasons.year'] = parseInt(year);
+        const seasonMatch = {
+          season: season,
+          year: parseInt(year),
+        };
+
         if (tryoutId) {
-          query['seasons.tryoutId'] = tryoutId;
+          seasonMatch.tryoutId = tryoutId;
         }
+
+        query.seasons = {
+          $elemMatch: seasonMatch,
+        };
       }
 
       const players = await Player.find(query)
@@ -2687,6 +2713,72 @@ router.patch(
     }
   }
 );
+
+router.patch('/players/:id/grade', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { grade, isGradeOverridden } = req.body;
+
+    const player = await Player.findById(id);
+    if (!player) {
+      return res.status(404).json({ error: 'Player not found' });
+    }
+
+    player.grade = grade;
+    player.isGradeOverridden = isGradeOverridden;
+    await player.save();
+
+    res.json({
+      success: true,
+      player: {
+        _id: player._id,
+        fullName: player.fullName,
+        grade: player.grade,
+        isGradeOverridden: player.isGradeOverridden,
+        dob: player.dob,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Failed to update grade',
+      details: error.message,
+    });
+  }
+});
+
+router.post('/players/update-grades', authenticate, async (req, res) => {
+  try {
+    const { currentYear } = req.body;
+
+    // Only update grades for players not manually overridden
+    const players = await Player.find({ isGradeOverridden: false });
+
+    const bulkOps = players.map((player) => {
+      const newGrade = calculateGradeFromDOB(player.dob, currentYear);
+      return {
+        updateOne: {
+          filter: { _id: player._id },
+          update: { $set: { grade: newGrade } },
+        },
+      };
+    });
+
+    if (bulkOps.length > 0) {
+      await Player.bulkWrite(bulkOps);
+    }
+
+    res.json({
+      success: true,
+      playersUpdated: bulkOps.length,
+      currentYear,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: 'Failed to update grades',
+      details: error.message,
+    });
+  }
+});
 
 // Error handling middleware
 router.use((err, req, res, next) => {
