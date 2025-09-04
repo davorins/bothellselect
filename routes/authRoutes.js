@@ -1257,7 +1257,6 @@ router.put('/parent/:parentId/guardians', authenticate, async (req, res) => {
 });
 
 // Fetch players by IDs or all players if admin
-// Fetch players by IDs or all players if admin
 router.get(
   '/players',
   authenticate,
@@ -1308,15 +1307,42 @@ router.get(
         return res.status(404).json({ error: 'No players found' });
       }
 
-      const response = players.map((player) => ({
-        ...player,
-        avatar: player.avatar || null,
-        imgSrc: player.avatar
-          ? `${player.avatar}${player.avatar.includes('?') ? '&' : '?'}ts=${Date.now()}`
-          : player.gender === 'Female'
-            ? 'https://bothell-select.onrender.com/uploads/avatars/girl.png'
-            : 'https://bothell-select.onrender.com/uploads/avatars/boy.png',
-      }));
+      // Transform response to use seasons array data instead of top-level fields
+      const response = players.map((player) => {
+        let displaySeason = player.season;
+        let displayYear = player.registrationYear;
+        let displayPaymentStatus = player.paymentStatus;
+        let displayPaymentComplete = player.paymentComplete;
+
+        // If we're filtering by season, use the matching season data from the array
+        if (season && year && player.seasons) {
+          const matchingSeason = player.seasons.find(
+            (s) => s.season === season && s.year === parseInt(year)
+          );
+
+          if (matchingSeason) {
+            displaySeason = matchingSeason.season;
+            displayYear = matchingSeason.year;
+            displayPaymentStatus = matchingSeason.paymentStatus;
+            displayPaymentComplete = matchingSeason.paymentComplete;
+          }
+        }
+
+        return {
+          ...player,
+          // Override top-level fields with data from seasons array
+          season: displaySeason,
+          registrationYear: displayYear,
+          paymentStatus: displayPaymentStatus,
+          paymentComplete: displayPaymentComplete,
+          avatar: player.avatar || null,
+          imgSrc: player.avatar
+            ? `${player.avatar}${player.avatar.includes('?') ? '&' : '?'}ts=${Date.now()}`
+            : player.gender === 'Female'
+              ? 'https://bothell-select.onrender.com/uploads/avatars/girl.png'
+              : 'https://bothell-select.onrender.com/uploads/avatars/boy.png',
+        };
+      });
 
       res.json(response);
     } catch (error) {
