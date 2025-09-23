@@ -1,5 +1,32 @@
 const mongoose = require('mongoose');
 
+const tournamentRegistrationSchema = new mongoose.Schema(
+  {
+    tournament: { type: String, required: true },
+    year: { type: Number, required: true },
+    tournamentId: { type: String, default: null },
+    registrationDate: { type: Date, default: Date.now },
+    paymentComplete: { type: Boolean, default: false },
+    paymentStatus: {
+      type: String,
+      enum: ['pending', 'paid', 'failed', 'refunded'],
+      default: 'pending',
+    },
+    paymentId: String,
+    paymentMethod: String,
+    amountPaid: Number,
+    cardLast4: String,
+    cardBrand: String,
+    paymentDate: Date,
+    levelOfCompetition: {
+      type: String,
+      enum: ['Gold', 'Silver'],
+      default: 'Gold',
+    },
+  },
+  { _id: false }
+);
+
 const seasonRegistrationSchema = new mongoose.Schema(
   {
     season: { type: String, required: true },
@@ -29,6 +56,11 @@ const playerSchema = new mongoose.Schema(
     dob: { type: Date, required: true },
     schoolName: { type: String, required: true },
     grade: { type: String, required: true },
+    levelOfCompetition: {
+      type: String,
+      enum: ['Gold', 'Silver'],
+      default: 'Gold',
+    },
     healthConcerns: { type: String },
     aauNumber: { type: String },
     parentId: {
@@ -38,7 +70,9 @@ const playerSchema = new mongoose.Schema(
     },
     registrationYear: { type: Number },
     season: { type: String },
+    tournament: { type: String },
     seasons: [seasonRegistrationSchema],
+    tournaments: [tournamentRegistrationSchema],
     registrationComplete: { type: Boolean, default: true },
     paymentComplete: { type: Boolean, default: false },
     paymentStatus: {
@@ -70,6 +104,13 @@ playerSchema.virtual('currentRegistrationYear').get(function () {
   return this.registrationYear;
 });
 
+playerSchema.virtual('currentTournament').get(function () {
+  if (this.tournaments && this.tournaments.length > 0) {
+    return this.tournaments[this.tournaments.length - 1].tournament;
+  }
+  return this.tournament;
+});
+
 playerSchema.index(
   {
     parentId: 1,
@@ -80,6 +121,19 @@ playerSchema.index(
   {
     unique: true,
     partialFilterExpression: { 'seasons.season': { $exists: true } },
+  }
+);
+
+playerSchema.index(
+  {
+    parentId: 1,
+    'tournaments.tournament': 1,
+    'tournaments.year': 1,
+    'tournaments.tournamentId': 1,
+  },
+  {
+    unique: true,
+    partialFilterExpression: { 'tournaments.tournament': { $exists: true } },
   }
 );
 
