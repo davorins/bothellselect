@@ -2877,4 +2877,62 @@ router.post(
   }
 );
 
+// Get current tournament endpoint
+router.get('/tournaments/current', async (req, res) => {
+  try {
+    // You can hardcode this for now, or fetch from a database
+    const currentTournament = {
+      tournament: 'Winter Classic Tournament',
+      year: 2025,
+      tournamentId: 'winter-classic-2025',
+      registrationOpen: true,
+      fee: 425,
+      deadline: '2025-02-28',
+    };
+
+    res.json(currentTournament);
+  } catch (error) {
+    console.error('Error fetching current tournament:', error);
+    res.status(500).json({
+      error: 'Failed to fetch tournament information',
+      details: error.message,
+    });
+  }
+});
+
+// Email availability check endpoint
+router.post('/check-email', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ error: 'Email is required' });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Check if email exists in Parent model
+    const existingParent = await Parent.findOne({ email: normalizedEmail });
+
+    if (existingParent) {
+      return res.status(400).json({
+        error: 'Email already registered',
+        message:
+          'This email address is already associated with an account. Please use a different email or login to your existing account.',
+      });
+    }
+
+    res.json({
+      available: true,
+      message: 'Email is available',
+    });
+  } catch (error) {
+    console.error('Error checking email:', error);
+    res.status(500).json({
+      error: 'Failed to check email availability',
+      details: error.message,
+    });
+  }
+});
+
 module.exports = router;
