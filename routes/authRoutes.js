@@ -8,6 +8,7 @@ const Parent = require('../models/Parent');
 const Player = require('../models/Player');
 const Payment = require('../models/Payment');
 const Team = require('../models/Team');
+const Registration = require('../models/Registration');
 const Notification = require('../models/Notification');
 const {
   comparePasswords,
@@ -23,52 +24,6 @@ const {
 } = require('../utils/email');
 const { calculateGradeFromDOB } = require('../utils/gradeUtils');
 
-const registrationSchema = new mongoose.Schema(
-  {
-    player: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Player',
-      required: [true, 'Player reference is required'],
-      index: true,
-    },
-    parent: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Parent',
-      required: [true, 'Parent reference is required'],
-      index: true,
-    },
-    season: {
-      type: String,
-      required: [true, 'Season is required'],
-    },
-    year: {
-      type: Number,
-      required: [true, 'Year is required'],
-      min: [2020, 'Year must be 2020 or later'],
-      max: [2030, 'Year must be 2030 or earlier'],
-    },
-    tryoutId: { type: String, required: true },
-    paymentStatus: {
-      type: String,
-      enum: ['pending', 'paid', 'failed', 'refunded'],
-      default: 'pending',
-    },
-    paymentComplete: { type: Boolean, default: false },
-    paymentDate: { type: Date },
-  },
-  {
-    timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true },
-  }
-);
-
-registrationSchema.index(
-  { player: 1, season: 1, year: 1, tryoutId: 1 },
-  { unique: true }
-);
-const Registration = mongoose.model('Registration', registrationSchema);
-
 const router = express.Router();
 
 // Generate random password for admin-created accounts
@@ -79,11 +34,6 @@ const generateRandomPassword = () => {
   );
 };
 
-// Generate unique tryoutId based on season and year
-// const generateTryoutId = (season, year) => {
-//   const randomString = crypto.randomBytes(4).toString('hex');
-//   return `${season.toLowerCase().replace(/\s+/g, '-')}-${year}-tryout-${randomString}`;
-// };
 const generateTryoutId = (season, year) => {
   // Return hardcoded tryoutId for the 2025 Basketball Select Tryout
   if (season === 'Basketball Select Tryout' && year === 2025) {
