@@ -1,6 +1,6 @@
+// Registration.js
 const mongoose = require('mongoose');
 
-// Check if model already exists
 if (mongoose.models.Registration) {
   module.exports = mongoose.model('Registration');
 } else {
@@ -9,7 +9,7 @@ if (mongoose.models.Registration) {
       player: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Player',
-        required: false, // Optional for team registrations
+        required: false,
         index: true,
       },
       parent: {
@@ -21,12 +21,12 @@ if (mongoose.models.Registration) {
       team: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Team',
-        required: false, // Optional for player registrations
+        required: false,
         index: true,
       },
       season: {
         type: String,
-        required: false, // Optional for team registrations
+        required: false,
       },
       year: {
         type: Number,
@@ -36,17 +36,17 @@ if (mongoose.models.Registration) {
       },
       tournament: {
         type: String,
-        required: false, // Required for team registrations, enforced in route
+        required: false,
       },
       tryoutId: {
         type: String,
-        required: false, // Optional for all registrations
+        required: false,
         default: null,
       },
       levelOfCompetition: {
         type: String,
         enum: ['Gold', 'Silver'],
-        required: false, // Optional for player registrations
+        required: false,
       },
       paymentStatus: {
         type: String,
@@ -72,19 +72,18 @@ if (mongoose.models.Registration) {
     }
   );
 
-  // Unique index for player registrations (only when player exists)
+  // Unique index for player registrations
   registrationSchema.index(
     { player: 1, season: 1, year: 1, tryoutId: 1 },
     { unique: true, partialFilterExpression: { player: { $exists: true } } }
   );
 
-  // Unique index for team registrations (only when team exists)
+  // New unique index to prevent duplicate registrations by the same parent for the same team
   registrationSchema.index(
-    { team: 1, tournament: 1, year: 1 },
+    { parent: 1, team: 1, tournament: 1, year: 1 },
     { unique: true, partialFilterExpression: { team: { $exists: true } } }
   );
 
-  // Virtual for display name (season + year or tournament + year)
   registrationSchema.virtual('seasonYear').get(function () {
     if (this.season) {
       return `${this.season} ${this.year}`;
@@ -94,7 +93,6 @@ if (mongoose.models.Registration) {
     return this.year.toString();
   });
 
-  // Virtual for payment status display
   registrationSchema.virtual('paymentStatusDisplay').get(function () {
     const statusMap = {
       pending: 'Pending Payment',
@@ -105,7 +103,6 @@ if (mongoose.models.Registration) {
     return statusMap[this.paymentStatus] || this.paymentStatus;
   });
 
-  // Pre-save hook to update paymentComplete
   registrationSchema.pre('save', async function (next) {
     if (this.isModified('paymentStatus')) {
       this.paymentComplete = this.paymentStatus === 'paid';
@@ -116,7 +113,6 @@ if (mongoose.models.Registration) {
     next();
   });
 
-  // Static method to update payment status
   registrationSchema.statics.updatePaymentStatus = async function (
     registrationId,
     status,
@@ -141,7 +137,6 @@ if (mongoose.models.Registration) {
     );
   };
 
-  // Query helper for active registrations
   registrationSchema.query.active = function () {
     return this.where({ paymentComplete: true });
   };

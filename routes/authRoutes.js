@@ -2769,7 +2769,6 @@ router.use((err, req, res, next) => {
 router.post(
   '/register/tournament-team',
   [
-    // Validations for unauthenticated users (new parents)
     body('email')
       .if((value, { req }) => !req.user)
       .isEmail()
@@ -2823,7 +2822,6 @@ router.post(
       .if((value, { req }) => !req.user)
       .equals('true')
       .withMessage('You must agree to the terms'),
-    // Team and tournament validations (apply to all requests)
     body('team.name').notEmpty().withMessage('Team name is required'),
     body('team.grade').notEmpty().withMessage('Grade is required'),
     body('team.sex')
@@ -2865,7 +2863,6 @@ router.post(
 
       let parent;
 
-      // If user is authenticated, use existing parent data
       if (req.user) {
         parent = await Parent.findById(req.user.id).session(session);
         if (!parent) {
@@ -2874,28 +2871,24 @@ router.post(
             .status(404)
             .json({ success: false, error: 'Parent not found' });
         }
-        // For authenticated users who are coaches, verify or update AAU number
         if (isCoach && (!parent.aauNumber || aauNumber)) {
           parent.aauNumber = aauNumber?.trim() || parent.aauNumber;
           parent.isCoach = true;
           await parent.save({ session });
         }
       } else {
-        // For unauthenticated users, create a new parent
         const normalizedEmail = email.toLowerCase().trim();
-        console.log('Checking existing parent:', normalizedEmail);
         const existingParent = await Parent.findOne({
           email: normalizedEmail,
         }).session(session);
         if (existingParent) {
-          console.log('Email already exists:', normalizedEmail);
           await session.abortTransaction();
-          return res
-            .status(400)
-            .json({ success: false, error: 'Email already registered' });
+          return res.status(400).json({
+            success: false,
+            error: 'Email already registered',
+          });
         }
 
-        console.log('Creating new parent');
         parent = new Parent({
           email: normalizedEmail,
           password: await hashPassword(password.trim()),
@@ -2913,41 +2906,61 @@ router.post(
         });
 
         await parent.save({ session });
-        console.log('Parent saved:', parent._id);
       }
 
-      // Create Team
-      console.log('Creating new team');
-      const teamDoc = new Team({
+      // Check for existing team by name, tournament, and year
+      let teamDoc = await Team.findOne({
         name: team.name.trim(),
-        grade: team.grade,
-        sex: team.sex,
-        coachId: parent._id,
-        levelOfCompetition: team.levelOfCompetition,
-        tournaments: [
-          {
-            tournament,
-            year: parseInt(year),
-            levelOfCompetition: team.levelOfCompetition,
-            paymentStatus: 'pending',
-            paymentComplete: false,
-          },
-        ],
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
+        'tournaments.tournament': tournament,
+        'tournaments.year': parseInt(year),
+      }).session(session);
 
-      await teamDoc.save({ session });
-      console.log('Team saved:', teamDoc._id);
+      if (teamDoc) {
+        // Team exists; verify levelOfCompetition matches
+        const tournamentEntry = teamDoc.tournaments.find(
+          (t) => t.tournament === tournament && t.year === parseInt(year)
+        );
+        if (tournamentEntry.levelOfCompetition !== team.levelOfCompetition) {
+          await session.abortTransaction();
+          return res.status(400).json({
+            success: false,
+            error:
+              'Level of competition does not match existing team registration',
+          });
+        }
 
-      // Check for existing team registration for this tournament
-      console.log(
-        'Checking existing registration for team:',
-        teamDoc._id,
-        tournament,
-        year
-      );
+        // Add parent to coachIds if not already present
+        if (!teamDoc.coachIds.includes(parent._id)) {
+          teamDoc.coachIds.push(parent._id);
+          await teamDoc.save({ session });
+        }
+      } else {
+        // Create new team
+        teamDoc = new Team({
+          name: team.name.trim(),
+          coachIds: [parent._id],
+          grade: team.grade,
+          sex: team.sex,
+          levelOfCompetition: team.levelOfCompetition,
+          tournaments: [
+            {
+              tournament,
+              year: parseInt(year),
+              levelOfCompetition: team.levelOfCompetition,
+              paymentStatus: 'pending',
+              paymentComplete: false,
+            },
+          ],
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+
+        await teamDoc.save({ session });
+      }
+
+      // Check if this parent has already registered this team for the tournament
       const existingRegistration = await Registration.findOne({
+        parent: parent._id,
         team: teamDoc._id,
         tournament,
         year: parseInt(year),
@@ -2956,12 +2969,11 @@ router.post(
         await session.abortTransaction();
         return res.status(400).json({
           success: false,
-          error: 'This team is already registered for the tournament',
+          error: 'You have already registered this team for the tournament',
         });
       }
 
       // Create Registration
-      console.log('Creating registration');
       const registration = new Registration({
         team: teamDoc._id,
         parent: parent._id,
@@ -2976,19 +2988,24 @@ router.post(
       });
 
       await registration.save({ session });
-      console.log('Registration saved:', registration._id);
+
+      // Update team's tournament registrationId
+      const tournamentEntry = teamDoc.tournaments.find(
+        (t) => t.tournament === tournament && t.year === parseInt(year)
+      );
+      if (tournamentEntry && !tournamentEntry.registrationId) {
+        tournamentEntry.registrationId = registration._id;
+        await teamDoc.save({ session });
+      }
 
       await session.commitTransaction();
-      console.log('Transaction committed');
 
-      // Send welcome email for new parents (async)
       if (!req.user) {
         sendWelcomeEmail(parent._id, null).catch((err) =>
           console.error('Welcome email failed:', err)
         );
       }
 
-      // Generate token
       const token = generateToken({
         id: parent._id,
         role: parent.role,
@@ -3043,9 +3060,9 @@ router.post(
       if (error.name === 'MongoServerError' && error.code === 11000) {
         return res.status(400).json({
           success: false,
-          error: 'Duplicate team registration detected',
+          error: 'Duplicate registration detected',
           details:
-            'This team is already registered for the specified tournament and year.',
+            'You have already registered this team for the specified tournament and year.',
         });
       }
 
@@ -3098,20 +3115,22 @@ router.post(
       const { teamId, tournament, year, levelOfCompetition } = req.body;
       const parentId = req.user.id;
 
-      // Verify team exists and belongs to the user
-      const team = await Team.findOne({
-        _id: teamId,
-        coachId: parentId,
-      }).session(session);
+      // Verify team exists
+      const team = await Team.findById(teamId).session(session);
       if (!team) {
         await session.abortTransaction();
-        return res
-          .status(404)
-          .json({ error: 'Team not found or unauthorized' });
+        return res.status(404).json({ error: 'Team not found' });
       }
 
-      // Check for existing registration
+      // Add parent to coachIds if not already present
+      if (!team.coachIds.includes(parentId)) {
+        team.coachIds.push(parentId);
+        await team.save({ session });
+      }
+
+      // Check for existing registration by this parent
       const existingRegistration = await Registration.findOne({
+        parent: parentId,
         team: teamId,
         tournament,
         year: parseInt(year),
@@ -3120,7 +3139,32 @@ router.post(
         await session.abortTransaction();
         return res
           .status(400)
-          .json({ error: 'Team already registered for this tournament' });
+          .json({
+            error: 'You have already registered this team for this tournament',
+          });
+      }
+
+      // Check if team is already registered for the tournament
+      const tournamentEntry = team.tournaments.find(
+        (t) => t.tournament === tournament && t.year === parseInt(year)
+      );
+      if (tournamentEntry) {
+        if (tournamentEntry.levelOfCompetition !== levelOfCompetition) {
+          await session.abortTransaction();
+          return res.status(400).json({
+            error:
+              'Level of competition does not match existing team registration',
+          });
+        }
+      } else {
+        team.tournaments.push({
+          tournament,
+          year: parseInt(year),
+          levelOfCompetition,
+          paymentStatus: 'pending',
+          paymentComplete: false,
+        });
+        await team.save({ session });
       }
 
       // Create registration document
@@ -3139,18 +3183,14 @@ router.post(
 
       await registration.save({ session });
 
-      // Update team with tournament details
-      team.tournaments = team.tournaments || [];
-      team.tournaments.push({
-        tournament,
-        year: parseInt(year),
-        levelOfCompetition,
-        registrationId: registration._id,
-        paymentStatus: 'pending',
-        paymentComplete: false,
-      });
-
-      await team.save({ session });
+      // Update team's tournament registrationId
+      const updatedTournamentEntry = team.tournaments.find(
+        (t) => t.tournament === tournament && t.year === parseInt(year)
+      );
+      if (updatedTournamentEntry && !updatedTournamentEntry.registrationId) {
+        updatedTournamentEntry.registrationId = registration._id;
+        await team.save({ session });
+      }
 
       await session.commitTransaction();
 
@@ -3198,9 +3238,127 @@ router.post(
     body('teamId').notEmpty().withMessage('Team ID is required'),
     body('tournament').notEmpty().withMessage('Tournament name is required'),
     body('year').isNumeric().withMessage('Year must be a number'),
+    body('token').notEmpty().withMessage('Payment token is required'),
+    body('amount').isNumeric().withMessage('Amount is required'),
+    body('email').isEmail().withMessage('Valid email is required'),
+    body('cardDetails.last_4')
+      .notEmpty()
+      .withMessage('Card last 4 digits are required'),
+    body('cardDetails.card_brand')
+      .notEmpty()
+      .withMessage('Card brand is required'),
   ],
   async (req, res) => {
-    // Payment processing for teams
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      const { teamId, tournament, year, token, amount, email, cardDetails } =
+        req.body;
+      const parentId = req.user.id;
+
+      // Verify team exists and user is authorized
+      const team = await Team.findOne({
+        _id: teamId,
+        coachIds: parentId,
+      }).session(session);
+      if (!team) {
+        await session.abortTransaction();
+        return res
+          .status(404)
+          .json({ error: 'Team not found or unauthorized' });
+      }
+
+      // Check if team is already paid for this tournament
+      const tournamentEntry = team.tournaments.find(
+        (t) => t.tournament === tournament && t.year === parseInt(year)
+      );
+      if (tournamentEntry && tournamentEntry.paymentStatus === 'paid') {
+        await session.abortTransaction();
+        return res.status(400).json({
+          error: 'Payment already completed for this team and tournament',
+        });
+      }
+
+      // Process payment (using Square or your payment processor)
+      // Replace this with actual payment processing logic
+      const paymentResult = {
+        status: 'OK',
+        paymentId: 'mock_payment_id_' + Date.now(),
+        amountPaid: amount,
+        paymentMethod: 'card',
+        cardLast4: cardDetails.last_4,
+        cardBrand: cardDetails.card_brand,
+      };
+
+      if (paymentResult.status !== 'OK') {
+        await session.abortTransaction();
+        return res.status(400).json({ error: 'Payment processing failed' });
+      }
+
+      // Update team tournament payment status
+      if (tournamentEntry) {
+        tournamentEntry.paymentStatus = 'paid';
+        tournamentEntry.paymentComplete = true;
+        tournamentEntry.paymentDate = new Date();
+        await team.save({ session });
+      }
+
+      // Update all registrations for this team, tournament, and year
+      const registrations = await Registration.find({
+        team: teamId,
+        tournament,
+        year: parseInt(year),
+      }).session(session);
+
+      for (const registration of registrations) {
+        await Registration.updatePaymentStatus(
+          registration._id,
+          'paid',
+          {
+            amountPaid: paymentResult.amountPaid,
+            paymentId: paymentResult.paymentId,
+            paymentMethod: paymentResult.paymentMethod,
+            cardLast4: paymentResult.cardLast4,
+            cardBrand: paymentResult.cardBrand,
+          },
+          { session }
+        );
+      }
+
+      await session.commitTransaction();
+
+      res.status(200).json({
+        message: 'Payment processed successfully',
+        team: {
+          _id: team._id,
+          name: team.name,
+          tournaments: team.tournaments,
+        },
+        payment: {
+          paymentId: paymentResult.paymentId,
+          amountPaid: paymentResult.amountPaid,
+          paymentMethod: paymentResult.paymentMethod,
+          cardLast4: paymentResult.cardLast4,
+          cardBrand: paymentResult.cardBrand,
+        },
+      });
+    } catch (error) {
+      await session.abortTransaction();
+      console.error('Payment processing error:', error);
+      res.status(500).json({
+        error: 'Failed to process payment',
+        details:
+          process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    } finally {
+      session.endSession();
+    }
   }
 );
 

@@ -1,13 +1,16 @@
+// Team.js
 const mongoose = require('mongoose');
 
 const teamSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  coachId: {
-    type: mongoose.Schema.Types.ObjectId,
-    ref: 'Parent',
-    required: true,
-    index: true,
-  },
+  coachIds: [
+    {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Parent',
+      required: true,
+      index: true,
+    },
+  ], // Changed from coachId to coachIds (array)
   grade: { type: String, required: true },
   sex: { type: String, enum: ['Male', 'Female', 'Coed'], required: true },
   levelOfCompetition: {
