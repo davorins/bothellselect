@@ -18,6 +18,12 @@ if (mongoose.models.Registration) {
         required: [true, 'Parent reference is required'],
         index: true,
       },
+      team: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Team',
+        required: false,
+        index: true,
+      },
       season: {
         type: String,
         required: [true, 'Season is required'],
@@ -27,6 +33,15 @@ if (mongoose.models.Registration) {
         required: [true, 'Year is required'],
         min: [2020, 'Year must be 2020 or later'],
         max: [2030, 'Year must be 2030 or earlier'],
+      },
+      tournament: {
+        type: String,
+        required: false,
+      },
+      levelOfCompetition: {
+        type: String,
+        enum: ['Gold', 'Silver'],
+        required: false,
       },
       tryoutId: { type: String, default: null },
       paymentStatus: {
@@ -56,6 +71,12 @@ if (mongoose.models.Registration) {
   registrationSchema.index(
     { player: 1, season: 1, year: 1, tryoutId: 1 },
     { unique: true }
+  );
+
+  // Unique index for team registrations
+  registrationSchema.index(
+    { team: 1, tournament: 1, year: 1 },
+    { unique: true, partialFilterExpression: { team: { $exists: true } } }
   );
 
   // Virtual for display name (season + year)
