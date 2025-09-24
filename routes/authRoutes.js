@@ -2832,6 +2832,10 @@ router.post(
       .if(body('isCoach').equals('true'))
       .notEmpty()
       .withMessage('AAU number is required for coaches'),
+    body('relationship')
+      .optional()
+      .isIn(['Parent', 'Guardian', 'Coach', 'Other'])
+      .withMessage('Invalid relationship value'),
     body('team.name').notEmpty().withMessage('Team name is required'),
     body('team.grade').notEmpty().withMessage('Grade is required'),
     body('team.sex')
@@ -2876,6 +2880,7 @@ router.post(
         phone,
         isCoach,
         aauNumber,
+        relationship,
         team,
         agreeToTerms,
         tournament,
@@ -2906,6 +2911,7 @@ router.post(
         address: addressUtils.ensureAddress(address),
         isCoach,
         aauNumber: isCoach ? aauNumber.trim() : '',
+        relationship, // Use provided relationship or rely on schema default
         agreeToTerms,
         role: isCoach ? 'coach' : 'user',
         registrationComplete: true,
@@ -2922,7 +2928,7 @@ router.post(
         name: team.name.trim(),
         grade: team.grade,
         sex: team.sex,
-        coachId: parent._id,
+        coachId: parent._id, // Assign parent as coachId regardless of isCoach
         levelOfCompetition: team.levelOfCompetition,
         tournaments: [
           {
@@ -3176,7 +3182,6 @@ router.post(
 // Get current tournament endpoint
 router.get('/tournaments/current', async (req, res) => {
   try {
-    // You can hardcode this for now, or fetch from a database
     const currentTournament = {
       tournament: 'Winter Classic Tournament',
       year: 2025,
