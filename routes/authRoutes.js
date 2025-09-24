@@ -2854,7 +2854,102 @@ router.post(
       .withMessage('Invalid competition level'),
   ],
   async (req, res) => {
-    // Implementation for existing teams
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      const { teamId, tournament, year, levelOfCompetition } = req.body;
+      const parentId = req.user.id;
+
+      // Verify team exists and belongs to the user
+      const team = await Team.findOne({
+        _id: teamId,
+        coachId: parentId,
+      }).session(session);
+      if (!team) {
+        await session.abortTransaction();
+        return res
+          .status(404)
+          .json({ error: 'Team not found or unauthorized' });
+      }
+
+      // Check for existing registration
+      const existingRegistration = await Registration.findOne({
+        team: teamId,
+        tournament,
+        year: parseInt(year),
+      }).session(session);
+      if (existingRegistration) {
+        await session.abortTransaction();
+        return res
+          .status(400)
+          .json({ error: 'Team already registered for this tournament' });
+      }
+
+      // Create registration document
+      const registration = new Registration({
+        team: teamId,
+        parent: parentId,
+        tournament,
+        year: parseInt(year),
+        levelOfCompetition,
+        paymentStatus: 'pending',
+        paymentComplete: false,
+        registrationComplete: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      await registration.save({ session });
+
+      // Update team with tournament details
+      team.tournaments = team.tournaments || [];
+      team.tournaments.push({
+        tournament,
+        year: parseInt(year),
+        levelOfCompetition,
+        registrationId: registration._id,
+        paymentStatus: 'pending',
+        paymentComplete: false,
+      });
+
+      await team.save({ session });
+
+      await session.commitTransaction();
+
+      res.status(201).json({
+        message: 'Team registered successfully',
+        team: {
+          _id: team._id,
+          name: team.name,
+          tournaments: team.tournaments,
+        },
+        registration: {
+          id: registration._id,
+          teamId,
+          tournament,
+          year,
+          levelOfCompetition,
+          paymentStatus: registration.paymentStatus,
+          paymentComplete: registration.paymentComplete,
+        },
+      });
+    } catch (error) {
+      await session.abortTransaction();
+      console.error('Team registration error:', error);
+      res.status(500).json({
+        error: 'Failed to register team',
+        details:
+          process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    } finally {
+      session.endSession();
+    }
   }
 );
 
