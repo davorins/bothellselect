@@ -2894,7 +2894,7 @@ router.post(
         console.log('Creating new parent');
         parent = new Parent({
           email: normalizedEmail,
-          password: password.trim(),
+          password: await hashPassword(password.trim()), // Use hashPassword from auth utils
           fullName: fullName.trim(),
           phone: phone.replace(/\D/g, ''),
           address: ensureAddress(address),
@@ -2922,15 +2922,14 @@ router.post(
         parent: parent._id,
         tournament,
         year: parseInt(year),
+        team: { $exists: true }, // Ensure it's a team registration
       }).session(session);
       if (existingRegistration) {
         await session.abortTransaction();
-        return res
-          .status(400)
-          .json({
-            success: false,
-            error: 'Team already registered for this tournament',
-          });
+        return res.status(400).json({
+          success: false,
+          error: 'Team already registered for this tournament',
+        });
       }
 
       // Create Team
@@ -3036,6 +3035,15 @@ router.post(
         stack: error.stack,
         requestBody: req.body,
       });
+
+      if (error.name === 'MongoServerError' && error.code === 11000) {
+        return res.status(400).json({
+          success: false,
+          error: 'Duplicate registration detected',
+          details:
+            'A team registration for this tournament and year already exists.',
+        });
+      }
 
       if (error.name === 'ValidationError') {
         const errors = Object.values(error.errors).map((err) => ({
