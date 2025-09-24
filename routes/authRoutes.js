@@ -7,6 +7,7 @@ const cloudinary = require('cloudinary').v2;
 const Parent = require('../models/Parent');
 const Player = require('../models/Player');
 const Payment = require('../models/Payment');
+const Team = require('../models/Team');
 const Notification = require('../models/Notification');
 const {
   comparePasswords,
