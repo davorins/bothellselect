@@ -43,7 +43,7 @@ if (mongoose.models.Registration) {
         enum: ['Gold', 'Silver'],
         required: false,
       },
-      tryoutId: { type: String, default: null },
+      tryoutId: { type: String, default: null, required: false },
       paymentStatus: {
         type: String,
         enum: ['pending', 'paid', 'failed', 'refunded'],
