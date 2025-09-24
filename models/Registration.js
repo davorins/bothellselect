@@ -9,7 +9,7 @@ if (mongoose.models.Registration) {
       player: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Player',
-        required: [true, 'Player reference is required'],
+        required: false, // Optional for team registrations
         index: true,
       },
       parent: {
@@ -21,12 +21,12 @@ if (mongoose.models.Registration) {
       team: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'Team',
-        required: false,
+        required: false, // Optional for player registrations
         index: true,
       },
       season: {
         type: String,
-        required: [true, 'Season is required'],
+        required: false, // Optional for team registrations
       },
       year: {
         type: Number,
@@ -36,14 +36,18 @@ if (mongoose.models.Registration) {
       },
       tournament: {
         type: String,
-        required: false,
+        required: false, // Required for team registrations, enforced in route
+      },
+      tryoutId: {
+        type: String,
+        required: false, // Optional for all registrations
+        default: null,
       },
       levelOfCompetition: {
         type: String,
         enum: ['Gold', 'Silver'],
-        required: false,
+        required: false, // Optional for player registrations
       },
-      tryoutId: { type: String, default: null, required: false },
       paymentStatus: {
         type: String,
         enum: ['pending', 'paid', 'failed', 'refunded'],
@@ -59,6 +63,7 @@ if (mongoose.models.Registration) {
         cardBrand: { type: String },
         paymentDate: { type: Date },
       },
+      registrationComplete: { type: Boolean, default: false },
     },
     {
       timestamps: true,
@@ -67,21 +72,26 @@ if (mongoose.models.Registration) {
     }
   );
 
-  // Unique index to prevent duplicate registrations
+  // Unique index for player registrations (only when player exists)
   registrationSchema.index(
     { player: 1, season: 1, year: 1, tryoutId: 1 },
-    { unique: true }
+    { unique: true, partialFilterExpression: { player: { $exists: true } } }
   );
 
-  // Unique index for team registrations
+  // Unique index for team registrations (only when team exists)
   registrationSchema.index(
     { team: 1, tournament: 1, year: 1 },
     { unique: true, partialFilterExpression: { team: { $exists: true } } }
   );
 
-  // Virtual for display name (season + year)
+  // Virtual for display name (season + year or tournament + year)
   registrationSchema.virtual('seasonYear').get(function () {
-    return `${this.season} ${this.year}`;
+    if (this.season) {
+      return `${this.season} ${this.year}`;
+    } else if (this.tournament) {
+      return `${this.tournament} ${this.year}`;
+    }
+    return this.year.toString();
   });
 
   // Virtual for payment status display
