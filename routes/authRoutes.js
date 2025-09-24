@@ -2836,9 +2836,162 @@ router.post(
       .isIn(['Gold', 'Silver'])
       .withMessage('Invalid competition level'),
     body('agreeToTerms').isBoolean().withMessage('You must agree to terms'),
+    body('tournament').notEmpty().withMessage('Tournament name is required'),
+    body('year')
+      .isInt({ min: 2020, max: 2030 })
+      .withMessage('Year must be between 2020 and 2030'),
   ],
   async (req, res) => {
-    // Implementation similar to your existing registration
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      console.log('Validation errors:', errors.array());
+      return res.status(400).json({ errors: errors.array(), success: false });
+    }
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      const {
+        email,
+        password,
+        fullName,
+        phone,
+        isCoach,
+        aauNumber,
+        team,
+        agreeToTerms,
+        tournament,
+        year,
+      } = req.body;
+
+      const normalizedEmail = email.toLowerCase().trim();
+      const existingParent = await Parent.findOne({
+        email: normalizedEmail,
+      }).session(session);
+      if (existingParent) {
+        await session.abortTransaction();
+        return res
+          .status(400)
+          .json({ error: 'Email already registered', success: false });
+      }
+
+      // Create Parent
+      const parent = new Parent({
+        email: normalizedEmail,
+        password: password.trim(),
+        fullName: fullName.trim(),
+        phone: phone.replace(/\D/g, ''),
+        address: ensureAddress({}), // Default empty address
+        isCoach,
+        aauNumber: isCoach ? aauNumber.trim() : '',
+        agreeToTerms,
+        role: isCoach ? 'coach' : 'user',
+        registrationComplete: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      await parent.save({ session });
+
+      // Create Team
+      const teamDoc = new Team({
+        name: team.name.trim(),
+        grade: team.grade,
+        sex: team.sex,
+        coachId: parent._id,
+        tournaments: [
+          {
+            tournament,
+            year: parseInt(year),
+            levelOfCompetition: team.levelOfCompetition,
+            paymentStatus: 'pending',
+            paymentComplete: false,
+          },
+        ],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      await teamDoc.save({ session });
+
+      // Create Registration
+      const registration = new Registration({
+        team: teamDoc._id,
+        parent: parent._id,
+        tournament,
+        year: parseInt(year),
+        levelOfCompetition: team.levelOfCompetition,
+        paymentStatus: 'pending',
+        paymentComplete: false,
+        registrationComplete: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+
+      await registration.save({ session });
+
+      await session.commitTransaction();
+
+      // Send welcome email (async)
+      sendWelcomeEmail(parent._id, null).catch((err) =>
+        console.error('Welcome email failed:', err)
+      );
+
+      const token = generateToken({
+        id: parent._id,
+        role: parent.role,
+        email: parent.email,
+        address: parent.address,
+        registrationComplete: true,
+      });
+
+      res.status(201).json({
+        success: true,
+        message: 'Team registration successful. Please complete payment.',
+        registrationStatus: {
+          parentRegistered: true,
+          teamRegistered: true,
+          paymentCompleted: false,
+          nextStep: 'payment',
+        },
+        parent: {
+          id: parent._id,
+          email: parent.email,
+          fullName: parent.fullName,
+          role: parent.role,
+          registrationComplete: true,
+        },
+        team: {
+          id: teamDoc._id,
+          name: teamDoc.name,
+          grade: teamDoc.grade,
+          sex: teamDoc.sex,
+          tournaments: teamDoc.tournaments,
+        },
+        registration: {
+          id: registration._id,
+          teamId: teamDoc._id,
+          tournament,
+          year,
+          levelOfCompetition: team.levelOfCompetition,
+          paymentStatus: registration.paymentStatus,
+          paymentComplete: registration.paymentComplete,
+        },
+        token,
+      });
+    } catch (error) {
+      await session.abortTransaction();
+      console.error('Tournament team registration error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to register team',
+        details:
+          process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    } finally {
+      session.endSession();
+    }
   }
 );
 
