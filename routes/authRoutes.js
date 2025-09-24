@@ -2768,24 +2768,59 @@ router.use((err, req, res, next) => {
 // Register team for tournament
 router.post(
   '/register/tournament-team',
+  authenticate, // Allow both authenticated and unauthenticated users
   [
-    body('email').isEmail().normalizeEmail().withMessage('Invalid email'),
+    // Validations for unauthenticated users (new parents)
+    body('email')
+      .if((value, { req }) => !req.user) // Apply only if not authenticated
+      .isEmail()
+      .normalizeEmail()
+      .withMessage('Invalid email'),
     body('password')
+      .if((value, { req }) => !req.user)
       .isLength({ min: 6 })
       .withMessage('Password must be at least 6 characters'),
-    body('fullName').notEmpty().withMessage('Full name is required'),
+    body('fullName')
+      .if((value, { req }) => !req.user)
+      .notEmpty()
+      .withMessage('Full name is required'),
     body('phone')
+      .if((value, { req }) => !req.user)
       .matches(/^\(\d{3}\)\s\d{3}-\d{4}$/)
       .withMessage('Phone number must be in format (XXX) XXX-XXXX'),
-    body('isCoach').isBoolean().withMessage('isCoach must be a boolean'),
+    body('isCoach')
+      .if((value, { req }) => !req.user)
+      .isBoolean()
+      .withMessage('isCoach must be a boolean'),
     body('aauNumber')
-      .if(body('isCoach').equals('true'))
+      .if((value, { req }) => req.body.isCoach === true && !req.user)
       .notEmpty()
       .withMessage('AAU number is required for coaches'),
     body('relationship')
       .optional()
       .isIn(['Parent', 'Guardian', 'Coach', 'Other'])
       .withMessage('Invalid relationship value'),
+    body('address.street')
+      .if((value, { req }) => !req.user)
+      .isLength({ min: 5 })
+      .withMessage('Street address must be at least 5 characters'),
+    body('address.city')
+      .if((value, { req }) => !req.user)
+      .notEmpty()
+      .withMessage('City is required'),
+    body('address.state')
+      .if((value, { req }) => !req.user)
+      .matches(/^[A-Z]{2}$/)
+      .withMessage('State must be a valid 2-letter code (e.g., WA)'),
+    body('address.zip')
+      .if((value, { req }) => !req.user)
+      .matches(/^\d{5}(-\d{4})?$/)
+      .withMessage('Invalid ZIP code'),
+    body('agreeToTerms')
+      .if((value, { req }) => !req.user)
+      .equals('true')
+      .withMessage('You must agree to the terms'),
+    // Team and tournament validations (apply to all requests)
     body('team.name').notEmpty().withMessage('Team name is required'),
     body('team.grade').notEmpty().withMessage('Grade is required'),
     body('team.sex')
@@ -2794,23 +2829,10 @@ router.post(
     body('team.levelOfCompetition')
       .isIn(['Gold', 'Silver'])
       .withMessage('Invalid competition level'),
-    body('agreeToTerms')
-      .equals('true')
-      .withMessage('You must agree to the terms'),
     body('tournament').notEmpty().withMessage('Tournament name is required'),
     body('year')
       .isInt({ min: 2020, max: 2030 })
       .withMessage('Year must be between 2020 and 2030'),
-    body('address.street')
-      .isLength({ min: 5 })
-      .withMessage('Street address must be at least 5 characters'),
-    body('address.city').notEmpty().withMessage('City is required'),
-    body('address.state')
-      .matches(/^[A-Z]{2}$/)
-      .withMessage('State must be a valid 2-letter code (e.g., WA)'),
-    body('address.zip')
-      .matches(/^\d{5}(-\d{4})?$/)
-      .withMessage('Invalid ZIP code'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -2838,39 +2860,77 @@ router.post(
         address,
       } = req.body;
 
-      const normalizedEmail = email.toLowerCase().trim();
-      console.log('Checking existing parent:', normalizedEmail);
-      const existingParent = await Parent.findOne({
-        email: normalizedEmail,
-      }).session(session);
-      if (existingParent) {
-        console.log('Email already exists:', normalizedEmail);
-        await session.abortTransaction();
-        return res
-          .status(400)
-          .json({ success: false, error: 'Email already registered' });
+      let parent;
+
+      // If user is authenticated, use existing parent data
+      if (req.user) {
+        parent = await Parent.findById(req.user.id).session(session);
+        if (!parent) {
+          await session.abortTransaction();
+          return res
+            .status(404)
+            .json({ success: false, error: 'Parent not found' });
+        }
+        // For authenticated users who are coaches, verify or update AAU number
+        if (isCoach && (!parent.aauNumber || aauNumber)) {
+          parent.aauNumber = aauNumber?.trim() || parent.aauNumber;
+          parent.isCoach = true;
+          await parent.save({ session });
+        }
+      } else {
+        // For unauthenticated users, create a new parent
+        const normalizedEmail = email.toLowerCase().trim();
+        console.log('Checking existing parent:', normalizedEmail);
+        const existingParent = await Parent.findOne({
+          email: normalizedEmail,
+        }).session(session);
+        if (existingParent) {
+          console.log('Email already exists:', normalizedEmail);
+          await session.abortTransaction();
+          return res
+            .status(400)
+            .json({ success: false, error: 'Email already registered' });
+        }
+
+        console.log('Creating new parent');
+        parent = new Parent({
+          email: normalizedEmail,
+          password: password.trim(),
+          fullName: fullName.trim(),
+          phone: phone.replace(/\D/g, ''),
+          address: addressUtils.ensureAddress(address),
+          isCoach,
+          aauNumber: isCoach ? aauNumber.trim() : '',
+          relationship,
+          agreeToTerms,
+          role: isCoach ? 'coach' : 'user',
+          registrationComplete: true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+
+        await parent.save({ session });
+        console.log('Parent saved:', parent._id);
       }
 
-      // Create Parent
-      console.log('Creating new parent');
-      const parent = new Parent({
-        email: normalizedEmail,
-        password: password.trim(),
-        fullName: fullName.trim(),
-        phone: phone.replace(/\D/g, ''), // Store as 10-digit number
-        address: addressUtils.ensureAddress(address),
-        isCoach,
-        aauNumber: isCoach ? aauNumber.trim() : '',
-        relationship, // Use provided relationship or rely on schema default
-        agreeToTerms,
-        role: isCoach ? 'coach' : 'user',
-        registrationComplete: true,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-
-      await parent.save({ session });
-      console.log('Parent saved:', parent._id);
+      // Check for existing team registration for this tournament
+      console.log(
+        'Checking existing registration for tournament:',
+        tournament,
+        year
+      );
+      const existingRegistration = await Registration.findOne({
+        parent: parent._id,
+        tournament,
+        year: parseInt(year),
+      }).session(session);
+      if (existingRegistration) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          error: 'Team already registered for this tournament',
+        });
+      }
 
       // Create Team
       console.log('Creating new team');
@@ -2878,7 +2938,7 @@ router.post(
         name: team.name.trim(),
         grade: team.grade,
         sex: team.sex,
-        coachId: parent._id, // Assign parent as coachId regardless of isCoach
+        coachId: parent._id,
         levelOfCompetition: team.levelOfCompetition,
         tournaments: [
           {
@@ -2917,18 +2977,29 @@ router.post(
       await session.commitTransaction();
       console.log('Transaction committed');
 
-      // Send welcome email (async)
-      sendWelcomeEmail(parent._id, null).catch((err) =>
-        console.error('Welcome email failed:', err)
-      );
+      // Send welcome email for new parents (async)
+      if (!req.user) {
+        sendWelcomeEmail(parent._id, null).catch((err) =>
+          console.error('Welcome email failed:', err)
+        );
+      }
 
-      const token = generateToken({
-        id: parent._id,
-        role: parent.role,
-        email: parent.email,
-        address: parent.address,
-        registrationComplete: true,
-      });
+      // Generate token for new parents
+      const token = req.user
+        ? generateToken({
+            id: parent._id,
+            role: parent.role,
+            email: parent.email,
+            address: parent.address,
+            registrationComplete: true,
+          })
+        : generateToken({
+            id: parent._id,
+            role: parent.role,
+            email: parent.email,
+            address: parent.address,
+            registrationComplete: true,
+          });
 
       res.status(201).json({
         success: true,
@@ -2973,7 +3044,6 @@ router.post(
         requestBody: req.body,
       });
 
-      // Check for validation errors from Mongoose
       if (error.name === 'ValidationError') {
         const errors = Object.values(error.errors).map((err) => ({
           msg: err.message,
