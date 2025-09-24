@@ -2819,14 +2819,19 @@ router.use((err, req, res, next) => {
 router.post(
   '/register/tournament-team',
   [
-    body('email').isEmail().withMessage('Invalid email'),
+    body('email').isEmail().normalizeEmail().withMessage('Invalid email'),
     body('password')
       .isLength({ min: 6 })
       .withMessage('Password must be at least 6 characters'),
     body('fullName').notEmpty().withMessage('Full name is required'),
-    body('phone').notEmpty().withMessage('Phone number is required'),
-    body('isCoach').isBoolean().withMessage('isCoach must be boolean'),
-    body('aauNumber').notEmpty().withMessage('AAU number is required'),
+    body('phone')
+      .matches(/^\(\d{3}\)\s\d{3}-\d{4}$/)
+      .withMessage('Phone number must be in format (XXX) XXX-XXXX'),
+    body('isCoach').isBoolean().withMessage('isCoach must be a boolean'),
+    body('aauNumber')
+      .if(body('isCoach').equals('true'))
+      .notEmpty()
+      .withMessage('AAU number is required for coaches'),
     body('team.name').notEmpty().withMessage('Team name is required'),
     body('team.grade').notEmpty().withMessage('Grade is required'),
     body('team.sex')
@@ -2835,17 +2840,29 @@ router.post(
     body('team.levelOfCompetition')
       .isIn(['Gold', 'Silver'])
       .withMessage('Invalid competition level'),
-    body('agreeToTerms').isBoolean().withMessage('You must agree to terms'),
+    body('agreeToTerms')
+      .equals('true')
+      .withMessage('You must agree to the terms'),
     body('tournament').notEmpty().withMessage('Tournament name is required'),
     body('year')
       .isInt({ min: 2020, max: 2030 })
       .withMessage('Year must be between 2020 and 2030'),
+    body('address.street')
+      .isLength({ min: 5 })
+      .withMessage('Street address must be at least 5 characters'),
+    body('address.city').notEmpty().withMessage('City is required'),
+    body('address.state')
+      .matches(/^[A-Z]{2}$/)
+      .withMessage('State must be a valid 2-letter code (e.g., WA)'),
+    body('address.zip')
+      .matches(/^\d{5}(-\d{4})?$/)
+      .withMessage('Invalid ZIP code'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       console.log('Validation errors:', errors.array());
-      return res.status(400).json({ errors: errors.array(), success: false });
+      return res.status(400).json({ success: false, errors: errors.array() });
     }
 
     const session = await mongoose.startSession();
@@ -2863,26 +2880,30 @@ router.post(
         agreeToTerms,
         tournament,
         year,
+        address,
       } = req.body;
 
       const normalizedEmail = email.toLowerCase().trim();
+      console.log('Checking existing parent:', normalizedEmail);
       const existingParent = await Parent.findOne({
         email: normalizedEmail,
       }).session(session);
       if (existingParent) {
+        console.log('Email already exists:', normalizedEmail);
         await session.abortTransaction();
         return res
           .status(400)
-          .json({ error: 'Email already registered', success: false });
+          .json({ success: false, error: 'Email already registered' });
       }
 
       // Create Parent
+      console.log('Creating new parent');
       const parent = new Parent({
         email: normalizedEmail,
         password: password.trim(),
         fullName: fullName.trim(),
-        phone: phone.replace(/\D/g, ''),
-        address: ensureAddress({}), // Default empty address
+        phone: phone.replace(/\D/g, ''), // Store as 10-digit number
+        address: addressUtils.ensureAddress(address),
         isCoach,
         aauNumber: isCoach ? aauNumber.trim() : '',
         agreeToTerms,
@@ -2893,13 +2914,16 @@ router.post(
       });
 
       await parent.save({ session });
+      console.log('Parent saved:', parent._id);
 
       // Create Team
+      console.log('Creating new team');
       const teamDoc = new Team({
         name: team.name.trim(),
         grade: team.grade,
         sex: team.sex,
         coachId: parent._id,
+        levelOfCompetition: team.levelOfCompetition,
         tournaments: [
           {
             tournament,
@@ -2914,8 +2938,10 @@ router.post(
       });
 
       await teamDoc.save({ session });
+      console.log('Team saved:', teamDoc._id);
 
       // Create Registration
+      console.log('Creating registration');
       const registration = new Registration({
         team: teamDoc._id,
         parent: parent._id,
@@ -2930,8 +2956,10 @@ router.post(
       });
 
       await registration.save({ session });
+      console.log('Registration saved:', registration._id);
 
       await session.commitTransaction();
+      console.log('Transaction committed');
 
       // Send welcome email (async)
       sendWelcomeEmail(parent._id, null).catch((err) =>
@@ -2967,6 +2995,7 @@ router.post(
           name: teamDoc.name,
           grade: teamDoc.grade,
           sex: teamDoc.sex,
+          levelOfCompetition: teamDoc.levelOfCompetition,
           tournaments: teamDoc.tournaments,
         },
         registration: {
@@ -2982,7 +3011,25 @@ router.post(
       });
     } catch (error) {
       await session.abortTransaction();
-      console.error('Tournament team registration error:', error);
+      console.error('Tournament team registration error:', {
+        message: error.message,
+        stack: error.stack,
+        requestBody: req.body,
+      });
+
+      // Check for validation errors from Mongoose
+      if (error.name === 'ValidationError') {
+        const errors = Object.values(error.errors).map((err) => ({
+          msg: err.message,
+          path: err.path,
+        }));
+        return res.status(400).json({
+          success: false,
+          error: 'Validation failed',
+          details: errors,
+        });
+      }
+
       res.status(500).json({
         success: false,
         error: 'Failed to register team',
