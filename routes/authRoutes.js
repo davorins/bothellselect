@@ -2814,592 +2814,67 @@ router.use((err, req, res, next) => {
     .json({ error: 'Internal server error', details: err.message });
 });
 
-// Generate unique tournamentId
-const generateTournamentId = (tournament, year) => {
-  return `${tournament.toLowerCase().replace(/\s+/g, '-')}-${year}-tournament`;
-};
-
-// Register a player for tournament
+// Register team for tournament
 router.post(
-  '/players/register-tournament',
-  authenticate,
-  [
-    body('fullName').notEmpty().withMessage('Full name is required'),
-    body('gender').notEmpty().withMessage('Gender is required'),
-    body('dob').notEmpty().withMessage('Date of birth is required'),
-    body('schoolName').notEmpty().withMessage('School name is required'),
-    body('healthConcerns').optional(),
-    body('aauNumber').optional(),
-    body('registrationYear')
-      .isNumeric()
-      .withMessage('Registration year must be a number'),
-    body('tournament').notEmpty().withMessage('Tournament is required'),
-    body('parentId').notEmpty().withMessage('Parent ID is required'),
-    body('grade').optional().isString(),
-    body('levelOfCompetition')
-      .optional()
-      .isIn(['Gold', 'Silver'])
-      .withMessage('Level of competition must be Gold or Silver'),
-    body('isGradeOverridden').optional().isBoolean(),
-    body('tournamentId')
-      .optional()
-      .isString()
-      .withMessage('Tournament ID must be a string'),
-  ],
-  async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      console.log('Validation errors:', errors.array());
-      return res.status(400).json({ errors: errors.array() });
-    }
-
-    const {
-      fullName,
-      gender,
-      dob,
-      schoolName,
-      healthConcerns,
-      aauNumber,
-      registrationYear,
-      tournament,
-      parentId,
-      grade,
-      levelOfCompetition = 'Gold',
-      isGradeOverridden = false,
-      tournamentId,
-    } = req.body;
-
-    // Calculate grade if not overridden
-    const calculatedGrade = isGradeOverridden
-      ? grade
-      : calculateGradeFromDOB(dob, registrationYear);
-
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
-    try {
-      // Generate tournamentId if not provided
-      const finalTournamentId =
-        tournamentId || generateTournamentId(tournament, registrationYear);
-
-      // Normalize inputs for consistency
-      const normalizedTournament = tournament.trim();
-      const normalizedTournamentId = finalTournamentId.trim();
-
-      // Check if a player with the same fullName and dob is already registered for this tournament
-      const existingPlayer = await Player.findOne({
-        parentId,
-        fullName,
-        dob: new Date(dob),
-        'tournaments.tournament': normalizedTournament,
-        'tournaments.year': registrationYear,
-        'tournaments.tournamentId': normalizedTournamentId,
-      }).session(session);
-
-      if (existingPlayer) {
-        await session.abortTransaction();
-        console.log('Duplicate player registration attempt:', {
-          fullName,
-          parentId,
-          tournament: normalizedTournament,
-          year: registrationYear,
-          tournamentId: normalizedTournamentId,
-        });
-        return res.status(400).json({
-          error: `Player ${fullName} is already registered for this tournament`,
-        });
-      }
-
-      // Verify parent exists
-      const parent = await Parent.findById(parentId).session(session);
-      if (!parent) {
-        await session.abortTransaction();
-        console.log('Parent not found:', { parentId });
-        return res.status(400).json({ error: 'Parent not found' });
-      }
-
-      // Create new player
-      const player = new Player({
-        fullName,
-        gender,
-        dob: new Date(dob),
-        schoolName,
-        healthConcerns: healthConcerns || '',
-        aauNumber: aauNumber || '',
-        registrationYear,
-        tournament: normalizedTournament,
-        parentId,
-        grade: calculatedGrade,
-        levelOfCompetition,
-        isGradeOverridden,
-        paymentStatus: 'pending',
-        paymentComplete: false,
-        registrationComplete: true,
-        tournaments: [
-          {
-            tournament: normalizedTournament,
-            year: registrationYear,
-            tournamentId: normalizedTournamentId,
-            registrationDate: new Date(),
-            paymentStatus: 'pending',
-            paymentComplete: false,
-            levelOfCompetition,
-          },
-        ],
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-
-      await player.save({ session });
-
-      // Update parent's players array
-      await Parent.findByIdAndUpdate(
-        parentId,
-        { $push: { players: player._id } },
-        { new: true, session }
-      );
-
-      // Create tournament registration document
-      const TournamentRegistration = mongoose.model(
-        'TournamentRegistration',
-        new mongoose.Schema({
-          player: { type: mongoose.Schema.Types.ObjectId, ref: 'Player' },
-          parent: { type: mongoose.Schema.Types.ObjectId, ref: 'Parent' },
-          tournament: String,
-          year: Number,
-          tournamentId: String,
-          paymentStatus: { type: String, default: 'pending' },
-          paymentComplete: { type: Boolean, default: false },
-          levelOfCompetition: { type: String, default: 'Gold' },
-        })
-      );
-
-      const registration = new TournamentRegistration({
-        player: player._id,
-        parent: parentId,
-        tournament: normalizedTournament,
-        year: registrationYear,
-        tournamentId: normalizedTournamentId,
-        paymentStatus: 'pending',
-        paymentComplete: false,
-        levelOfCompetition,
-      });
-
-      await registration.save({ session });
-
-      await session.commitTransaction();
-
-      console.log('Registered player for tournament:', {
-        playerId: player._id,
-        fullName,
-        parentId,
-        tournament: normalizedTournament,
-        year: registrationYear,
-        tournamentId: normalizedTournamentId,
-        levelOfCompetition,
-      });
-
-      res.status(201).json({
-        message: 'Player registered successfully for tournament',
-        player: {
-          ...player.toObject(),
-          tournament: normalizedTournament,
-          registrationYear,
-          tournamentId: normalizedTournamentId,
-          levelOfCompetition,
-          paymentStatus: player.paymentStatus,
-          paymentComplete: player.paymentComplete,
-          registrationComplete: player.registrationComplete,
-        },
-        registration: {
-          id: registration._id,
-          playerId: player._id,
-          parentId,
-          tournament: normalizedTournament,
-          year: registrationYear,
-          tournamentId: normalizedTournamentId,
-          levelOfCompetition,
-          paymentStatus: registration.paymentStatus,
-          paymentComplete: registration.paymentComplete,
-        },
-      });
-    } catch (error) {
-      await session.abortTransaction();
-      console.error(
-        'Error registering player for tournament:',
-        error.message,
-        error.stack
-      );
-      res.status(500).json({
-        error: 'Failed to register player for tournament',
-        details:
-          process.env.NODE_ENV === 'development' ? error.message : undefined,
-      });
-    } finally {
-      session.endSession();
-    }
-  }
-);
-
-// Register for tournament (new user)
-router.post(
-  '/register/tournament',
+  '/register/tournament-team',
   [
     body('email').isEmail().withMessage('Invalid email'),
     body('password')
       .isLength({ min: 6 })
       .withMessage('Password must be at least 6 characters'),
     body('fullName').notEmpty().withMessage('Full name is required'),
-    body('relationship').notEmpty().withMessage('Relationship is required'),
     body('phone').notEmpty().withMessage('Phone number is required'),
-    body('address').customSanitizer((value) => {
-      if (typeof value === 'string') return parseAddress(value);
-      return value;
-    }),
-    body('address.street').notEmpty().withMessage('Street address is required'),
-    body('address.city').notEmpty().withMessage('City is required'),
-    body('address.state')
-      .isLength({ min: 2, max: 2 })
-      .withMessage('State must be 2 letters'),
-    body('address.zip').isPostalCode('US').withMessage('Invalid ZIP code'),
-    body('isCoach')
-      .optional()
-      .isBoolean()
-      .withMessage('isCoach must be boolean'),
-    body('aauNumber').optional().isString(),
-    body('agreeToTerms').isBoolean().withMessage('You must agree to the terms'),
-    body('players')
-      .isArray({ min: 1 })
-      .withMessage('At least one player is required'),
-    body('players.*.fullName').notEmpty().withMessage('Player name required'),
-    body('players.*.gender').notEmpty().withMessage('Player gender required'),
-    body('players.*.dob')
-      .notEmpty()
-      .withMessage('Player date of birth required'),
-    body('players.*.schoolName').notEmpty().withMessage('School name required'),
-    body('players.*.grade').optional().isString(),
-    body('players.*.levelOfCompetition')
-      .optional()
+    body('isCoach').isBoolean().withMessage('isCoach must be boolean'),
+    body('aauNumber').notEmpty().withMessage('AAU number is required'),
+    body('team.name').notEmpty().withMessage('Team name is required'),
+    body('team.grade').notEmpty().withMessage('Grade is required'),
+    body('team.sex')
+      .isIn(['Male', 'Female', 'Coed'])
+      .withMessage('Invalid team gender'),
+    body('team.levelOfCompetition')
       .isIn(['Gold', 'Silver'])
-      .withMessage('Level of competition must be Gold or Silver'),
-    body('players.*.isGradeOverridden').optional().isBoolean(),
-    body('players.*.healthConcerns').optional().isString(),
-    body('players.*.aauNumber').optional().isString(),
-    body('players.*.tournament')
-      .notEmpty()
-      .withMessage('Tournament is required'),
-    body('players.*.year')
-      .notEmpty()
-      .withMessage('Year is required')
-      .isInt({ min: 2020, max: 2030 })
-      .withMessage('Year must be between 2020 and 2030')
-      .customSanitizer((value) => parseInt(value, 10)),
-    body('players.*.tournamentId')
-      .optional()
-      .isString()
-      .withMessage('Tournament ID must be a string'),
+      .withMessage('Invalid competition level'),
+    body('agreeToTerms').isBoolean().withMessage('You must agree to terms'),
   ],
   async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array(), success: false });
-    }
-
-    const session = await mongoose.startSession();
-    session.startTransaction();
-
-    try {
-      const {
-        email,
-        password,
-        fullName,
-        relationship,
-        phone,
-        address,
-        isCoach = false,
-        aauNumber = '',
-        players,
-        agreeToTerms,
-        additionalGuardians = [],
-      } = req.body;
-
-      const normalizedEmail = email.toLowerCase().trim();
-      const existingParent = await Parent.findOne({
-        email: normalizedEmail,
-      }).session(session);
-      if (existingParent) {
-        await session.abortTransaction();
-        return res
-          .status(400)
-          .json({ error: 'Email already registered', success: false });
-      }
-
-      // Create parent first to get parentId
-      const parent = new Parent({
-        email: normalizedEmail,
-        password: password.trim(),
-        fullName: fullName.trim(),
-        relationship: relationship.trim(),
-        phone: phone.replace(/\D/g, ''),
-        address: ensureAddress(address),
-        isCoach,
-        aauNumber: isCoach ? aauNumber.trim() : '',
-        players: [],
-        additionalGuardians: additionalGuardians.map((g) => ({
-          fullName: g.fullName.trim(),
-          relationship: g.relationship.trim(),
-          phone: g.phone.replace(/\D/g, ''),
-          email: g.email.toLowerCase().trim(),
-          address: parseAddress(g.address),
-          isCoach: g.isCoach || false,
-          aauNumber: g.isCoach ? (g.aauNumber || '').trim() : '',
-          registrationComplete: true,
-          paymentComplete: false,
-        })),
-        agreeToTerms,
-        role: 'user',
-        registrationComplete: true,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-
-      await parent.save({ session });
-
-      // Create players with parentId
-      const playerDocs = players.map((player) => {
-        const finalTournamentId =
-          player.tournamentId ||
-          generateTournamentId(player.tournament, player.year);
-
-        // Calculate grade if not overridden
-        const calculatedGrade = player.isGradeOverridden
-          ? player.grade
-          : calculateGradeFromDOB(player.dob, player.year);
-
-        return {
-          _id: new mongoose.Types.ObjectId(),
-          fullName: player.fullName.trim(),
-          gender: player.gender,
-          dob: player.dob,
-          schoolName: player.schoolName.trim(),
-          grade: calculatedGrade,
-          levelOfCompetition: player.levelOfCompetition || 'Gold',
-          isGradeOverridden: player.isGradeOverridden || false,
-          healthConcerns: player.healthConcerns || '',
-          aauNumber: player.aauNumber || '',
-          tournament: player.tournament,
-          registrationYear: player.year,
-          tournamentId: finalTournamentId,
-          parentId: parent._id,
-          registrationComplete: true,
-          paymentStatus: 'pending',
-          paymentComplete: false,
-          tournaments: [
-            {
-              tournament: player.tournament,
-              year: player.year,
-              tournamentId: finalTournamentId,
-              registrationDate: new Date(),
-              paymentStatus: 'pending',
-              paymentComplete: false,
-              levelOfCompetition: player.levelOfCompetition || 'Gold',
-            },
-          ],
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        };
-      });
-
-      const savedPlayers = await Player.insertMany(playerDocs, { session });
-
-      // Update parent with player IDs
-      parent.players = savedPlayers.map((p) => p._id);
-      await parent.save({ session });
-
-      await session.commitTransaction();
-
-      const token = generateToken({
-        id: parent._id,
-        role: parent.role,
-        email: parent.email,
-        players: parent.players,
-        address: parent.address,
-        registrationComplete: true,
-      });
-
-      res.status(201).json({
-        success: true,
-        message: 'Tournament registration successful. Please complete payment.',
-        registrationStatus: {
-          parentRegistered: true,
-          paymentCompleted: false,
-          nextStep: 'payment',
-        },
-        parent: {
-          id: parent._id,
-          email: parent.email,
-          fullName: parent.fullName,
-          registrationComplete: true,
-          paymentComplete: false,
-        },
-        players: savedPlayers.map((p) => ({
-          _id: p._id,
-          fullName: p.fullName,
-          gender: p.gender,
-          dob: p.dob,
-          schoolName: p.schoolName,
-          grade: p.grade,
-          levelOfCompetition: p.levelOfCompetition,
-          isGradeOverridden: p.isGradeOverridden,
-          healthConcerns: p.healthConcerns,
-          aauNumber: p.aauNumber,
-          registrationYear: p.registrationYear,
-          tournament: p.tournament,
-          tournaments: p.tournaments,
-          registrationComplete: true,
-          paymentComplete: p.paymentComplete,
-          paymentStatus: p.paymentStatus,
-          tournamentId: p.tournaments[0]?.tournamentId || null,
-        })),
-        token,
-      });
-    } catch (error) {
-      await session.abortTransaction();
-      console.error('Tournament Registration Error:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message || 'Tournament registration failed',
-        registrationStatus: {
-          parentRegistered: false,
-          paymentCompleted: false,
-          error: true,
-        },
-        details:
-          process.env.NODE_ENV === 'development' ? error.stack : undefined,
-      });
-    } finally {
-      session.endSession();
-    }
+    // Implementation similar to your existing registration
   }
 );
 
-// Get current tournament
-router.get('/tournaments/current', async (req, res) => {
-  try {
-    // You can modify this to fetch from database or use hardcoded values
-    const currentTournament = {
-      tournament: 'Basketball Tournament',
-      year: 2025,
-      tournamentId: 'basketball-tournament-2025',
-      registrationFee: 425,
-      description: 'Annual Basketball Tournament',
-      startDate: '2025-03-15',
-      endDate: '2025-03-17',
-      location: 'Bothell Sports Complex',
-    };
-
-    res.json(currentTournament);
-  } catch (error) {
-    console.error('Error fetching current tournament:', error);
-    res.status(500).json({ error: 'Failed to fetch current tournament' });
+// Register existing team for tournament
+router.post(
+  '/teams/register-tournament',
+  authenticate,
+  [
+    body('teamId').notEmpty().withMessage('Team ID is required'),
+    body('tournament').notEmpty().withMessage('Tournament name is required'),
+    body('year').isNumeric().withMessage('Year must be a number'),
+    body('levelOfCompetition')
+      .isIn(['Gold', 'Silver'])
+      .withMessage('Invalid competition level'),
+  ],
+  async (req, res) => {
+    // Implementation for existing teams
   }
+);
+
+// Get teams by coach
+router.get('/teams/by-coach/:coachId', authenticate, async (req, res) => {
+  // Implementation to fetch teams by coach
 });
 
-// Tournament payment endpoint
-router.post('/payments/tournament', authenticate, async (req, res) => {
-  const {
-    token,
-    sourceId,
-    amount,
-    currency = 'USD',
-    email,
-    players,
-    levelOfCompetition,
-    cardDetails,
-  } = req.body;
-
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    // Verify players exist and are registered for the tournament
-    const playerUpdates = [];
-    for (const playerData of players) {
-      const player = await Player.findOne({
-        _id: playerData.playerId,
-        'tournaments.tournament': playerData.tournament,
-        'tournaments.year': playerData.year,
-      }).session(session);
-
-      if (!player) {
-        await session.abortTransaction();
-        return res.status(404).json({
-          error: `Player not found or not registered for tournament`,
-          playerId: playerData.playerId,
-        });
-      }
-
-      // Update player's tournament payment status
-      const tournamentIndex = player.tournaments.findIndex(
-        (t) =>
-          t.tournament === playerData.tournament && t.year === playerData.year
-      );
-
-      if (tournamentIndex !== -1) {
-        player.tournaments[tournamentIndex].paymentStatus = 'paid';
-        player.tournaments[tournamentIndex].paymentComplete = true;
-        player.tournaments[tournamentIndex].paymentDate = new Date();
-        player.tournaments[tournamentIndex].cardLast4 = cardDetails?.last_4;
-        player.tournaments[tournamentIndex].cardBrand = cardDetails?.card_brand;
-
-        if (playerData.levelOfCompetition) {
-          player.tournaments[tournamentIndex].levelOfCompetition =
-            playerData.levelOfCompetition;
-          player.levelOfCompetition = playerData.levelOfCompetition;
-        }
-      }
-
-      // Update top-level payment status if all tournaments are paid
-      const allTournamentsPaid = player.tournaments.every(
-        (t) => t.paymentStatus === 'paid'
-      );
-      if (allTournamentsPaid) {
-        player.paymentStatus = 'paid';
-        player.paymentComplete = true;
-      }
-
-      playerUpdates.push(player.save({ session }));
-    }
-
-    await Promise.all(playerUpdates);
-    await session.commitTransaction();
-
-    // Here you would typically process the payment with your payment provider
-    // For now, we'll simulate a successful payment
-
-    res.json({
-      success: true,
-      message: 'Tournament payment processed successfully',
-      players: players.map((p) => ({
-        playerId: p.playerId,
-        tournament: p.tournament,
-        year: p.year,
-        paymentStatus: 'paid',
-        levelOfCompetition: p.levelOfCompetition,
-      })),
-      amount,
-      transactionId: `tournament_${Date.now()}`,
-    });
-  } catch (error) {
-    await session.abortTransaction();
-    console.error('Tournament payment error:', error);
-    res.status(500).json({
-      error: 'Tournament payment processing failed',
-      details: error.message,
-    });
-  } finally {
-    session.endSession();
+// Team payment endpoint
+router.post(
+  '/payments/tournament-team',
+  authenticate,
+  [
+    body('teamId').notEmpty().withMessage('Team ID is required'),
+    body('tournament').notEmpty().withMessage('Tournament name is required'),
+    body('year').isNumeric().withMessage('Year must be a number'),
+  ],
+  async (req, res) => {
+    // Payment processing for teams
   }
-});
+);
 
 module.exports = router;
