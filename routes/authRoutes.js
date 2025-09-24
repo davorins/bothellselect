@@ -2785,8 +2785,12 @@ router.post(
       .withMessage('Full name is required'),
     body('phone')
       .if((value, { req }) => !req.user)
-      .matches(/^\(\d{3}\)\s\d{3}-\d{4}$/)
-      .withMessage('Phone number must be in format (XXX) XXX-XXXX'),
+      .matches(/^\(?(\d{3})\)?[-.\s]?(\d{3})[-.\s]?(\d{4})$/)
+      .withMessage('Invalid phone number format')
+      .customSanitizer((value) => {
+        const digits = value.replace(/\D/g, '');
+        return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+      }),
     body('isCoach')
       .if((value, { req }) => !req.user)
       .isBoolean()
@@ -2894,7 +2898,7 @@ router.post(
         console.log('Creating new parent');
         parent = new Parent({
           email: normalizedEmail,
-          password: await hashPassword(password.trim()), // Use hashPassword from auth utils
+          password: await hashPassword(password.trim()),
           fullName: fullName.trim(),
           phone: phone.replace(/\D/g, ''),
           address: ensureAddress(address),
@@ -2910,26 +2914,6 @@ router.post(
 
         await parent.save({ session });
         console.log('Parent saved:', parent._id);
-      }
-
-      // Check for existing team registration for this tournament
-      console.log(
-        'Checking existing registration for tournament:',
-        tournament,
-        year
-      );
-      const existingRegistration = await Registration.findOne({
-        parent: parent._id,
-        tournament,
-        year: parseInt(year),
-        team: { $exists: true }, // Ensure it's a team registration
-      }).session(session);
-      if (existingRegistration) {
-        await session.abortTransaction();
-        return res.status(400).json({
-          success: false,
-          error: 'Team already registered for this tournament',
-        });
       }
 
       // Create Team
@@ -2955,6 +2939,26 @@ router.post(
 
       await teamDoc.save({ session });
       console.log('Team saved:', teamDoc._id);
+
+      // Check for existing team registration for this tournament
+      console.log(
+        'Checking existing registration for team:',
+        teamDoc._id,
+        tournament,
+        year
+      );
+      const existingRegistration = await Registration.findOne({
+        team: teamDoc._id,
+        tournament,
+        year: parseInt(year),
+      }).session(session);
+      if (existingRegistration) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          error: 'This team is already registered for the tournament',
+        });
+      }
 
       // Create Registration
       console.log('Creating registration');
@@ -3039,9 +3043,9 @@ router.post(
       if (error.name === 'MongoServerError' && error.code === 11000) {
         return res.status(400).json({
           success: false,
-          error: 'Duplicate registration detected',
+          error: 'Duplicate team registration detected',
           details:
-            'A team registration for this tournament and year already exists.',
+            'This team is already registered for the specified tournament and year.',
         });
       }
 
