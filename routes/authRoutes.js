@@ -2768,11 +2768,10 @@ router.use((err, req, res, next) => {
 // Register team for tournament
 router.post(
   '/register/tournament-team',
-  authenticate, // Allow both authenticated and unauthenticated users
   [
     // Validations for unauthenticated users (new parents)
     body('email')
-      .if((value, { req }) => !req.user) // Apply only if not authenticated
+      .if((value, { req }) => !req.user)
       .isEmail()
       .normalizeEmail()
       .withMessage('Invalid email'),
@@ -2898,7 +2897,7 @@ router.post(
           password: password.trim(),
           fullName: fullName.trim(),
           phone: phone.replace(/\D/g, ''),
-          address: addressUtils.ensureAddress(address),
+          address: ensureAddress(address),
           isCoach,
           aauNumber: isCoach ? aauNumber.trim() : '',
           relationship,
@@ -2926,10 +2925,12 @@ router.post(
       }).session(session);
       if (existingRegistration) {
         await session.abortTransaction();
-        return res.status(400).json({
-          success: false,
-          error: 'Team already registered for this tournament',
-        });
+        return res
+          .status(400)
+          .json({
+            success: false,
+            error: 'Team already registered for this tournament',
+          });
       }
 
       // Create Team
@@ -2984,22 +2985,14 @@ router.post(
         );
       }
 
-      // Generate token for new parents
-      const token = req.user
-        ? generateToken({
-            id: parent._id,
-            role: parent.role,
-            email: parent.email,
-            address: parent.address,
-            registrationComplete: true,
-          })
-        : generateToken({
-            id: parent._id,
-            role: parent.role,
-            email: parent.email,
-            address: parent.address,
-            registrationComplete: true,
-          });
+      // Generate token
+      const token = generateToken({
+        id: parent._id,
+        role: parent.role,
+        email: parent.email,
+        address: parent.address,
+        registrationComplete: true,
+      });
 
       res.status(201).json({
         success: true,
