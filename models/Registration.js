@@ -72,16 +72,33 @@ if (mongoose.models.Registration) {
     }
   );
 
-  // Unique index for player registrations
+  // FIXED: Unique index for player registrations (only when player exists and is not null)
   registrationSchema.index(
     { player: 1, season: 1, year: 1, tryoutId: 1 },
-    { unique: true, partialFilterExpression: { player: { $exists: true } } }
+    {
+      unique: true,
+      partialFilterExpression: {
+        $and: [
+          { player: { $exists: true, $ne: null } },
+          { season: { $exists: true, $ne: null } },
+          { tryoutId: { $exists: true, $ne: null } },
+        ],
+      },
+    }
   );
 
-  // New unique index to prevent duplicate registrations by the same parent for the same team
+  // Unique index for team registrations (only when team exists and is not null)
   registrationSchema.index(
     { parent: 1, team: 1, tournament: 1, year: 1 },
-    { unique: true, partialFilterExpression: { team: { $exists: true } } }
+    {
+      unique: true,
+      partialFilterExpression: {
+        $and: [
+          { team: { $exists: true, $ne: null } },
+          { tournament: { $exists: true, $ne: null } },
+        ],
+      },
+    }
   );
 
   registrationSchema.virtual('seasonYear').get(function () {

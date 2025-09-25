@@ -1,16 +1,7 @@
-// Team.js
 const mongoose = require('mongoose');
 
 const teamSchema = new mongoose.Schema({
   name: { type: String, required: true },
-  coachIds: [
-    {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Parent',
-      required: true,
-      index: true,
-    },
-  ], // Changed from coachId to coachIds (array)
   grade: { type: String, required: true },
   sex: { type: String, enum: ['Male', 'Female', 'Coed'], required: true },
   levelOfCompetition: {
@@ -18,30 +9,35 @@ const teamSchema = new mongoose.Schema({
     enum: ['Gold', 'Silver'],
     required: true,
   },
+  registrationYear: { type: Number, required: true },
+  tournament: { type: String, required: true },
+  coachIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Parent' }],
+  paymentComplete: { type: Boolean, default: false },
+  paymentStatus: {
+    type: String,
+    enum: ['pending', 'paid', 'failed'],
+    default: 'pending',
+  },
   tournaments: [
     {
-      tournament: { type: String, required: true },
-      year: { type: Number, required: true },
-      levelOfCompetition: {
-        type: String,
-        enum: ['Gold', 'Silver'],
-        required: true,
-      },
-      registrationId: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Registration',
-      },
+      tournament: String,
+      year: Number,
+      registrationDate: { type: Date, default: Date.now },
+      paymentComplete: { type: Boolean, default: false },
       paymentStatus: {
         type: String,
-        enum: ['pending', 'paid', 'failed', 'refunded'],
+        enum: ['pending', 'paid', 'failed'],
         default: 'pending',
       },
-      paymentComplete: { type: Boolean, default: false },
-      paymentDate: { type: Date },
+      amountPaid: { type: Number, default: 0 },
+      paymentId: { type: String },
+      paymentMethod: { type: String },
+      cardLast4: { type: String },
+      cardBrand: { type: String },
+      levelOfCompetition: { type: String, enum: ['Gold', 'Silver'] },
     },
   ],
-  createdAt: { type: Date, default: Date.now },
-  updatedAt: { type: Date, default: Date.now },
+  isActive: { type: Boolean, default: true },
 });
 
 module.exports = mongoose.model('Team', teamSchema);

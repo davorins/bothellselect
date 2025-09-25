@@ -26,6 +26,28 @@ const { calculateGradeFromDOB } = require('../utils/gradeUtils');
 
 const router = express.Router();
 
+// Optional authentication middleware: Parses JWT if present, allows unauthenticated requests
+const optionalAuth = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+
+  // If no Authorization header, proceed without setting req.user
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    req.user = null; // Explicitly set req.user to null for unauthenticated requests
+    return next();
+  }
+
+  // If token is provided, use the authenticate middleware to verify it
+  authenticate(req, res, (err) => {
+    if (err) {
+      console.error('Optional auth error:', err);
+      req.user = null; // On invalid token, treat as unauthenticated
+      return next();
+    }
+    // req.user is set by authenticate if token is valid
+    next();
+  });
+};
+
 // Generate random password for admin-created accounts
 const generateRandomPassword = () => {
   return (
@@ -2768,22 +2790,33 @@ router.use((err, req, res, next) => {
 // Register team for tournament
 router.post(
   '/register/tournament-team',
+  optionalAuth,
   [
     body('email')
       .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('Email is required')
       .isEmail()
       .normalizeEmail()
       .withMessage('Invalid email'),
     body('password')
       .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('Password is required')
       .isLength({ min: 6 })
-      .withMessage('Password must be at least 6 characters'),
+      .withMessage('Password must be at least 6 characters')
+      .custom((value) => value.trim() === value)
+      .withMessage('Password cannot start or end with spaces'),
     body('fullName')
       .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('Full name is required')
       .notEmpty()
       .withMessage('Full name is required'),
     body('phone')
       .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('Phone number is required')
       .matches(/^\(?(\d{3})\)?[-.\s]?(\d{3})[-.\s]?(\d{4})$/)
       .withMessage('Invalid phone number format')
       .customSanitizer((value) => {
@@ -2792,10 +2825,14 @@ router.post(
       }),
     body('isCoach')
       .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('isCoach is required')
       .isBoolean()
       .withMessage('isCoach must be a boolean'),
     body('aauNumber')
       .if((value, { req }) => req.body.isCoach === true && !req.user)
+      .exists()
+      .withMessage('AAU number is required for coaches')
       .notEmpty()
       .withMessage('AAU number is required for coaches'),
     body('relationship')
@@ -2804,22 +2841,31 @@ router.post(
       .withMessage('Invalid relationship value'),
     body('address.street')
       .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('Street address is required')
       .isLength({ min: 5 })
       .withMessage('Street address must be at least 5 characters'),
     body('address.city')
       .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('City is required')
       .notEmpty()
       .withMessage('City is required'),
     body('address.state')
       .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('State is required')
       .matches(/^[A-Z]{2}$/)
       .withMessage('State must be a valid 2-letter code (e.g., WA)'),
     body('address.zip')
       .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('ZIP code is required')
       .matches(/^\d{5}(-\d{4})?$/)
       .withMessage('Invalid ZIP code'),
     body('agreeToTerms')
-      .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('You must agree to the terms')
       .equals('true')
       .withMessage('You must agree to the terms'),
     body('team.name').notEmpty().withMessage('Team name is required'),
@@ -2830,16 +2876,26 @@ router.post(
     body('team.levelOfCompetition')
       .isIn(['Gold', 'Silver'])
       .withMessage('Invalid competition level'),
-    body('tournament').notEmpty().withMessage('Tournament name is required'),
+    body('tournament')
+      .notEmpty()
+      .withMessage('Tournament name is required for team registration'),
     body('year')
       .isInt({ min: 2020, max: 2030 })
-      .withMessage('Year must be between 2020 and 2030'),
+      .withMessage('Year must be between 2020 and 2030')
+      .toInt(),
   ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       console.log('Validation errors:', errors.array());
-      return res.status(400).json({ success: false, errors: errors.array() });
+      return res.status(400).json({
+        success: false,
+        error: 'Validation failed',
+        details: errors.array().map((err) => ({
+          msg: err.msg,
+          path: err.param,
+        })),
+      });
     }
 
     const session = await mongoose.startSession();
@@ -2859,10 +2915,12 @@ router.post(
         tournament,
         year,
         address,
+        isAdmin,
       } = req.body;
 
       let parent;
 
+      // Handle authenticated user
       if (req.user) {
         parent = await Parent.findById(req.user.id).session(session);
         if (!parent) {
@@ -2877,6 +2935,7 @@ router.post(
           await parent.save({ session });
         }
       } else {
+        // Handle new user registration
         const normalizedEmail = email.toLowerCase().trim();
         const existingParent = await Parent.findOne({
           email: normalizedEmail,
@@ -2886,20 +2945,35 @@ router.post(
           return res.status(400).json({
             success: false,
             error: 'Email already registered',
+            details: [{ msg: 'Email already registered', path: 'email' }],
           });
+        }
+
+        const rawPassword = password.trim();
+        if (!rawPassword) {
+          await session.abortTransaction();
+          return res
+            .status(400)
+            .json({ success: false, error: 'Password is required' });
         }
 
         parent = new Parent({
           email: normalizedEmail,
-          password: await hashPassword(password.trim()),
+          password: rawPassword, // Store plain-text password to match /register/basketball-camp
           fullName: fullName.trim(),
           phone: phone.replace(/\D/g, ''),
-          address: ensureAddress(address),
+          address: {
+            street: address.street,
+            street2: address.street2 || '',
+            city: address.city,
+            state: address.state.toUpperCase(),
+            zip: address.zip,
+          },
           isCoach,
-          aauNumber: isCoach ? aauNumber.trim() : '',
-          relationship,
+          aauNumber: isCoach ? aauNumber?.trim() : undefined,
+          relationship: relationship || 'Parent',
           agreeToTerms,
-          role: isCoach ? 'coach' : 'user',
+          role: isAdmin ? 'admin' : isCoach ? 'coach' : 'user',
           registrationComplete: true,
           createdAt: new Date(),
           updatedAt: new Date(),
@@ -2908,44 +2982,77 @@ router.post(
         await parent.save({ session });
       }
 
-      // Check for existing team by name, tournament, and year
-      let teamDoc = await Team.findOne({
-        name: team.name.trim(),
-        'tournaments.tournament': tournament,
-        'tournaments.year': parseInt(year),
+      // Check for existing registration
+      const existingRegistration = await Registration.findOne({
+        parent: parent._id,
+        team: team._id || null,
+        tournament: tournament.trim(),
+        year,
       }).session(session);
 
-      if (teamDoc) {
-        // Team exists; verify levelOfCompetition matches
-        const tournamentEntry = teamDoc.tournaments.find(
-          (t) => t.tournament === tournament && t.year === parseInt(year)
-        );
-        if (tournamentEntry.levelOfCompetition !== team.levelOfCompetition) {
-          await session.abortTransaction();
-          return res.status(400).json({
-            success: false,
-            error:
-              'Level of competition does not match existing team registration',
-          });
-        }
+      if (existingRegistration) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          success: false,
+          error: 'Duplicate registration',
+          details: [
+            {
+              msg: 'You have already registered this team for this tournament',
+              path: 'team',
+            },
+          ],
+        });
+      }
 
-        // Add parent to coachIds if not already present
+      let teamDoc;
+      if (team._id) {
+        teamDoc = await Team.findById(team._id).session(session);
+        if (!teamDoc) {
+          await session.abortTransaction();
+          return res
+            .status(404)
+            .json({ success: false, error: 'Team not found' });
+        }
         if (!teamDoc.coachIds.includes(parent._id)) {
           teamDoc.coachIds.push(parent._id);
-          await teamDoc.save({ session });
         }
+        const tournamentEntry = teamDoc.tournaments.find(
+          (t) => t.tournament === tournament && t.year === year
+        );
+        if (tournamentEntry) {
+          if (tournamentEntry.levelOfCompetition !== team.levelOfCompetition) {
+            await session.abortTransaction();
+            return res.status(400).json({
+              success: false,
+              error:
+                'Level of competition does not match existing team registration',
+            });
+          }
+        } else {
+          teamDoc.tournaments.push({
+            tournament: tournament.trim(),
+            year,
+            levelOfCompetition: team.levelOfCompetition,
+            paymentStatus: 'pending',
+            paymentComplete: false,
+          });
+        }
+        teamDoc.tournament = tournament.trim();
+        teamDoc.registrationYear = year;
+        await teamDoc.save({ session });
       } else {
-        // Create new team
         teamDoc = new Team({
           name: team.name.trim(),
           coachIds: [parent._id],
           grade: team.grade,
           sex: team.sex,
           levelOfCompetition: team.levelOfCompetition,
+          tournament: tournament.trim(),
+          registrationYear: year,
           tournaments: [
             {
-              tournament,
-              year: parseInt(year),
+              tournament: tournament.trim(),
+              year,
               levelOfCompetition: team.levelOfCompetition,
               paymentStatus: 'pending',
               paymentComplete: false,
@@ -2954,31 +3061,14 @@ router.post(
           createdAt: new Date(),
           updatedAt: new Date(),
         });
-
         await teamDoc.save({ session });
       }
 
-      // Check if this parent has already registered this team for the tournament
-      const existingRegistration = await Registration.findOne({
-        parent: parent._id,
-        team: teamDoc._id,
-        tournament,
-        year: parseInt(year),
-      }).session(session);
-      if (existingRegistration) {
-        await session.abortTransaction();
-        return res.status(400).json({
-          success: false,
-          error: 'You have already registered this team for the tournament',
-        });
-      }
-
-      // Create Registration
       const registration = new Registration({
         team: teamDoc._id,
         parent: parent._id,
-        tournament,
-        year: parseInt(year),
+        tournament: tournament.trim(),
+        year,
         levelOfCompetition: team.levelOfCompetition,
         paymentStatus: 'pending',
         paymentComplete: false,
@@ -2989,9 +3079,8 @@ router.post(
 
       await registration.save({ session });
 
-      // Update team's tournament registrationId
       const tournamentEntry = teamDoc.tournaments.find(
-        (t) => t.tournament === tournament && t.year === parseInt(year)
+        (t) => t.tournament === tournament && t.year === year
       );
       if (tournamentEntry && !tournamentEntry.registrationId) {
         tournamentEntry.registrationId = registration._id;
@@ -3037,6 +3126,8 @@ router.post(
           sex: teamDoc.sex,
           levelOfCompetition: teamDoc.levelOfCompetition,
           tournaments: teamDoc.tournaments,
+          tournament: teamDoc.tournament,
+          registrationYear: teamDoc.registrationYear,
         },
         registration: {
           id: registration._id,
@@ -3060,9 +3151,8 @@ router.post(
       if (error.name === 'MongoServerError' && error.code === 11000) {
         return res.status(400).json({
           success: false,
-          error: 'Duplicate registration detected',
-          details:
-            'You have already registered this team for the specified tournament and year.',
+          error: 'Registration error',
+          details: 'Please try again with a slightly different team name',
         });
       }
 
@@ -3125,7 +3215,6 @@ router.post(
       // Add parent to coachIds if not already present
       if (!team.coachIds.includes(parentId)) {
         team.coachIds.push(parentId);
-        await team.save({ session });
       }
 
       // Check for existing registration by this parent
@@ -3137,11 +3226,9 @@ router.post(
       }).session(session);
       if (existingRegistration) {
         await session.abortTransaction();
-        return res
-          .status(400)
-          .json({
-            error: 'You have already registered this team for this tournament',
-          });
+        return res.status(400).json({
+          error: 'You have already registered this team for this tournament',
+        });
       }
 
       // Check if team is already registered for the tournament
@@ -3164,8 +3251,12 @@ router.post(
           paymentStatus: 'pending',
           paymentComplete: false,
         });
-        await team.save({ session });
       }
+
+      // Set top-level tournament and registrationYear to the current registration
+      team.tournament = tournament;
+      team.registrationYear = parseInt(year);
+      await team.save({ session });
 
       // Create registration document
       const registration = new Registration({
@@ -3200,6 +3291,8 @@ router.post(
           _id: team._id,
           name: team.name,
           tournaments: team.tournaments,
+          tournament: team.tournament,
+          registrationYear: team.registrationYear,
         },
         registration: {
           id: registration._id,
@@ -3221,6 +3314,44 @@ router.post(
       });
     } finally {
       session.endSession();
+    }
+  }
+);
+
+router.get(
+  '/registrations/check/:parentId/:teamId/:tournament/:year',
+  authenticate,
+  async (req, res) => {
+    try {
+      const { parentId, teamId, tournament, year } = req.params;
+
+      // Validate parameters
+      if (
+        !mongoose.Types.ObjectId.isValid(parentId) ||
+        !mongoose.Types.ObjectId.isValid(teamId)
+      ) {
+        return res
+          .status(400)
+          .json({ success: false, error: 'Invalid parent or team ID' });
+      }
+
+      const yearNum = parseInt(year);
+      if (isNaN(yearNum)) {
+        return res.status(400).json({ success: false, error: 'Invalid year' });
+      }
+
+      // Check for existing registration for THIS SPECIFIC PARENT only
+      const existingRegistration = await Registration.findOne({
+        parent: parentId, // This is the key - only check for this parent
+        team: teamId,
+        tournament: tournament.trim(),
+        year: yearNum,
+      });
+
+      res.json({ isRegistered: !!existingRegistration });
+    } catch (error) {
+      console.error('Error checking registration:', error);
+      res.status(500).json({ success: false, error: 'Server error' });
     }
   }
 );
