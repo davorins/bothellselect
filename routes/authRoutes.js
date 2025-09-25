@@ -2863,11 +2863,6 @@ router.post(
       .withMessage('ZIP code is required')
       .matches(/^\d{5}(-\d{4})?$/)
       .withMessage('Invalid ZIP code'),
-    body('agreeToTerms')
-      .exists()
-      .withMessage('You must agree to the terms')
-      .equals('true')
-      .withMessage('You must agree to the terms'),
     body('team.name').notEmpty().withMessage('Team name is required'),
     body('team.grade').notEmpty().withMessage('Grade is required'),
     body('team.sex')
