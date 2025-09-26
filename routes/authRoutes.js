@@ -1,6 +1,6 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const { body, validationResult, query } = require('express-validator');
+const { body, validationResult, query, param } = require('express-validator');
 const mongoose = require('mongoose');
 const crypto = require('crypto');
 const cloudinary = require('cloudinary').v2;
@@ -3617,5 +3617,161 @@ router.post('/check-email', async (req, res) => {
     });
   }
 });
+
+// Get all tournaments (admin only)
+router.get('/tournaments/all', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      console.log(
+        `Unauthorized access attempt to /tournaments/all by user: ${req.user.id}`
+      );
+      return res
+        .status(403)
+        .json({ success: false, error: 'Admin access required' });
+    }
+
+    // Aggregate to extract unique tournaments from Teams collection
+    const tournaments = await Team.aggregate([
+      { $unwind: '$tournaments' }, // Unwind the tournaments array
+      {
+        $group: {
+          _id: {
+            name: '$tournaments.tournament',
+            year: '$tournaments.year',
+          },
+          tournamentId: { $first: '$tournaments._id' }, // Optionally include other fields
+        },
+      },
+      {
+        $project: {
+          _id: '$tournamentId',
+          name: '$_id.name',
+          year: '$_id.year',
+        },
+      },
+      { $sort: { year: -1, name: 1 } },
+    ]);
+
+    if (!tournaments || tournaments.length === 0) {
+      console.log('No tournaments found in Teams collection');
+      return res
+        .status(404)
+        .json({ success: false, error: 'No tournaments found' });
+    }
+
+    console.log(
+      `Fetched ${tournaments.length} tournaments for admin: ${req.user.id}`
+    );
+    res.json({ success: true, tournaments });
+  } catch (error) {
+    console.error('Error fetching tournaments:', error.message, error.stack);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch tournaments',
+      details:
+        process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+});
+
+// Get registrations by tournament and year (admin only)
+router.get(
+  '/registrations/by-tournament/:tournament/:year',
+  authenticate,
+  [
+    // Validate path parameters instead of query parameters
+    param('tournament').notEmpty().withMessage('Tournament name is required'),
+    param('year')
+      .isInt({ min: 2000, max: 2100 })
+      .withMessage('Year must be a valid number between 2000 and 2100'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      console.log(
+        'Validation errors for /registrations/by-tournament:',
+        errors.array()
+      );
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
+
+    try {
+      if (req.user.role !== 'admin') {
+        console.log(
+          `Unauthorized access attempt to /registrations/by-tournament by user: ${req.user.id}`
+        );
+        return res
+          .status(403)
+          .json({ success: false, error: 'Admin access required' });
+      }
+
+      const { tournament, year } = req.params;
+      const yearNum = parseInt(year);
+
+      if (isNaN(yearNum)) {
+        console.log(`Invalid year parameter: ${year}`);
+        return res
+          .status(400)
+          .json({ success: false, error: 'Invalid year format' });
+      }
+
+      const registrations = await Registration.find({
+        tournament: tournament.trim(),
+        year: yearNum,
+      })
+        .populate('team', '_id name grade sex levelOfCompetition')
+        .populate('parent', '_id fullName email')
+        .select(
+          '_id team parent paymentStatus paymentComplete registrationDate levelOfCompetition'
+        )
+        .sort({ registrationDate: -1 })
+        .lean();
+
+      if (!registrations || registrations.length === 0) {
+        console.log(
+          `No registrations found for tournament: ${tournament}, year: ${year}`
+        );
+        return res
+          .status(404)
+          .json({ success: false, error: 'No registrations found' });
+      }
+
+      // Filter out registrations with missing team or parent data
+      const validRegistrations = registrations.filter(
+        (reg) =>
+          reg.team?._id &&
+          reg.team?.name &&
+          reg.parent?._id &&
+          reg.parent?.fullName
+      );
+
+      if (validRegistrations.length !== registrations.length) {
+        console.warn(
+          `Filtered out ${registrations.length - validRegistrations.length} invalid registrations ` +
+            `for tournament: ${tournament}, year: ${year}`
+        );
+      }
+
+      console.log(
+        `Fetched ${validRegistrations.length} valid registrations for ` +
+          `tournament: ${tournament}, year: ${year}, admin: ${req.user.id}`
+      );
+      res.json({ success: true, registrations: validRegistrations });
+    } catch (error) {
+      console.error(
+        `Error fetching registrations for tournament: ${req.params.tournament}, ` +
+          `year: ${req.params.year}:`,
+        error.message,
+        error.stack
+      );
+      res.status(500).json({
+        success: false,
+        error: 'Failed to fetch registrations',
+        details:
+          process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    }
+  }
+);
 
 module.exports = router;
