@@ -3318,6 +3318,36 @@ router.post(
   }
 );
 
+// Get registrations with payment status
+router.get('/registrations', authenticate, async (req, res) => {
+  try {
+    const { parentId, teamId, tournament, year, playerId } = req.query;
+
+    let query = {};
+
+    if (parentId) query.parent = parentId;
+    if (teamId) query.team = teamId;
+    if (tournament) query.tournament = tournament;
+    if (year) query.year = parseInt(year);
+    if (playerId) query.player = playerId;
+
+    const registrations = await Registration.find(query)
+      .populate('team')
+      .populate('player')
+      .populate('parent')
+      .sort({ createdAt: -1 });
+
+    res.json(registrations);
+  } catch (error) {
+    console.error('Error fetching registrations:', error);
+    res.status(500).json({
+      error: 'Failed to fetch registrations',
+      details: error.message,
+    });
+  }
+});
+
+// Enhanced registration check endpoint with payment status
 router.get(
   '/registrations/check/:parentId/:teamId/:tournament/:year',
   authenticate,
@@ -3340,15 +3370,21 @@ router.get(
         return res.status(400).json({ success: false, error: 'Invalid year' });
       }
 
-      // Check for existing registration for THIS SPECIFIC PARENT only
+      // Check for existing registration and include payment status
       const existingRegistration = await Registration.findOne({
-        parent: parentId, // This is the key - only check for this parent
+        parent: parentId,
         team: teamId,
         tournament: tournament.trim(),
         year: yearNum,
       });
 
-      res.json({ isRegistered: !!existingRegistration });
+      res.json({
+        isRegistered: !!existingRegistration,
+        isPaid:
+          existingRegistration?.paymentStatus === 'paid' ||
+          existingRegistration?.paymentComplete === true,
+        registration: existingRegistration,
+      });
     } catch (error) {
       console.error('Error checking registration:', error);
       res.status(500).json({ success: false, error: 'Server error' });
@@ -3358,7 +3394,34 @@ router.get(
 
 // Get teams by coach
 router.get('/teams/by-coach/:coachId', authenticate, async (req, res) => {
-  // Implementation to fetch teams by coach
+  try {
+    const { coachId } = req.params;
+
+    const teams = await Team.find({
+      coachIds: coachId,
+      isActive: true,
+    }).sort({ name: 1 });
+
+    res.json(teams);
+  } catch (error) {
+    console.error('Error fetching teams by coach:', error);
+    res.status(500).json({ error: 'Failed to fetch teams' });
+  }
+});
+
+// Get all teams (admin only)
+router.get('/teams/all', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const teams = await Team.find({ isActive: true }).sort({ name: 1 });
+    res.json(teams);
+  } catch (error) {
+    console.error('Error fetching all teams:', error);
+    res.status(500).json({ error: 'Failed to fetch teams' });
+  }
 });
 
 // Team payment endpoint
@@ -3437,6 +3500,10 @@ router.post(
         tournamentEntry.paymentStatus = 'paid';
         tournamentEntry.paymentComplete = true;
         tournamentEntry.paymentDate = new Date();
+        tournamentEntry.paymentId = paymentResult.paymentId;
+        tournamentEntry.cardLast4 = paymentResult.cardLast4;
+        tournamentEntry.cardBrand = paymentResult.cardBrand;
+        tournamentEntry.amountPaid = paymentResult.amountPaid;
         await team.save({ session });
       }
 
@@ -3448,18 +3515,19 @@ router.post(
       }).session(session);
 
       for (const registration of registrations) {
-        await Registration.updatePaymentStatus(
-          registration._id,
-          'paid',
-          {
-            amountPaid: paymentResult.amountPaid,
-            paymentId: paymentResult.paymentId,
-            paymentMethod: paymentResult.paymentMethod,
-            cardLast4: paymentResult.cardLast4,
-            cardBrand: paymentResult.cardBrand,
-          },
-          { session }
-        );
+        registration.paymentStatus = 'paid';
+        registration.paymentComplete = true;
+        registration.paymentDate = new Date();
+        registration.paymentDetails = {
+          amountPaid: paymentResult.amountPaid,
+          currency: 'USD',
+          paymentId: paymentResult.paymentId,
+          paymentMethod: paymentResult.paymentMethod,
+          cardLast4: paymentResult.cardLast4,
+          cardBrand: paymentResult.cardBrand,
+          paymentDate: new Date(),
+        };
+        await registration.save({ session });
       }
 
       await session.commitTransaction();
