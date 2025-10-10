@@ -200,13 +200,80 @@ router.post('/process', authenticate, async (req, res) => {
 
     // Send receipt email
     try {
+      const playerCount = players.length;
+      const totalAmount = amount / 100;
+      const perPlayerAmount = 1050; // Your fixed amount per player
+
       await sendEmail({
         to: buyerEmailAddress,
-        subject: 'Your Payment Receipt',
-        html: `...`, // Your existing email template
+        subject: 'Payment Confirmation - Bothell Select Basketball',
+        html: `
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <style>
+              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+              .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+              .header { background: #1a56db; color: white; padding: 20px; text-align: center; }
+              .content { background: #f9fafb; padding: 20px; }
+              .footer { background: #e5e7eb; padding: 15px; text-align: center; font-size: 14px; }
+              .payment-details { background: white; padding: 15px; border-radius: 5px; margin: 15px 0; }
+          </style>
+      </head>
+      <body>
+          <div class="container">
+              <div class="header">
+                  <h1>🎉 Payment Confirmed!</h1>
+              </div>
+              
+              <div class="content">
+                  <p>Dear ${parent.fullName || 'Valued Customer'},</p>
+                  
+                  <p>Thank you for your payment! Your registration for the Bothell Select Basketball Team has been confirmed.</p>
+                  
+                  <div class="payment-details">
+                      <h3>Payment Details</h3>
+                      <p><strong>Number of Players:</strong> ${playerCount}</p>
+                      <p><strong>Fee per Player:</strong> $${perPlayerAmount}</p>
+                      <p><strong>Total Amount Paid:</strong> $${totalAmount}</p>
+                      <p><strong>Season:</strong> ${players[0]?.season || 'Basketball Select Team'} ${players[0]?.year || new Date().getFullYear()}</p>
+                      <p><strong>Players Registered:</strong></p>
+                      <ul>
+                          ${playerRecords.map((p) => `<li>${p.fullName}</li>`).join('')}
+                      </ul>
+                  </div>
+                  
+                  <p><strong>What's Next?</strong></p>
+                  <ul>
+                      <li>You will receive team assignment and practice schedule information within the next week</li>
+                      <li>Look out for welcome materials from your coach</li>
+                      <li>Practice schedules will be shared via email and the team portal</li>
+                  </ul>
+                  
+                  <p>If you have any questions, please contact us at bothellselect@proton.me</p>
+                  
+                  <p>Welcome to the Bothell Select family! 🏀</p>
+              </div>
+              
+              <div class="footer">
+                  <p>Bothell Select Basketball<br>
+                  bothellselect@proton.me</p>
+              </div>
+          </div>
+      </body>
+      </html>
+    `,
+      });
+
+      console.log('Payment confirmation email sent successfully:', {
+        parentId: parent._id,
+        playerCount,
+        totalAmount,
+        email: buyerEmailAddress,
       });
     } catch (emailError) {
       console.error('Failed to send email:', emailError);
+      // Don't fail the payment if email fails
     }
 
     await session.commitTransaction();
@@ -556,31 +623,61 @@ router.post(
 
       // Send receipt email
       try {
+        const playerCount = players.length;
+        const totalAmount = amount / 100;
+        const perPlayerAmount = 1050;
+
         await sendEmail({
           to: email,
-          subject: 'Your Tryout Payment Receipt',
+          subject: 'Payment Confirmation - Bothell Select Basketball',
           html: `
-            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto;">
-              <h2 style="color: #2c3e50;">Thank you for your tryout payment!</h2>
-              <p style="font-size: 16px;">We've successfully processed your payment for <strong>${players.length}</strong> player(s).</p>
-              <hr style="margin: 20px 0;" />
-              <p><strong>Players:</strong></p>
-              <ul>
-                ${updatedPlayers.map((p) => `<li>${p.fullName}</li>`).join('')}
-              </ul>
-              <p><strong>Amount Paid:</strong> $${(amount / 100).toFixed(2)}</p>
-              <p><strong>Payment ID:</strong> ${paymentResult.id}</p>
-              <p><strong>Date:</strong> ${new Date().toLocaleDateString()}</p>
-              <p>
-                <strong>Receipt:</strong>
-                <a href="${paymentResult.receiptUrl}" target="_blank">
-                  View your payment receipt
-                </a>
-              </p>
-              <hr style="margin: 20px 0;" />
-              <p style="font-size: 14px; color: #555;">If you have any questions, feel free to reply to this email.</p>
-            </div>
-          `,
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; background: #f9fafb; padding: 20px;">
+        <div style="background: #1a56db; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+          <h1 style="margin: 0;">🎉 Payment Confirmed!</h1>
+        </div>
+        
+        <div style="background: white; padding: 20px; border-radius: 0 0 5px 5px;">
+          <p style="font-size: 16px;">Dear ${parent.fullName || 'Valued Customer'},</p>
+          
+          <p style="font-size: 16px;">Thank you for your payment! Your registration has been confirmed.</p>
+          
+          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #1a56db;">
+            <h3 style="margin-top: 0; color: #1a56db;">Payment Details</h3>
+            <p style="margin: 8px 0;"><strong>Number of Players:</strong> ${playerCount}</p>
+            <p style="margin: 8px 0;"><strong>Fee per Player:</strong> $${perPlayerAmount}</p>
+            <p style="margin: 8px 0;"><strong>Total Amount Paid:</strong> $${totalAmount}</p>
+            <p style="margin: 8px 0;"><strong>Season:</strong> ${players[0]?.season || 'Basketball Select Team'} ${players[0]?.year || new Date().getFullYear()}</p>
+            <p style="margin: 8px 0;"><strong>Players Registered:</strong></p>
+            <ul style="margin: 8px 0;">
+              ${updatedPlayers.map((p) => `<li>${p.fullName}</li>`).join('')}
+            </ul>
+          </div>
+          
+          <p style="font-size: 16px;"><strong>What's Next?</strong></p>
+          <ul style="font-size: 14px;">
+            <li>You will receive team assignment and practice schedule information within the next week</li>
+            <li>Look out for welcome materials from your coach</li>
+            <li>Practice schedules will be shared via email and the team portal</li>
+          </ul>
+          
+          <p style="font-size: 14px; color: #555;">If you have any questions, please contact us at bothellselect@proton.me</p>
+          
+          <p style="font-size: 16px; font-weight: bold;">Welcome to the Bothell Select family! 🏀</p>
+        </div>
+        
+        <div style="background: #e5e7eb; padding: 15px; text-align: center; font-size: 14px; color: #555; border-radius: 0 0 5px 5px;">
+          <p style="margin: 0;">Bothell Select Basketball<br>
+          bothellselect@proton.me</p>
+        </div>
+      </div>
+    `,
+        });
+
+        console.log('Tryout payment confirmation email sent successfully:', {
+          parentId: parent._id,
+          playerCount,
+          totalAmount,
+          email: email,
         });
       } catch (emailError) {
         console.error('Failed to send email:', emailError);

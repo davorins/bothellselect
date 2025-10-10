@@ -194,6 +194,111 @@ async function sendTryoutEmail(parentId, playerId) {
   }
 }
 
+// Add this function to your email.js
+async function sendPaymentConfirmationEmail(
+  parentId,
+  playerIds,
+  totalAmount,
+  season,
+  year
+) {
+  try {
+    // 1. Find the payment confirmation template
+    const template = await EmailTemplate.findOne({
+      title: 'Payment Confirmation',
+    });
+
+    if (!template) {
+      throw new Error(
+        'Payment Confirmation email template not found in database'
+      );
+    }
+
+    // 2. Get the parent data
+    const parent = await Parent.findById(parentId);
+    if (!parent) {
+      throw new Error(`Parent not found with ID: ${parentId}`);
+    }
+
+    // 3. Get player data
+    const players = await Player.find({ _id: { $in: playerIds } });
+
+    // 4. Calculate actual values
+    const playerCount = players.length;
+    const perPlayerAmount = 1050; // Your fixed amount
+    const actualTotalAmount = totalAmount || playerCount * perPlayerAmount;
+
+    // 5. Replace template variables with actual payment data
+    let populatedContent = template.content;
+
+    // Replace payment-specific variables
+    populatedContent = populatedContent.replace(
+      /\[payment\.playerCount\]/g,
+      playerCount.toString()
+    );
+    populatedContent = populatedContent.replace(
+      /\[payment\.totalAmount\]/g,
+      `$${actualTotalAmount}`
+    );
+    populatedContent = populatedContent.replace(
+      /\[payment\.perPlayerAmount\]/g,
+      `$${perPlayerAmount}`
+    );
+    populatedContent = populatedContent.replace(
+      /\[payment\.season\]/g,
+      season || 'Basketball Select Team'
+    );
+    populatedContent = populatedContent.replace(
+      /\[payment\.year\]/g,
+      year ? year.toString() : new Date().getFullYear().toString()
+    );
+
+    // Replace player names if needed
+    if (players.length > 0) {
+      const playerNames = players.map((p) => p.fullName).join(', ');
+      populatedContent = populatedContent.replace(
+        /\[players\.names\]/g,
+        playerNames
+      );
+    }
+
+    // Replace parent variables
+    populatedContent = populatedContent.replace(
+      /\[parent\.fullName\]/g,
+      parent.fullName || ''
+    );
+    populatedContent = populatedContent.replace(
+      /\[parent\.email\]/g,
+      parent.email || ''
+    );
+
+    // 6. Send the email
+    const result = await sendEmail({
+      to: parent.email,
+      subject: template.subject,
+      html: populatedContent,
+    });
+
+    console.log('Payment confirmation email sent successfully:', {
+      parentId,
+      playerCount,
+      totalAmount: actualTotalAmount,
+      email: parent.email,
+    });
+
+    return result;
+  } catch (err) {
+    console.error('Error in sendPaymentConfirmationEmail:', {
+      error: err.message,
+      parentId,
+      playerIds,
+      totalAmount,
+      timestamp: new Date().toISOString(),
+    });
+    throw err;
+  }
+}
+
 // Send password reset email using Resend
 async function sendResetEmail(email, resetToken) {
   const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
