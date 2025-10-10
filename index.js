@@ -23,6 +23,7 @@ const emailCampaignRoutes = require('./routes/emailCampaignRoutes');
 const eventRoutes = require('./routes/eventRoutes');
 const formsRoutes = require('./routes/formRoutes');
 const faqRoutes = require('./routes/faqRoutes');
+const teamRoutes = require('./routes/teamRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -76,6 +77,7 @@ app.use('/api/email', emailCampaignRoutes);
 app.use('/api/events', eventRoutes);
 app.use('/api/forms', formsRoutes);
 app.use('/api/faqs', faqRoutes);
+app.use('/api', teamRoutes);
 
 // Connect to MongoDB
 mongoose
