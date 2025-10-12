@@ -218,10 +218,16 @@ router.post('/process', authenticate, async (req, res) => {
               .content { background: #f9fafb; padding: 20px; }
               .footer { background: #e5e7eb; padding: 15px; text-align: center; font-size: 14px; }
               .payment-details { background: white; padding: 15px; border-radius: 5px; margin: 15px 0; }
+              .logo-container { text-align: center; margin-bottom: 20px; }
+              .logo { max-width: 200px; height: auto; }
           </style>
       </head>
       <body>
           <div class="container">
+              <div class="logo-container">
+                  <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" class="logo">
+              </div>
+              
               <div class="header">
                   <h1>🎉 Payment Confirmed!</h1>
               </div>
@@ -632,6 +638,10 @@ router.post(
           subject: 'Payment Confirmation - Bothell Select Basketball',
           html: `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; background: #f9fafb; padding: 20px;">
+        <div style="text-align: center; margin-bottom: 20px;">
+          <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px; height: auto;">
+        </div>
+        
         <div style="background: #1a56db; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
           <h1 style="margin: 0;">🎉 Payment Confirmed!</h1>
         </div>
