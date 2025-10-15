@@ -63,12 +63,35 @@ const paymentSchema = new mongoose.Schema(
     receiptUrl: String,
     refunds: [
       {
-        amount: Number,
+        refundId: { type: String, required: true }, // Square refund ID
+        amount: { type: Number, required: true },
         reason: String,
+        status: {
+          type: String,
+          enum: ['pending', 'completed', 'failed'],
+          default: 'pending',
+        },
+        requestedBy: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'User',
+        },
+        requestedAt: { type: Date, default: Date.now },
         processedAt: Date,
-        refundId: String, // Square refund ID
+        notes: String,
+        refundedBy: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'User',
+        },
       },
     ],
+
+    // Track overall refund status
+    totalRefunded: { type: Number, default: 0 },
+    refundStatus: {
+      type: String,
+      enum: ['none', 'partial', 'full', 'requested'],
+      default: 'none',
+    },
 
     // Metadata
     ipAddress: String, // For fraud detection
