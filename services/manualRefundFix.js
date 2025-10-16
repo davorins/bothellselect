@@ -10,7 +10,7 @@ async function manualRefundFix() {
   session.startTransaction();
 
   try {
-    const paymentId = '7Lpb9EG7emFzfIMHNYyl96J36KJZY';
+    const paymentId = '7L1VxFA3UK0RqZZEYYMbWun61rGZY';
 
     console.log('🔧 Manual refund fix for payment:', paymentId);
 
@@ -25,9 +25,9 @@ async function manualRefundFix() {
     console.log('   Amount: $', payment.amount);
     console.log('   Current refunds:', payment.refunds?.length || 0);
 
-    // Add the $1050 refund manually
-    payment.refundedAmount = 1050;
-    payment.refundStatus = 'full';
+    // Add the $100 refund manually
+    payment.refundedAmount = 100;
+    payment.refundStatus = 'partial';
 
     if (!payment.refunds) {
       payment.refunds = [];
@@ -35,12 +35,12 @@ async function manualRefundFix() {
 
     payment.refunds.push({
       refundId: 'manual_fix_1',
-      squareRefundId: 'manual_j7LJPwl79zRa5u28Ei7gFTJFQjMZY',
-      amount: 1050,
+      squareRefundId: 'manual_7L1VxFA3UK0RqZZEYYMbWun61rGZY',
+      amount: 100,
       reason: 'Refund processed in Square Dashboard',
       status: 'completed',
-      processedAt: new Date('2025-10-13T16:33:00Z'), // Use the date from your receipt
-      notes: 'Manually added - refund was $1050 processed on Oct 13, 2025',
+      processedAt: new Date('2025-10-11T14:35:00Z'), // Use the date from your receipt
+      notes: 'Manually added - refund was $100 processed on Oct 11, 2025',
       source: 'square_dashboard',
     });
 
@@ -48,8 +48,8 @@ async function manualRefundFix() {
     await session.commitTransaction();
 
     console.log('✅ MANUAL FIX COMPLETE!');
-    console.log('💰 Refund added: $1050');
-    console.log('📊 Refund status: full');
+    console.log('💰 Refund added: $100');
+    console.log('📊 Refund status: partial');
   } catch (error) {
     await session.abortTransaction();
     console.error('❌ Error:', error);

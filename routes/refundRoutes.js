@@ -130,6 +130,60 @@ router.post('/process', authenticate, async (req, res) => {
   }
 });
 
+router.get('/all', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Unauthorized' });
+    }
+
+    // Get all payments that have refunds (any status)
+    const paymentsWithRefunds = await Payment.aggregate([
+      { $match: { 'refunds.0': { $exists: true } } }, // Payments that have at least one refund
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'parentId',
+          foreignField: '_id',
+          as: 'parent',
+        },
+      },
+      {
+        $lookup: {
+          from: 'users',
+          localField: 'refunds.requestedBy',
+          foreignField: '_id',
+          as: 'requestedByUser',
+        },
+      },
+      {
+        $project: {
+          'parent.fullName': 1,
+          'parent.email': 1,
+          'parent.phone': 1,
+          amount: 1,
+          totalRefunded: 1,
+          refundedAmount: 1,
+          refundStatus: 1,
+          refunds: 1,
+          'requestedByUser.fullName': 1,
+          paymentId: 1,
+          createdAt: 1,
+          receiptUrl: 1,
+          status: 1,
+        },
+      },
+      { $sort: { createdAt: -1 } }, // Sort by most recent first
+    ]);
+
+    console.log(`Found ${paymentsWithRefunds.length} payments with refunds`);
+
+    res.json(paymentsWithRefunds);
+  } catch (error) {
+    console.error('Error fetching all refunds:', error);
+    res.status(500).json({ error: 'Failed to fetch refunds' });
+  }
+});
+
 // GET /api/refunds/pending
 router.get('/pending', authenticate, async (req, res) => {
   try {

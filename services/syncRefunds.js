@@ -1,4 +1,4 @@
-// services/syncRefunds.js - UPDATED FOR SQUARE SDK v34+
+// services/syncRefunds.js - DEBUG REFUNDS VERSION
 const mongoose = require('mongoose');
 const { Client, Environment } = require('square');
 const Payment = require('../models/Payment');
@@ -13,6 +13,29 @@ const client = new Client({
 });
 
 const { paymentsApi, refundsApi } = client;
+
+async function getAllSquareRefunds() {
+  try {
+    console.log('🔄 Getting ALL refunds from Square...');
+    const { result } = await refundsApi.listPaymentRefunds();
+    const allRefunds = result.refunds || [];
+
+    console.log(`📊 Found ${allRefunds.length} total refunds in Square:`);
+    allRefunds.forEach((refund, index) => {
+      console.log(`   ${index + 1}. Refund ID: ${refund.id}`);
+      console.log(`      Payment ID: ${refund.paymentId}`);
+      console.log(`      Amount: $${Number(refund.amountMoney.amount) / 100}`);
+      console.log(`      Status: ${refund.status}`);
+      console.log(`      Reason: ${refund.reason}`);
+      console.log(`      Processed: ${refund.processedAt}`);
+    });
+
+    return allRefunds;
+  } catch (error) {
+    console.log(`❌ Error getting all refunds: ${error.message}`);
+    return [];
+  }
+}
 
 async function syncRefundsForPayment(squarePaymentId) {
   const session = await mongoose.startSession();
@@ -35,55 +58,15 @@ async function syncRefundsForPayment(squarePaymentId) {
 
     console.log(`✅ Found payment in MongoDB: ${paymentRecord._id}`);
 
-    // Get refunds from Square - USING POSITIONAL PARAMETERS
-    let squareRefunds = [];
-    try {
-      const { result } = await refundsApi.listPaymentRefunds(
-        undefined, // cursor
-        undefined, // locationId
-        undefined, // status
-        squarePaymentId, // paymentId - 4th parameter
-        undefined, // beginTime
-        undefined, // endTime
-        undefined, // sortOrder
-        undefined // limit
-      );
-      squareRefunds = result.refunds || [];
-      console.log(`📋 Found ${squareRefunds.length} refunds by paymentId`);
-    } catch (error) {
-      console.log(`❌ Error getting refunds by paymentId: ${error.message}`);
-    }
+    // Get all refunds and filter for this payment
+    const allRefunds = await getAllSquareRefunds();
+    const squareRefunds = allRefunds.filter(
+      (refund) => refund.paymentId === squarePaymentId
+    );
 
-    // If no refunds found, try getting all refunds with date range
-    if (squareRefunds.length === 0) {
-      try {
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-        const { result } = await refundsApi.listPaymentRefunds(
-          undefined, // cursor
-          undefined, // locationId
-          undefined, // status
-          undefined, // paymentId
-          thirtyDaysAgo.toISOString(), // beginTime - 5th parameter
-          new Date().toISOString(), // endTime - 6th parameter
-          undefined, // sortOrder
-          100 // limit - 8th parameter
-        );
-
-        const allRefunds = result.refunds || [];
-        squareRefunds = allRefunds.filter(
-          (refund) => refund.paymentId === squarePaymentId
-        );
-        console.log(
-          `📋 Found ${squareRefunds.length} refunds by filtering all refunds`
-        );
-      } catch (error) {
-        console.log(`❌ Error filtering all refunds: ${error.message}`);
-      }
-    }
-
-    console.log(`🎯 Total refunds to process: ${squareRefunds.length}`);
+    console.log(
+      `🎯 Found ${squareRefunds.length} refunds for payment ${squarePaymentId}`
+    );
 
     let totalRefunded = paymentRecord.refundedAmount || 0;
     let newRefundsAdded = 0;
@@ -100,7 +83,7 @@ async function syncRefundsForPayment(squarePaymentId) {
         continue;
       }
 
-      // Convert amount from cents to dollars - handle BigInt
+      // Convert amount from cents to dollars
       const refundAmount = Number(squareRefund.amountMoney.amount) / 100;
 
       // Create new refund record
@@ -183,6 +166,9 @@ async function syncAllRefunds() {
   try {
     console.log('🔄 Starting refund sync for all payments...');
 
+    // First, let's see what refunds actually exist in Square
+    await getAllSquareRefunds();
+
     const payments = await Payment.find({
       status: 'completed',
       $or: [
@@ -209,7 +195,8 @@ async function syncAllRefunds() {
         console.log(`❌ ${payment.paymentId}: ${result.error}`);
       }
 
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      // Add delay to avoid rate limiting
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
 
     console.log(`🎊 Refund sync completed!`);
@@ -231,57 +218,83 @@ async function syncAllRefunds() {
   }
 }
 
+async function findRefundsForUnknownPayments() {
+  try {
+    console.log(
+      '🔍 Looking for refunds that might belong to unknown payments...'
+    );
+
+    const allRefunds = await getAllSquareRefunds();
+    const allPaymentIds = allRefunds.map((refund) => refund.paymentId);
+
+    console.log(
+      `📊 Unique payment IDs from refunds: ${[...new Set(allPaymentIds)].join(', ')}`
+    );
+
+    // Check which payment IDs we have in our database
+    const paymentsInDb = await Payment.find({
+      paymentId: { $in: allPaymentIds },
+    });
+
+    const paymentIdsInDb = paymentsInDb.map((p) => p.paymentId);
+    const unknownPaymentIds = allPaymentIds.filter(
+      (id) => !paymentIdsInDb.includes(id)
+    );
+
+    console.log(
+      `❓ Unknown payment IDs (not in our database): ${unknownPaymentIds.join(', ')}`
+    );
+
+    return {
+      totalRefunds: allRefunds.length,
+      uniquePaymentIds: [...new Set(allPaymentIds)],
+      unknownPaymentIds,
+      paymentsInDb: paymentIdsInDb,
+    };
+  } catch (error) {
+    console.error('❌ Error finding unknown payments:', error);
+    return { error: error.message };
+  }
+}
+
 async function syncRefundsByDateRange(startDate, endDate) {
   try {
     console.log(`📅 Syncing refunds between ${startDate} and ${endDate}`);
 
-    const { result } = await refundsApi.listPaymentRefunds({
-      beginTime: new Date(startDate).toISOString(),
-      endTime: new Date(endDate).toISOString(),
-      limit: 100,
+    const payments = await Payment.find({
+      status: 'completed',
+      createdAt: {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate),
+      },
     });
 
-    const refunds = result.refunds || [];
-    console.log(
-      `✅ Found ${refunds.length} refunds in Square for the date range`
-    );
+    console.log(`📋 Found ${payments.length} payments in date range`);
 
     let processed = 0;
     let errors = 0;
 
-    // Group refunds by payment ID
-    const refundsByPayment = {};
-    refunds.forEach((refund) => {
-      if (!refundsByPayment[refund.paymentId]) {
-        refundsByPayment[refund.paymentId] = [];
-      }
-      refundsByPayment[refund.paymentId].push(refund);
-    });
-
-    console.log(
-      `📊 Processing refunds for ${Object.keys(refundsByPayment).length} unique payments`
-    );
-
-    for (const [paymentId, paymentRefunds] of Object.entries(
-      refundsByPayment
-    )) {
+    for (const payment of payments) {
       try {
-        const result = await syncRefundsForPayment(paymentId);
+        const result = await syncRefundsForPayment(payment.paymentId);
 
         if (result.success) {
           processed += result.refundsProcessed || 0;
           console.log(
-            `✅ ${paymentId}: ${result.refundsProcessed} refunds synced`
+            `✅ ${payment.paymentId}: ${result.refundsProcessed} refunds synced`
           );
         } else {
           errors++;
-          console.log(`❌ ${paymentId}: ${result.error}`);
+          console.log(`❌ ${payment.paymentId}: ${result.error}`);
         }
 
-        await new Promise((resolve) => setTimeout(resolve, 200));
+        await new Promise((resolve) => setTimeout(resolve, 500));
       } catch (error) {
         errors++;
-        console.log(`💥 Error processing payment ${paymentId}:`, error.message);
+        console.log(
+          `💥 Error processing payment ${payment.paymentId}:`,
+          error.message
+        );
       }
     }
 
@@ -293,7 +306,7 @@ async function syncRefundsByDateRange(startDate, endDate) {
       success: true,
       processed,
       errors,
-      totalPayments: Object.keys(refundsByPayment).length,
+      totalPayments: payments.length,
     };
   } catch (error) {
     console.error('❌ Error in syncRefundsByDateRange:', error);
@@ -308,4 +321,6 @@ module.exports = {
   syncRefundsForPayment,
   syncAllRefunds,
   syncRefundsByDateRange,
+  findRefundsForUnknownPayments,
+  getAllSquareRefunds,
 };
