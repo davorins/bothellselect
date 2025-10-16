@@ -63,33 +63,34 @@ const paymentSchema = new mongoose.Schema(
     receiptUrl: String,
     refunds: [
       {
-        refundId: { type: String, required: true }, // Square refund ID
+        refundId: { type: String },
+        squareRefundId: { type: String },
         amount: { type: Number, required: true },
         reason: String,
         status: {
           type: String,
-          enum: ['pending', 'completed', 'failed'],
+          enum: ['pending', 'completed', 'failed', 'rejected'],
           default: 'pending',
         },
-        requestedBy: {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: 'User',
-        },
-        requestedAt: { type: Date, default: Date.now },
         processedAt: Date,
         notes: String,
         refundedBy: {
           type: mongoose.Schema.Types.ObjectId,
           ref: 'User',
         },
+        source: {
+          type: String,
+          enum: ['web', 'square_dashboard', 'api'],
+          default: 'web',
+        },
       },
     ],
 
     // Track overall refund status
-    totalRefunded: { type: Number, default: 0 },
+    refundedAmount: { type: Number, default: 0 },
     refundStatus: {
       type: String,
-      enum: ['none', 'partial', 'full', 'requested'],
+      enum: ['none', 'partial', 'full', 'processing'],
       default: 'none',
     },
 

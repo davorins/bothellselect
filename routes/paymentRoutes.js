@@ -12,6 +12,11 @@ const {
   canAccessParentData,
 } = require('../utils/auth');
 const router = express.Router();
+const {
+  syncRefundsForPayment,
+  syncAllRefunds,
+  syncRefundsByDateRange,
+} = require('../services/syncRefunds');
 
 // Process payment - users can only process their own payments
 router.post('/square-payment', authenticate, async (req, res) => {
@@ -379,5 +384,110 @@ router.get('/', authenticate, isAdmin, async (req, res) => {
     });
   }
 });
+
+// Sync refunds for a specific payment - ADMIN ONLY
+router.post(
+  '/:paymentId/sync-refunds',
+  authenticate,
+  isAdmin,
+  async (req, res) => {
+    try {
+      const { paymentId } = req.params;
+
+      console.log('Manual refund sync requested for payment:', paymentId);
+
+      const result = await syncRefundsForPayment(paymentId);
+
+      if (result.success) {
+        res.json({
+          success: true,
+          message: `Successfully synced ${result.refundsProcessed} refunds`,
+          data: result,
+        });
+      } else {
+        res.status(400).json({
+          success: false,
+          error: result.error,
+        });
+      }
+    } catch (error) {
+      console.error('Refund sync error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to sync refunds',
+      });
+    }
+  }
+);
+
+// Sync all refunds - ADMIN ONLY
+router.post('/sync/refunds', authenticate, isAdmin, async (req, res) => {
+  try {
+    console.log('Manual full refund sync requested by admin:', req.user._id);
+
+    const result = await syncAllRefunds();
+
+    if (result.success) {
+      res.json({
+        success: true,
+        message: `Refund sync completed. Processed ${result.totalPaymentsProcessed} payments, synced ${result.totalRefundsSynced} refunds.`,
+        data: result,
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: result.error,
+      });
+    }
+  } catch (error) {
+    console.error('Full refund sync error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to sync refunds',
+    });
+  }
+});
+
+// Sync refunds by date range - ADMIN ONLY
+router.post(
+  '/sync/refunds/by-date',
+  authenticate,
+  isAdmin,
+  async (req, res) => {
+    try {
+      const { startDate, endDate } = req.body;
+
+      if (!startDate || !endDate) {
+        return res.status(400).json({
+          success: false,
+          error: 'Start date and end date are required',
+        });
+      }
+
+      console.log('Date range refund sync requested:', { startDate, endDate });
+
+      const result = await syncRefundsByDateRange(startDate, endDate);
+
+      if (result.success) {
+        res.json({
+          success: true,
+          message: `Date range sync completed: ${result.processed} processed, ${result.errors} errors`,
+          data: result,
+        });
+      } else {
+        res.status(400).json({
+          success: false,
+          error: result.error,
+        });
+      }
+    } catch (error) {
+      console.error('Date range refund sync error:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to sync refunds by date range',
+      });
+    }
+  }
+);
 
 module.exports = router;
