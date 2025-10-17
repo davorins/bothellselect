@@ -25,6 +25,7 @@ const eventRoutes = require('./routes/eventRoutes');
 const formsRoutes = require('./routes/formRoutes');
 const faqRoutes = require('./routes/faqRoutes');
 const teamRoutes = require('./routes/teamRoutes');
+const adminDashboardRoutes = require('./routes/adminDashboard');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -81,6 +82,7 @@ app.use('/api/events', eventRoutes);
 app.use('/api/forms', formsRoutes);
 app.use('/api/faqs', faqRoutes);
 app.use('/api', teamRoutes);
+app.use('/api/admin', adminDashboardRoutes);
 
 // Connect to MongoDB
 mongoose
