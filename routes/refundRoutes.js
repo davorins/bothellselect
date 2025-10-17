@@ -130,6 +130,7 @@ router.post('/process', authenticate, async (req, res) => {
   }
 });
 
+// GET /api/refunds/all - Get all refunds with payment details
 router.get('/all', authenticate, async (req, res) => {
   try {
     if (req.user.role !== 'admin') {
@@ -170,6 +171,9 @@ router.get('/all', authenticate, async (req, res) => {
           createdAt: 1,
           receiptUrl: 1,
           status: 1,
+          cardLastFour: 1, // Add card details
+          cardBrand: 1, // Add card brand
+          buyerEmail: 1, // Add buyer email from payment
         },
       },
       { $sort: { createdAt: -1 } }, // Sort by most recent first
