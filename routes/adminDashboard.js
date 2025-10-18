@@ -183,13 +183,52 @@ router.get('/dashboard', async (req, res) => {
     const totalAdults = totalParents + totalAdditionalGuardians;
 
     // ONLY count coaches from main parent accounts, NOT from additional guardians
-    const totalCoaches = parents.filter((p) => p.isCoach).length; // This should be 12
+    const totalCoaches = parents.filter((p) => p.isCoach).length;
 
     console.log('👨‍👩‍👧‍👦 ADULT ACCOUNT STATISTICS:');
     console.log(`   Primary Parents: ${totalParents}`);
     console.log(`   Additional Guardians: ${totalAdditionalGuardians}`);
     console.log(`   Total Adults: ${totalAdults}`);
     console.log(`   Coaches (from Parents only): ${totalCoaches}`);
+
+    // Get coach information for teams using DIRECT coach assignments
+    const teamDetailsWithCoaches = internalTeams.map((team) => {
+      const teamPlayerIds = team.playerIds || [];
+      const teamCoachIds = team.coachIds || [];
+
+      console.log(`\n🔍 Analyzing team: ${team.name}`);
+      console.log(`   Team player IDs: ${teamPlayerIds.length} players`);
+      console.log(`   Team coach IDs: ${teamCoachIds.length} coaches`);
+
+      // Find coaches by their IDs from the coachIds array
+      const teamCoaches = parents.filter((parent) =>
+        teamCoachIds.some(
+          (coachId) => coachId.toString() === parent._id.toString()
+        )
+      );
+
+      console.log(
+        `   Found ${teamCoaches.length} coaches for team ${team.name}`
+      );
+      if (teamCoaches.length > 0) {
+        console.log(
+          `   Coaches:`,
+          teamCoaches.map((c) => c.fullName)
+        );
+      }
+
+      return {
+        name: team.name,
+        grade: team.grade,
+        gender: team.gender,
+        playerCount: teamPlayerIds.length,
+        coachCount: teamCoaches.length,
+        coaches: teamCoaches.map((coach) => ({
+          name: coach.fullName,
+          email: coach.email,
+        })),
+      };
+    });
 
     const responseData = {
       players: players.slice(0, 6),
@@ -216,12 +255,7 @@ router.get('/dashboard', async (req, res) => {
         total: internalTeams.length,
         active: internalTeams.length,
         internalTeams: internalTeams.length,
-        internalTeamDetails: internalTeams.map((team) => ({
-          name: team.name,
-          grade: team.grade,
-          gender: team.gender,
-          playerCount: team.playerIds?.length || 0,
-        })),
+        internalTeamDetails: teamDetailsWithCoaches,
       },
       registrationStats: registrationStats,
       adultStats: {
@@ -259,4 +293,5 @@ router.get('/dashboard', async (req, res) => {
     });
   }
 });
+
 module.exports = router;
