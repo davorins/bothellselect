@@ -5,6 +5,7 @@ const Parent = require('../models/Parent');
 const Payment = require('../models/Payment');
 const Registration = require('../models/Registration');
 const InternalTeam = require('../models/InternalTeam');
+const { getDateRange } = require('../utils/dateRanges');
 
 async function getRecentPayments() {
   try {
@@ -152,6 +153,150 @@ async function getRegistrationStats() {
   }
 }
 
+// Function to calculate financial metrics
+async function getFinancialMetrics(timeRange = 'this-month') {
+  try {
+    const { start, end } = getDateRange(timeRange);
+
+    console.log(`💰 Calculating financial metrics for ${timeRange}`);
+    console.log(
+      `   Date range: ${start.toISOString()} to ${end.toISOString()}`
+    );
+    console.log(
+      `   Human readable: ${start.toLocaleDateString()} to ${end.toLocaleDateString()}`
+    );
+
+    // Get payments within the requested date range
+    const payments = await Payment.find({
+      status: 'completed',
+      createdAt: { $gte: start, $lte: end },
+      cardLastFour: { $not: /1111$/ },
+    })
+      .select('amount createdAt refunds')
+      .lean();
+
+    console.log(`   Found ${payments.length} payments in the exact date range`);
+
+    // Calculate financial metrics
+    const grossRevenue = payments.reduce(
+      (sum, payment) => sum + payment.amount,
+      0
+    );
+
+    let completedRefunds = 0;
+    let pendingRefunds = 0;
+
+    payments.forEach((payment) => {
+      payment.refunds?.forEach((refund) => {
+        if (refund.status === 'completed') {
+          completedRefunds += refund.amount;
+        } else if (refund.status === 'pending') {
+          pendingRefunds += refund.amount;
+        }
+      });
+    });
+
+    const netRevenue = grossRevenue - completedRefunds;
+
+    // Daily revenue trend - FIXED: Ensure proper date formatting
+    const dailyRevenue = {};
+    payments.forEach((payment) => {
+      const date = new Date(payment.createdAt);
+      // Use YYYY-MM-DD format for consistent sorting
+      const dateKey = date.toISOString().split('T')[0];
+      dailyRevenue[dateKey] = (dailyRevenue[dateKey] || 0) + payment.amount;
+    });
+
+    console.log(`   Financial results for ${timeRange}:`);
+    console.log(`   - Gross Revenue: $${grossRevenue}`);
+    console.log(`   - Net Revenue: $${netRevenue}`);
+    console.log(`   - Transactions: ${payments.length}`);
+    console.log(`   - Refunds: $${completedRefunds}`);
+    console.log(
+      `   - Unique days with data: ${Object.keys(dailyRevenue).length}`
+    );
+
+    return {
+      grossRevenue,
+      netRevenue,
+      refunds: {
+        total: completedRefunds + pendingRefunds,
+        completed: completedRefunds,
+        pending: pendingRefunds,
+      },
+      transactionCount: payments.length,
+      averageTransaction:
+        payments.length > 0 ? grossRevenue / payments.length : 0,
+      dailyRevenue,
+      refundReasons: {},
+      dateRange: {
+        start: start,
+        end: end,
+        label: timeRange,
+        usedFallbackYear: false,
+        actualDataYear: start.getFullYear(),
+      },
+    };
+  } catch (error) {
+    console.error('Error calculating financial metrics:', error);
+    return getEmptyFinancialData(timeRange);
+  }
+}
+
+function getEmptyFinancialData(timeRange) {
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const currentMonth = now.getMonth();
+
+  let start, end;
+
+  if (timeRange === 'this-month') {
+    start = new Date(currentYear, currentMonth, 1);
+    end = new Date(currentYear, currentMonth + 1, 0);
+  } else if (timeRange === 'last-month') {
+    const prevMonth = currentMonth === 0 ? 11 : currentMonth - 1;
+    const prevYear = currentMonth === 0 ? currentYear - 1 : currentYear;
+    start = new Date(prevYear, prevMonth, 1);
+    end = new Date(prevYear, prevMonth + 1, 0);
+  } else {
+    start = new Date();
+    end = new Date();
+  }
+
+  return {
+    grossRevenue: 0,
+    netRevenue: 0,
+    refunds: { total: 0, completed: 0, pending: 0 },
+    transactionCount: 0,
+    averageTransaction: 0,
+    dailyRevenue: {},
+    refundReasons: {},
+    dateRange: { start, end, label: timeRange },
+  };
+}
+
+// Route for financial analytics
+router.get('/financial-analytics', async (req, res) => {
+  try {
+    const { range = 'this-month' } = req.query;
+
+    const financialData = await getFinancialMetrics(range);
+
+    res.json({
+      success: true,
+      data: financialData,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('Financial analytics error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to load financial analytics',
+      details: error.message,
+    });
+  }
+});
+
 router.get('/dashboard', async (req, res) => {
   try {
     console.log('\n🔄 Building dashboard...');
@@ -164,6 +309,7 @@ router.get('/dashboard', async (req, res) => {
       refundsData,
       registrationStats,
       recentPayments,
+      financialMetrics, // ✅ Store the result here
     ] = await Promise.all([
       Player.find({}).lean(),
       Parent.find({}).lean(),
@@ -172,6 +318,7 @@ router.get('/dashboard', async (req, res) => {
       getPendingRefundsData(),
       getRegistrationStats(),
       getRecentPayments(),
+      getFinancialMetrics('this-month'), // ✅ This returns the financial data
     ]);
 
     // Calculate total adults (parents + additional guardians)
@@ -240,7 +387,16 @@ router.get('/dashboard', async (req, res) => {
         pendingPaymentsAmount: pendingData.pendingPaymentsAmount,
         pendingRefunds: refundsData.pendingRefundsCount,
         pendingRefundsAmount: refundsData.pendingRefundsAmount,
+        currentMonthRevenue: financialMetrics.netRevenue, // ✅ Now defined
+        currentMonthTransactions: financialMetrics.transactionCount, // ✅ Now defined
+        refundRate:
+          financialMetrics.grossRevenue > 0
+            ? (financialMetrics.refunds.completed /
+                financialMetrics.grossRevenue) *
+              100
+            : 0, // ✅ Now defined
       },
+      financialOverview: financialMetrics, // ✅ Now defined
       playerStats: {
         total: players.length,
         active: players.filter((p) => p.paymentStatus === 'paid').length,
@@ -283,6 +439,7 @@ router.get('/dashboard', async (req, res) => {
       `📊 Total Adults: ${totalAdults} (${totalParents} parents + ${totalAdditionalGuardians} guardians)`
     );
     console.log(`👨‍🏫 Coaches: ${totalCoaches}`);
+    console.log(`💰 Current Month Revenue: $${financialMetrics.netRevenue}`);
 
     res.json(responseData);
   } catch (error) {
