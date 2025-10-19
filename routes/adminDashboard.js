@@ -160,29 +160,10 @@ async function getFinancialMetrics(timeRange = 'this-month') {
 
     console.log(`💰 Calculating financial metrics for ${timeRange}`);
     console.log(
-      `   Date range (UTC): ${start.toISOString()} to ${end.toISOString()}`
+      `   Date range: ${start.toISOString()} to ${end.toISOString()}`
     );
-
-    // ✅ Pacific timezone constant
-    const pacificTimeZone = 'America/Los_Angeles';
-
-    // Adjust the range to Pacific start/end of day
-    const pacificStart = new Date(
-      new Intl.DateTimeFormat('en-US', {
-        timeZone: pacificTimeZone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-      }).format(start)
-    );
-
-    const pacificEnd = new Date(
-      new Intl.DateTimeFormat('en-US', {
-        timeZone: pacificTimeZone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-      }).format(end)
+    console.log(
+      `   Human readable: ${start.toLocaleDateString()} to ${end.toLocaleDateString()}`
     );
 
     // Get payments within the requested date range
@@ -194,40 +175,46 @@ async function getFinancialMetrics(timeRange = 'this-month') {
       .select('amount createdAt refunds')
       .lean();
 
-    console.log(`   Found ${payments.length} payments`);
+    console.log(`   Found ${payments.length} payments in the exact date range`);
 
     // Calculate financial metrics
-    const grossRevenue = payments.reduce((sum, p) => sum + p.amount, 0);
+    const grossRevenue = payments.reduce(
+      (sum, payment) => sum + payment.amount,
+      0
+    );
 
     let completedRefunds = 0;
     let pendingRefunds = 0;
-    const dailyRevenue = {};
 
     payments.forEach((payment) => {
-      // ✅ Convert to Pacific Time properly for grouping
-      const pacificDateString = new Date(payment.createdAt).toLocaleString(
-        'en-US',
-        {
-          timeZone: pacificTimeZone,
-          year: 'numeric',
-          month: '2-digit',
-          day: '2-digit',
-        }
-      );
-
-      // pacificDateString e.g. "10/05/2025"
-      const [month, day, year] = pacificDateString.split('/');
-      const dateKey = `${year}-${month}-${day}`; // "YYYY-MM-DD"
-
-      dailyRevenue[dateKey] = (dailyRevenue[dateKey] || 0) + payment.amount;
-
       payment.refunds?.forEach((refund) => {
-        if (refund.status === 'completed') completedRefunds += refund.amount;
-        else if (refund.status === 'pending') pendingRefunds += refund.amount;
+        if (refund.status === 'completed') {
+          completedRefunds += refund.amount;
+        } else if (refund.status === 'pending') {
+          pendingRefunds += refund.amount;
+        }
       });
     });
 
     const netRevenue = grossRevenue - completedRefunds;
+
+    // Daily revenue trend - FIXED: Ensure proper date formatting
+    const dailyRevenue = {};
+    payments.forEach((payment) => {
+      const date = new Date(payment.createdAt);
+      // Use YYYY-MM-DD format for consistent sorting
+      const dateKey = date.toISOString().split('T')[0];
+      dailyRevenue[dateKey] = (dailyRevenue[dateKey] || 0) + payment.amount;
+    });
+
+    console.log(`   Financial results for ${timeRange}:`);
+    console.log(`   - Gross Revenue: $${grossRevenue}`);
+    console.log(`   - Net Revenue: $${netRevenue}`);
+    console.log(`   - Transactions: ${payments.length}`);
+    console.log(`   - Refunds: $${completedRefunds}`);
+    console.log(
+      `   - Unique days with data: ${Object.keys(dailyRevenue).length}`
+    );
 
     return {
       grossRevenue,
@@ -238,10 +225,17 @@ async function getFinancialMetrics(timeRange = 'this-month') {
         pending: pendingRefunds,
       },
       transactionCount: payments.length,
-      averageTransaction: payments.length ? grossRevenue / payments.length : 0,
+      averageTransaction:
+        payments.length > 0 ? grossRevenue / payments.length : 0,
       dailyRevenue,
       refundReasons: {},
-      dateRange: { start, end, label: timeRange },
+      dateRange: {
+        start: start,
+        end: end,
+        label: timeRange,
+        usedFallbackYear: false,
+        actualDataYear: start.getFullYear(),
+      },
     };
   } catch (error) {
     console.error('Error calculating financial metrics:', error);
