@@ -216,19 +216,8 @@ async function getFinancialMetrics(timeRange = 'this-month') {
       );
 
       // pacificDateString e.g. "10/05/2025"
-      const dateObj = new Date(payment.createdAt);
-      // Shift 1 day forward
-      dateObj.setDate(dateObj.getDate() + 1);
-
-      const shiftedDateString = dateObj.toLocaleString('en-US', {
-        timeZone: pacificTimeZone,
-        year: 'numeric',
-        month: '2-digit',
-        day: '2-digit',
-      });
-
-      const [month, day, year] = shiftedDateString.split('/');
-      const dateKey = `${year}-${month}-${day}`; // YYYY-MM-DD format
+      const [month, day, year] = pacificDateString.split('/');
+      const dateKey = `${year}-${month}-${day}`; // "YYYY-MM-DD"
 
       dailyRevenue[dateKey] = (dailyRevenue[dateKey] || 0) + payment.amount;
 
