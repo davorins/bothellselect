@@ -15,6 +15,12 @@ const { body, validationResult } = require('express-validator');
 
 // PROCESS TOURNAMENT TEAM PAYMENT - MAIN FIX
 router.post('/tournament-team', authenticate, async (req, res) => {
+  console.log('=== TOURNAMENT PAYMENT REQUEST RECEIVED ===');
+  console.log('User ID:', req.user?.id);
+  console.log('Body:', JSON.stringify(req.body, null, 2));
+  console.log('Headers:', req.headers);
+  console.log('===========================================');
+
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -40,49 +46,146 @@ router.post('/tournament-team', authenticate, async (req, res) => {
       amount,
       parentId,
       email: buyerEmailAddress,
+      hasToken: !!token,
+      hasSourceId: !!sourceId,
+      cardDetails: cardDetails ? 'provided' : 'missing',
     });
 
-    // Validate required fields
-    if (!teamId || !tournament || !year) {
-      throw new Error('Team ID, tournament, and year are required');
+    // Validate required fields with specific error messages
+    if (!teamId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Team ID is required',
+        message: 'No team ID provided in payment request',
+      });
+    }
+
+    if (!tournament) {
+      return res.status(400).json({
+        success: false,
+        error: 'Tournament name is required',
+        message: 'No tournament name provided',
+      });
+    }
+
+    if (!year) {
+      return res.status(400).json({
+        success: false,
+        error: 'Year is required',
+        message: 'No year provided',
+      });
     }
 
     if (!amount || amount <= 0) {
-      throw new Error('Valid payment amount is required');
+      return res.status(400).json({
+        success: false,
+        error: 'Valid payment amount is required',
+        message: `Invalid amount: ${amount}`,
+      });
     }
 
+    if (!token && !sourceId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Payment token is required',
+        message: 'No payment token or sourceId provided',
+      });
+    }
+
+    // Check Square configuration
+    console.log('Checking Square configuration...');
+    if (!process.env.SQUARE_LOCATION_ID) {
+      console.error('Square location ID not configured');
+      return res.status(500).json({
+        success: false,
+        error: 'Payment system configuration error',
+        message: 'Square location ID not configured',
+      });
+    }
+
+    if (!process.env.SQUARE_ACCESS_TOKEN) {
+      console.error('Square access token not configured');
+      return res.status(500).json({
+        success: false,
+        error: 'Payment system configuration error',
+        message: 'Square access token not configured',
+      });
+    }
+
+    console.log('Square configuration verified:', {
+      locationId: process.env.SQUARE_LOCATION_ID ? 'set' : 'missing',
+      accessToken: process.env.SQUARE_ACCESS_TOKEN ? 'set' : 'missing',
+      environment: process.env.SQUARE_ENVIRONMENT || 'not set',
+    });
+
     // Get team and verify ownership
+    console.log('Looking up team:', teamId);
     const team = await Team.findOne({
       _id: teamId,
       coachIds: parentId,
     }).session(session);
 
     if (!team) {
-      throw new Error('Team not found or unauthorized');
+      console.log('Team not found or unauthorized:', {
+        teamId,
+        userId: parentId,
+        coachIds: team?.coachIds || 'N/A',
+      });
+      return res.status(404).json({
+        success: false,
+        error: 'Team not found or unauthorized',
+        message: `Team ${teamId} not found or user ${parentId} is not a coach`,
+      });
     }
 
+    console.log('Team found:', team.name);
+
     // Get parent for Square customer
+    console.log('Looking up parent:', parentId);
     const parent = await Parent.findById(parentId).session(session);
     if (!parent) {
-      throw new Error('Parent not found');
+      console.log('Parent not found:', parentId);
+      return res.status(404).json({
+        success: false,
+        error: 'Parent not found',
+        message: `Parent ${parentId} not found`,
+      });
     }
+
+    console.log('Parent found:', parent.email);
 
     // Use existing Square customer ID or create new one
     let customerId = parent.squareCustomerId;
     if (!customerId) {
-      const { result: customerResult } =
-        await client.customersApi.createCustomer({
-          emailAddress: buyerEmailAddress,
-          referenceId: `parent:${parent._id}`,
-        });
-      customerId = customerResult.customer?.id;
+      console.log('Creating new Square customer for parent:', parent._id);
+      try {
+        const { result: customerResult } =
+          await client.customersApi.createCustomer({
+            emailAddress: buyerEmailAddress,
+            referenceId: `parent:${parent._id}`,
+          });
+        customerId = customerResult.customer?.id;
+        console.log('Created Square customer:', customerId);
 
-      // Update parent with new customer ID
-      await Parent.updateOne(
-        { _id: parentId },
-        { $set: { squareCustomerId: customerId } },
-        { session }
-      );
+        // Update parent with new customer ID
+        await Parent.updateOne(
+          { _id: parentId },
+          { $set: { squareCustomerId: customerId } },
+          { session }
+        );
+      } catch (squareError) {
+        console.error('Error creating Square customer:', squareError);
+        const errorDetails = squareError.errors
+          ? JSON.stringify(squareError.errors)
+          : squareError.message;
+        return res.status(400).json({
+          success: false,
+          error: 'Failed to create Square customer',
+          message: `Square customer creation failed: ${errorDetails}`,
+        });
+      }
+    } else {
+      console.log('Using existing Square customer:', customerId);
     }
 
     // Process payment with Square
@@ -95,28 +198,71 @@ router.post('/tournament-team', authenticate, async (req, res) => {
       idempotencyKey: crypto.randomUUID(),
       locationId: process.env.SQUARE_LOCATION_ID,
       customerId,
-      referenceId: `tournament:${teamId}:${tournament}:${year}`,
+      referenceId: `t:${teamId.slice(-12)}:${year}`,
       note: `Tournament registration: ${tournament} ${year} - Team: ${team.name}`,
       buyerEmailAddress,
       autocomplete: true,
     };
 
-    console.log('Creating Square payment:', paymentRequest);
+    console.log('Creating Square payment request:', {
+      ...paymentRequest,
+      sourceId: paymentRequest.sourceId ? 'present' : 'missing',
+      amount: paymentRequest.amountMoney.amount,
+      locationId: paymentRequest.locationId,
+      customerId: paymentRequest.customerId,
+    });
 
-    const { result } = await client.paymentsApi.createPayment(paymentRequest);
-    const paymentResult = result.payment;
+    let paymentResult;
+    try {
+      console.log('Calling Square Payments API...');
+      const { result } = await client.paymentsApi.createPayment(paymentRequest);
+      paymentResult = result.payment;
+      console.log('Square payment response:', {
+        paymentId: paymentResult.id,
+        status: paymentResult.status,
+        amount: paymentResult.amountMoney?.amount,
+        receiptUrl: paymentResult.receiptUrl,
+      });
+    } catch (squareError) {
+      console.error('Square payment API error:', squareError);
+      const errorDetails = squareError.errors
+        ? JSON.stringify(squareError.errors)
+        : squareError.message;
+      console.error('Full Square error details:', errorDetails);
 
-    if (!paymentResult || paymentResult.status !== 'COMPLETED') {
-      throw new Error(
-        `Payment failed with status: ${paymentResult?.status || 'unknown'}`
-      );
+      return res.status(400).json({
+        success: false,
+        error: 'Square payment failed',
+        message: `Payment processing failed: ${errorDetails}`,
+        squareErrors: squareError.errors,
+      });
     }
 
-    console.log('Square payment completed:', {
-      paymentId: paymentResult.id,
-      status: paymentResult.status,
-      amount: paymentResult.amountMoney?.amount,
-    });
+    if (!paymentResult) {
+      console.error('No payment result received from Square');
+      return res.status(400).json({
+        success: false,
+        error: 'No payment result',
+        message: 'Square returned no payment result',
+      });
+    }
+
+    if (paymentResult.status !== 'COMPLETED') {
+      console.error('Payment failed with status:', paymentResult.status);
+      return res.status(400).json({
+        success: false,
+        error: 'Payment not completed',
+        message: `Payment status: ${paymentResult.status}`,
+        paymentStatus: paymentResult.status,
+      });
+    }
+
+    console.log('Square payment completed successfully');
+
+    // Validate cardDetails before using them
+    if (!cardDetails) {
+      console.warn('No card details provided in request');
+    }
 
     // Update team tournament payment status
     const tournamentIndex = team.tournaments.findIndex(
@@ -130,8 +276,8 @@ router.post('/tournament-team', authenticate, async (req, res) => {
       paymentComplete: true,
       paymentDate: new Date(),
       paymentId: paymentResult.id, // REAL Square payment ID
-      cardLast4: cardDetails.last_4,
-      cardBrand: cardDetails.card_brand,
+      cardLast4: cardDetails?.last_4 || 'N/A',
+      cardBrand: cardDetails?.card_brand || 'N/A',
       amountPaid: amount / 100,
       levelOfCompetition: team.levelOfCompetition || 'Silver',
     };
@@ -173,8 +319,8 @@ router.post('/tournament-team', authenticate, async (req, res) => {
           paymentComplete: true,
           paymentDate: new Date(),
           paymentId: paymentResult.id,
-          cardLast4: cardDetails.last_4,
-          cardBrand: cardDetails.card_brand,
+          cardLast4: cardDetails?.last_4 || 'N/A',
+          cardBrand: cardDetails?.card_brand || 'N/A',
           amountPaid: amount / 100,
           updatedAt: new Date(),
         },
@@ -193,10 +339,10 @@ router.post('/tournament-team', authenticate, async (req, res) => {
       paymentId: paymentResult.id,
       locationId: process.env.SQUARE_LOCATION_ID,
       buyerEmail: buyerEmailAddress,
-      cardLastFour: cardDetails.last_4,
-      cardBrand: cardDetails.card_brand,
-      cardExpMonth: cardDetails.exp_month,
-      cardExpYear: cardDetails.exp_year,
+      cardLastFour: cardDetails?.last_4 || 'N/A',
+      cardBrand: cardDetails?.card_brand || 'N/A',
+      cardExpMonth: cardDetails?.exp_month || 0,
+      cardExpYear: cardDetails?.exp_year || 0,
       amount: amount / 100,
       currency: 'USD',
       status: 'completed',
@@ -269,6 +415,7 @@ router.post('/tournament-team', authenticate, async (req, res) => {
     }
 
     await session.commitTransaction();
+    console.log('Transaction committed successfully');
 
     res.json({
       success: true,
