@@ -1,4 +1,4 @@
-// paymentProcessRoutes.js
+// paymentProcessRoutes.js - COMPLETE PAYMENT PROCESSING SOLUTION
 const express = require('express');
 const { authenticate } = require('../utils/auth');
 const Payment = require('../models/Payment');
@@ -8,47 +8,63 @@ const mongoose = require('mongoose');
 const Parent = require('../models/Parent');
 const Player = require('../models/Player');
 const Registration = require('../models/Registration');
+const Team = require('../models/Team');
 const { sendEmail } = require('../utils/email');
 const crypto = require('crypto');
 const { body, validationResult } = require('express-validator');
 
-// POST /api/payments/process
-router.post('/process', authenticate, async (req, res) => {
+// PROCESS TOURNAMENT TEAM PAYMENT - MAIN FIX
+router.post('/tournament-team', authenticate, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
     const {
+      token,
       sourceId,
       amount,
-      players, // Array of players with season/year/tryoutId
-      cardDetails,
-      locationId,
       email: buyerEmailAddress,
-      token,
+      teamId,
+      tournament,
+      year,
+      cardDetails,
+      isAdmin = false,
     } = req.body;
 
-    // Use authenticated user's ID
     const parentId = req.user.id;
-    if (!parentId) {
-      throw new Error('Parent ID not found in authentication token');
+
+    console.log('Processing tournament team payment:', {
+      teamId,
+      tournament,
+      year,
+      amount,
+      parentId,
+      email: buyerEmailAddress,
+    });
+
+    // Validate required fields
+    if (!teamId || !tournament || !year) {
+      throw new Error('Team ID, tournament, and year are required');
     }
 
-    // Get parent with session
-    const parent = await Parent.findById(parentId).session(session);
-    if (!parent) {
-      throw new Error(`Parent not found with ID: ${parentId}`);
+    if (!amount || amount <= 0) {
+      throw new Error('Valid payment amount is required');
     }
 
-    // Get player records
-    const playerIds = players.map((p) => p.playerId).filter((id) => id);
-    const playerRecords = await Player.find({
-      _id: { $in: playerIds },
-      parentId: parent._id,
+    // Get team and verify ownership
+    const team = await Team.findOne({
+      _id: teamId,
+      coachIds: parentId,
     }).session(session);
 
-    if (playerRecords.length === 0) {
-      throw new Error('No valid players found for this payment');
+    if (!team) {
+      throw new Error('Team not found or unauthorized');
+    }
+
+    // Get parent for Square customer
+    const parent = await Parent.findById(parentId).session(session);
+    if (!parent) {
+      throw new Error('Parent not found');
     }
 
     // Use existing Square customer ID or create new one
@@ -69,7 +85,7 @@ router.post('/process', authenticate, async (req, res) => {
       );
     }
 
-    // Process payment
+    // Process payment with Square
     const paymentRequest = {
       sourceId: sourceId || token,
       amountMoney: {
@@ -77,13 +93,15 @@ router.post('/process', authenticate, async (req, res) => {
         currency: 'USD',
       },
       idempotencyKey: crypto.randomUUID(),
-      locationId: locationId || process.env.SQUARE_LOCATION_ID,
+      locationId: process.env.SQUARE_LOCATION_ID,
       customerId,
-      referenceId: `parent:${parent._id}`,
-      note: `Payment for ${players.length} player(s)`,
+      referenceId: `tournament:${teamId}:${tournament}:${year}`,
+      note: `Tournament registration: ${tournament} ${year} - Team: ${team.name}`,
       buyerEmailAddress,
       autocomplete: true,
     };
+
+    console.log('Creating Square payment:', paymentRequest);
 
     const { result } = await client.paymentsApi.createPayment(paymentRequest);
     const paymentResult = result.payment;
@@ -94,13 +112,86 @@ router.post('/process', authenticate, async (req, res) => {
       );
     }
 
+    console.log('Square payment completed:', {
+      paymentId: paymentResult.id,
+      status: paymentResult.status,
+      amount: paymentResult.amountMoney?.amount,
+    });
+
+    // Update team tournament payment status
+    const tournamentIndex = team.tournaments.findIndex(
+      (t) => t.tournament === tournament && t.year === parseInt(year)
+    );
+
+    const tournamentData = {
+      tournament: tournament,
+      year: parseInt(year),
+      paymentStatus: 'paid',
+      paymentComplete: true,
+      paymentDate: new Date(),
+      paymentId: paymentResult.id, // REAL Square payment ID
+      cardLast4: cardDetails.last_4,
+      cardBrand: cardDetails.card_brand,
+      amountPaid: amount / 100,
+      levelOfCompetition: team.levelOfCompetition || 'Silver',
+    };
+
+    if (tournamentIndex >= 0) {
+      // Update existing tournament entry
+      team.tournaments[tournamentIndex] = {
+        ...team.tournaments[tournamentIndex],
+        ...tournamentData,
+      };
+    } else {
+      // Add new tournament entry
+      team.tournaments.push(tournamentData);
+    }
+
+    // Update top-level team payment status
+    team.paymentComplete = true;
+    team.paymentStatus = 'paid';
+    team.markModified('tournaments');
+
+    await team.save({ session });
+
+    console.log('Team updated with payment:', {
+      teamId: team._id,
+      tournament: tournament,
+      paymentId: paymentResult.id,
+    });
+
+    // Update registrations
+    const registrationUpdate = await Registration.updateMany(
+      {
+        team: teamId,
+        tournament: tournament,
+        year: parseInt(year),
+      },
+      {
+        $set: {
+          paymentStatus: 'paid',
+          paymentComplete: true,
+          paymentDate: new Date(),
+          paymentId: paymentResult.id,
+          cardLast4: cardDetails.last_4,
+          cardBrand: cardDetails.card_brand,
+          amountPaid: amount / 100,
+          updatedAt: new Date(),
+        },
+      },
+      { session }
+    );
+
+    console.log('Registrations updated:', {
+      modifiedCount: registrationUpdate.modifiedCount,
+    });
+
     // Create Payment record
     const payment = new Payment({
       parentId: parent._id,
-      playerIds: playerRecords.map((p) => p._id),
-      playerCount: players.length,
+      teamId: teamId,
       paymentId: paymentResult.id,
-      locationId: paymentRequest.locationId,
+      locationId: process.env.SQUARE_LOCATION_ID,
       buyerEmail: buyerEmailAddress,
       cardLastFour: cardDetails.last_4,
       cardBrand: cardDetails.card_brand,
@@ -111,174 +202,69 @@ router.post('/process', authenticate, async (req, res) => {
       status: 'completed',
       processedAt: new Date(),
       receiptUrl: paymentResult.receiptUrl,
-      players: players.map((p) => ({
-        playerId: p.playerId || null,
-        season: p.season,
-        year: p.year,
-        tryoutId: p.tryoutId || null,
-      })),
+      note: `Tournament: ${tournament} ${year} - Team: ${team.name}`,
     });
 
     await payment.save({ session });
 
-    // Update players and registrations
-    const updatedPlayers = [];
-    for (const player of playerRecords) {
-      try {
-        const playerRequest = players.find(
-          (p) => p.playerId === player._id.toString()
-        );
-        if (!playerRequest) continue;
-
-        // Find matching season or create new one
-        const seasonIndex = player.seasons.findIndex(
-          (s) =>
-            s.season === playerRequest.season &&
-            s.year === playerRequest.year &&
-            (s.tryoutId === playerRequest.tryoutId ||
-              (!s.tryoutId && !playerRequest.tryoutId))
-        );
-
-        const seasonData = {
-          season: playerRequest.season,
-          year: playerRequest.year,
-          tryoutId: playerRequest.tryoutId || null,
-          paymentStatus: 'paid',
-          paymentComplete: true,
-          paymentId: paymentResult.id,
-          amountPaid: amount / 100 / players.length,
-          cardLast4: cardDetails.last_4,
-          cardBrand: cardDetails.card_brand,
-          paymentDate: new Date(),
-        };
-
-        if (seasonIndex >= 0) {
-          player.seasons[seasonIndex] = {
-            ...player.seasons[seasonIndex],
-            ...seasonData,
-          };
-        } else {
-          player.seasons.push({ ...seasonData, registrationDate: new Date() });
-        }
-
-        // Force update
-        player.markModified('seasons');
-        const updatedPlayer = await player.save({ session });
-        updatedPlayers.push(updatedPlayer);
-
-        // NEW: Update registrations - similar to /tryout
-        await Registration.updateMany(
-          {
-            player: player._id,
-            season: playerRequest.season,
-            year: playerRequest.year,
-            tryoutId: playerRequest.tryoutId || null,
-          },
-          {
-            $set: {
-              paymentStatus: 'paid',
-              paymentComplete: true,
-              paymentDate: new Date(),
-              paymentId: paymentResult.id,
-              updatedAt: new Date(),
-            },
-          },
-          { session }
-        );
-      } catch (updateError) {
-        console.error(`Failed to update player ${player._id}:`, updateError);
-        throw new Error(`Failed to update player ${player.fullName}`);
-      }
-    }
-
-    // Update parent
-    await Parent.updateOne(
-      { _id: parentId },
-      { $set: { paymentComplete: true } },
-      { session }
-    );
-
-    // Send receipt email
+    // Send confirmation email
     try {
-      const playerCount = players.length;
-      const totalAmount = amount / 100;
-      const perPlayerAmount = 1050; // Your fixed amount per player
-
       await sendEmail({
         to: buyerEmailAddress,
-        subject: 'Payment Confirmation - Bothell Select Basketball',
+        subject:
+          'Tournament Registration Confirmation - Bothell Select Basketball',
         html: `
-      <!DOCTYPE html>
-      <html>
-      <head>
-          <style>
-              body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-              .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-              .header { background: #1a56db; color: white; padding: 20px; text-align: center; }
-              .content { background: #f9fafb; padding: 20px; }
-              .footer { background: #e5e7eb; padding: 15px; text-align: center; font-size: 14px; }
-              .payment-details { background: white; padding: 15px; border-radius: 5px; margin: 15px 0; }
-              .logo-container { text-align: center; margin-bottom: 20px; }
-              .logo { max-width: 200px; height: auto; }
-          </style>
-      </head>
-      <body>
-          <div class="container">
-              <div class="logo-container">
-                  <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" class="logo">
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; background: #f9fafb; padding: 20px;">
+            <div style="text-align: center; margin-bottom: 20px;">
+              <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px; height: auto;">
+            </div>
+            
+            <div style="background: #1a56db; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+              <h1 style="margin: 0;">🎉 Tournament Registration Confirmed!</h1>
+            </div>
+            
+            <div style="background: white; padding: 20px; border-radius: 0 0 5px 5px;">
+              <p style="font-size: 16px;">Dear ${parent.fullName || 'Coach'},</p>
+              
+              <p style="font-size: 16px;">Thank you for your payment! Your tournament registration has been confirmed.</p>
+              
+              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #1a56db;">
+                <h3 style="margin-top: 0; color: #1a56db;">Registration Details</h3>
+                <p style="margin: 8px 0;"><strong>Team:</strong> ${team.name}</p>
+                <p style="margin: 8px 0;"><strong>Tournament:</strong> ${tournament} ${year}</p>
+                <p style="margin: 8px 0;"><strong>Grade:</strong> ${team.grade}</p>
+                <p style="margin: 8px 0;"><strong>Gender:</strong> ${team.sex}</p>
+                <p style="margin: 8px 0;"><strong>Level:</strong> ${team.levelOfCompetition || 'Silver'}</p>
+                <p style="margin: 8px 0;"><strong>Registration Fee:</strong> $${amount / 100}</p>
+                <p style="margin: 8px 0;"><strong>Payment ID:</strong> ${paymentResult.id}</p>
               </div>
               
-              <div class="header">
-                  <h1>🎉 Payment Confirmed!</h1>
-              </div>
+              <p style="font-size: 16px;"><strong>What's Next?</strong></p>
+              <ul style="font-size: 14px;">
+                <li>You will receive tournament schedule and bracket information via email</li>
+                <li>Check the tournament website for updates and rules</li>
+                <li>Ensure all player waivers and forms are completed</li>
+              </ul>
               
-              <div class="content">
-                  <p>Dear ${parent.fullName || 'Valued Customer'},</p>
-                  
-                  <p>Thank you for your payment! Your registration for the Bothell Select Basketball Team has been confirmed.</p>
-                  
-                  <div class="payment-details">
-                      <h3>Payment Details</h3>
-                      <p><strong>Number of Players:</strong> ${playerCount}</p>
-                      <p><strong>Fee per Player:</strong> $${perPlayerAmount}</p>
-                      <p><strong>Total Amount Paid:</strong> $${totalAmount}</p>
-                      <p><strong>Season:</strong> ${players[0]?.season || 'Basketball Select Team'} ${players[0]?.year || new Date().getFullYear()}</p>
-                      <p><strong>Players Registered:</strong></p>
-                      <ul>
-                          ${playerRecords.map((p) => `<li>${p.fullName}</li>`).join('')}
-                      </ul>
-                  </div>
-                  
-                  <p><strong>What's Next?</strong></p>
-                  <ul>
-                      <li>You will receive team assignment and practice schedule information within the next week</li>
-                      <li>Look out for welcome materials from your coach</li>
-                      <li>Practice schedules will be shared via email and the team portal</li>
-                  </ul>
-                  
-                  <p>If you have any questions, please contact us at bothellselect@proton.me</p>
-                  
-                  <p>Welcome to the Bothell Select family! 🏀</p>
-              </div>
+              <p style="font-size: 14px; color: #555;">If you have any questions, please contact us at bothellselect@proton.me</p>
               
-              <div class="footer">
-                  <p>Bothell Select Basketball<br>
-                  bothellselect@proton.me</p>
-              </div>
+              <p style="font-size: 16px; font-weight: bold;">Good luck in the tournament! 🏀</p>
+            </div>
+            
+            <div style="background: #e5e7eb; padding: 15px; text-align: center; font-size: 14px; color: #555; border-radius: 0 0 5px 5px;">
+              <p style="margin: 0;">Bothell Select Basketball<br>
+              bothellselect@proton.me</p>
+            </div>
           </div>
-      </body>
-      </html>
-    `,
+        `,
       });
 
-      console.log('Payment confirmation email sent successfully:', {
-        parentId: parent._id,
-        playerCount,
-        totalAmount,
-        email: buyerEmailAddress,
-      });
+      console.log('Tournament confirmation email sent successfully');
     } catch (emailError) {
-      console.error('Failed to send email:', emailError);
+      console.error(
+        'Failed to send tournament confirmation email:',
+        emailError
+      );
       // Don't fail the payment if email fails
     }
 
@@ -287,31 +273,29 @@ router.post('/process', authenticate, async (req, res) => {
     res.json({
       success: true,
       paymentId: payment._id,
-      parentUpdated: true,
-      playersUpdated: updatedPlayers.length,
-      playerIds: updatedPlayers.map((p) => p._id.toString()),
-      players: updatedPlayers.map((p) => ({
-        _id: p._id,
-        fullName: p.fullName,
-        seasons: p.seasons.map((s) => ({
-          season: s.season,
-          year: s.year,
-          tryoutId: s.tryoutId,
-          paymentStatus: s.paymentStatus,
-          paymentComplete: s.paymentComplete,
-        })),
-      })),
-      status: 'processed',
-      receiptUrl: paymentResult.receiptUrl,
+      squarePaymentId: paymentResult.id,
+      team: {
+        _id: team._id,
+        name: team.name,
+        tournaments: team.tournaments,
+      },
+      payment: {
+        paymentId: paymentResult.id,
+        amountPaid: amount / 100,
+        receiptUrl: paymentResult.receiptUrl,
+        status: 'completed',
+      },
+      message: 'Tournament registration payment processed successfully',
     });
   } catch (error) {
     await session.abortTransaction();
-    console.error('Payment processing failed:', {
+    console.error('Tournament team payment error:', {
       message: error.message,
       stack: error.stack,
       requestBody: req.body,
-      user: req.user,
+      user: req.user?.id,
     });
+
     res.status(400).json({
       success: false,
       error: 'Payment processing failed',
@@ -323,7 +307,86 @@ router.post('/process', authenticate, async (req, res) => {
   }
 });
 
-// POST /api/payments/tryout
+// FIX MOCK PAYMENTS ENDPOINT
+router.post('/fix-mock-payments', authenticate, async (req, res) => {
+  try {
+    const { teamId, tournament, year } = req.body;
+
+    const team = await Team.findById(teamId);
+    if (!team) {
+      return res.status(404).json({
+        success: false,
+        message: 'Team not found',
+      });
+    }
+
+    // Find and remove mock payment entries
+    const tournamentRegistration = team.tournaments.find(
+      (t) => t.tournament === tournament && t.year === parseInt(year)
+    );
+
+    if (
+      tournamentRegistration &&
+      tournamentRegistration.paymentId?.startsWith('mock_')
+    ) {
+      // Reset payment status
+      tournamentRegistration.paymentComplete = false;
+      tournamentRegistration.paymentStatus = 'pending';
+      tournamentRegistration.paymentId = undefined;
+      tournamentRegistration.cardBrand = undefined;
+      tournamentRegistration.cardLast4 = undefined;
+      tournamentRegistration.amountPaid = undefined;
+
+      await team.save();
+
+      return res.json({
+        success: true,
+        message: 'Payment status reset - team can now complete payment',
+        team: team,
+      });
+    }
+
+    return res.json({
+      success: false,
+      message: 'No mock payment found to fix',
+    });
+  } catch (error) {
+    console.error('Error fixing mock payment:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error fixing payment',
+    });
+  }
+});
+
+// VERIFY PAYMENT STATUS
+router.get('/verify/:paymentId', authenticate, async (req, res) => {
+  try {
+    const { paymentId } = req.params;
+
+    const { paymentsApi } = client;
+    const response = await paymentsApi.getPayment(paymentId);
+
+    const payment = response.result.payment;
+
+    res.json({
+      paymentId: payment.id,
+      status: payment.status,
+      amount: payment.amountMoney?.amount,
+      currency: payment.amountMoney?.currency,
+      createdAt: payment.createdAt,
+      updatedAt: payment.updatedAt,
+    });
+  } catch (error) {
+    console.error('Error verifying payment:', error);
+    res.status(400).json({
+      success: false,
+      message: 'Failed to verify payment status',
+    });
+  }
+});
+
+// EXISTING TRYOUT PAYMENT ENDPOINT (keep as is)
 router.post(
   '/tryout',
   authenticate,
