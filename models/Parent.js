@@ -24,6 +24,19 @@ const parentSchema = new mongoose.Schema(
     },
     resetPasswordToken: { type: String },
     resetPasswordExpires: { type: Date },
+
+    emailVerified: {
+      type: Boolean,
+      default: false,
+    },
+    emailVerificationToken: {
+      type: String,
+      select: false,
+    },
+    emailVerificationExpires: {
+      type: Date,
+      select: false,
+    },
     fullName: {
       type: String,
       required: [true, 'Full name is required'],
@@ -163,7 +176,7 @@ const parentSchema = new mongoose.Schema(
     players: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Player' }],
     additionalGuardians: [
       {
-        _id: { type: mongoose.Schema.Types.ObjectId, auto: true }, // Add auto-generated IDs
+        _id: { type: mongoose.Schema.Types.ObjectId, auto: true },
         fullName: { type: String, required: true, trim: true },
         relationship: { type: String, required: true, trim: true },
         phone: {
@@ -303,6 +316,8 @@ const parentSchema = new mongoose.Schema(
     toJSON: {
       transform: function (doc, ret) {
         delete ret.password;
+        delete ret.emailVerificationToken;
+        delete ret.emailVerificationExpires;
         return ret;
       },
     },
@@ -311,6 +326,8 @@ const parentSchema = new mongoose.Schema(
 
 parentSchema.index({ notifications: 1 });
 parentSchema.index({ dismissedNotifications: 1 });
+parentSchema.index({ emailVerificationToken: 1 });
+parentSchema.index({ emailVerificationExpires: 1 });
 
 // Hash password before saving
 parentSchema.pre('save', async function (next) {
@@ -324,6 +341,14 @@ parentSchema.pre('save', async function (next) {
     if (this.isModified('password')) {
       const salt = await bcrypt.genSalt(12);
       this.password = await bcrypt.hash(this.password, salt);
+    }
+
+    // Generate email verification token for new users
+    if (this.isNew && this.registerMethod === 'self') {
+      const crypto = require('crypto');
+      this.emailVerificationToken = crypto.randomBytes(32).toString('hex');
+      this.emailVerificationExpires = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+      this.emailVerified = false;
     }
 
     next();
@@ -363,6 +388,30 @@ parentSchema.pre('save', async function (next) {
 // Compare password method
 parentSchema.methods.comparePassword = async function (candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
+};
+
+// Method to generate new verification token
+parentSchema.methods.generateVerificationToken = function () {
+  const crypto = require('crypto');
+  this.emailVerificationToken = crypto.randomBytes(32).toString('hex');
+  this.emailVerificationExpires = Date.now() + 24 * 60 * 60 * 1000; // 24 hours
+  return this.emailVerificationToken;
+};
+
+// Method to verify email
+parentSchema.methods.verifyEmail = function () {
+  this.emailVerified = true;
+  this.emailVerificationToken = undefined;
+  this.emailVerificationExpires = undefined;
+  return this.save();
+};
+
+// Static method to find by verification token
+parentSchema.statics.findByVerificationToken = function (token) {
+  return this.findOne({
+    emailVerificationToken: token,
+    emailVerificationExpires: { $gt: Date.now() },
+  }).select('+emailVerificationToken +emailVerificationExpires');
 };
 
 // Update seasons/years for all parents

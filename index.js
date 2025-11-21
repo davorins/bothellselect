@@ -27,6 +27,7 @@ const faqRoutes = require('./routes/faqRoutes');
 const teamRoutes = require('./routes/teamRoutes');
 const adminDashboardRoutes = require('./routes/adminDashboard');
 const spotlightRoutes = require('./routes/spotlightRoutes');
+const schoolRoutes = require('./routes/schoolRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -85,6 +86,7 @@ app.use('/api/faqs', faqRoutes);
 app.use('/api', teamRoutes);
 app.use('/api/admin', adminDashboardRoutes);
 app.use('/api/spotlight', spotlightRoutes);
+app.use('/api/schools', schoolRoutes);
 
 // Connect to MongoDB
 mongoose

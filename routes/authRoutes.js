@@ -26,6 +26,29 @@ const { calculateGradeFromDOB } = require('../utils/gradeUtils');
 
 const router = express.Router();
 
+// Temporary token storage (in-memory)
+const tempTokenStorage = new Map();
+
+// Clean up expired tokens every hour
+setInterval(
+  () => {
+    const now = Date.now();
+    let cleanedCount = 0;
+
+    for (const [email, data] of tempTokenStorage.entries()) {
+      if (data.expires < now) {
+        tempTokenStorage.delete(email);
+        cleanedCount++;
+      }
+    }
+
+    if (cleanedCount > 0) {
+      console.log(`🧹 Cleaned up ${cleanedCount} expired tokens`);
+    }
+  },
+  60 * 60 * 1000
+); // Every hour
+
 // Optional authentication middleware: Parses JWT if present, allows unauthenticated requests
 const optionalAuth = (req, res, next) => {
   const authHeader = req.headers.authorization;
@@ -1454,33 +1477,56 @@ router.get('/player/:playerId/guardians', authenticate, async (req, res) => {
 });
 
 // Get players by parent ID
-router.get(
-  ['/parent/:parentId/players', '/players/by-parent/:parentId'],
-  authenticate,
-  async (req, res) => {
-    try {
-      const { parentId } = req.params;
+router.get(['/parent/:parentId/players'], authenticate, async (req, res) => {
+  try {
+    const { parentId } = req.params;
 
-      const players = await Player.find({ parentId })
-        .populate('seasons')
-        .lean();
+    const players = await Player.find({ parentId }).populate('seasons').lean();
 
-      if (!players || players.length === 0) {
-        return res
-          .status(404)
-          .json({ error: 'No players found for this parent' });
-      }
-
-      res.json(players);
-    } catch (error) {
-      console.error('Error fetching parent players:', error);
-      res.status(500).json({
-        error: 'Failed to fetch parent players',
-        details: error.message,
-      });
+    if (!players || players.length === 0) {
+      return res
+        .status(404)
+        .json({ error: 'No players found for this parent' });
     }
+
+    res.json(players);
+  } catch (error) {
+    console.error('Error fetching parent players:', error);
+    res.status(500).json({
+      error: 'Failed to fetch parent players',
+      details: error.message,
+    });
   }
-);
+});
+
+router.get('/players/by-parent/:parentId', authenticate, async (req, res) => {
+  try {
+    const { parentId } = req.params;
+
+    // Validate parentId
+    if (!mongoose.Types.ObjectId.isValid(parentId)) {
+      return res.status(400).json({ error: 'Invalid parent ID format' });
+    }
+
+    // Find players by parentId
+    const players = await Player.find({ parentId })
+      .populate('parentId', 'fullName email')
+      .lean();
+
+    // Return empty array instead of 404 for no players found
+    if (!players || players.length === 0) {
+      return res.json([]); // Return empty array instead of error
+    }
+
+    res.json(players);
+  } catch (error) {
+    console.error('Error fetching players by parent:', error);
+    res.status(500).json({
+      error: 'Failed to fetch players',
+      details: error.message,
+    });
+  }
+});
 
 // Get parents with optional query parameters
 router.get('/parents', authenticate, async (req, res) => {
@@ -3632,6 +3678,505 @@ router.get(
         error: 'Failed to fetch registrations',
         details:
           process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    }
+  }
+);
+
+// Send verification email
+router.post(
+  '/auth/send-verification-email',
+  authenticate,
+  [body('email').isEmail().withMessage('Valid email is required')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    try {
+      const { email } = req.body;
+      const parentId = req.user.id;
+
+      // Verify the email belongs to the authenticated user
+      const parent = await Parent.findById(parentId);
+      if (!parent) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      if (parent.email !== email.toLowerCase().trim()) {
+        return res
+          .status(403)
+          .json({ error: 'Email does not match your account' });
+      }
+
+      if (parent.emailVerified) {
+        return res.status(400).json({ error: 'Email is already verified' });
+      }
+
+      // Check if we sent a verification email recently (within 2 minutes)
+      const recentVerification =
+        parent.emailVerificationExpires &&
+        Date.now() < parent.emailVerificationExpires &&
+        parent.emailVerificationExpires - Date.now() >
+          24 * 60 * 60 * 1000 - 2 * 60 * 1000;
+
+      if (recentVerification) {
+        const timeLeft = Math.ceil(
+          (parent.emailVerificationExpires -
+            (24 * 60 * 60 * 1000 - 2 * 60 * 1000) -
+            Date.now()) /
+            1000 /
+            60
+        );
+        return res.status(429).json({
+          error: `Verification email was recently sent. Please check your email or wait ${timeLeft} minute(s) before requesting another.`,
+        });
+      }
+
+      // Generate new verification token using the instance method
+      const verificationToken = parent.generateVerificationToken();
+      await parent.save();
+
+      // Send verification email
+      const verificationLink = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/verify-email?token=${verificationToken}`;
+
+      const emailHtml = `
+  <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #f9f9f9; padding: 20px;">
+    <div style="background: white; border-radius: 8px; padding: 30px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+      <div style="text-align: center; margin-bottom: 20px;">
+        <h2 style="color: #333; margin: 0;">Verify Your Email Address</h2>
+      </div>
+      
+      <p>Hello <strong>${parent.fullName}</strong>,</p>
+      
+      <p>Thank you for starting your registration with Bothell Select Basketball. Please verify your email address to complete your account setup.</p>
+      
+      <!-- Primary Verification Button -->
+      <div style="text-align: center; margin: 30px 0;">
+        <a href="${verificationLink}" 
+           style="background-color: #007bff; color: white; padding: 14px 32px; text-decoration: none; border-radius: 6px; display: inline-block; font-size: 16px; font-weight: bold;">
+          Verify Email Address
+        </a>
+      </div>
+      
+      <!-- Manual Verification Section -->
+      <div style="background: #f8f9fa; border: 1px solid #e9ecef; border-radius: 6px; padding: 20px; margin: 25px 0;">
+        <h3 style="color: #495057; margin-top: 0; font-size: 16px;">📋 Manual Verification</h3>
+        <p style="margin-bottom: 12px; color: #6c757d; font-size: 14px;">
+          If the button above doesn't work, you can manually verify using this token:
+        </p>
+        
+        <!-- Token Display Box -->
+        <div style="background: white; border: 2px dashed #dee2e6; border-radius: 4px; padding: 15px; margin: 15px 0;">
+  <div style="display: flex; justify-content: space-between; align-items: center; gap: 10px;">
+    <code style="flex: 1; background: none; border: none; padding: 0; font-family: 'Courier New', monospace; font-size: 14px; color: #212529; word-break: break-all;">
+      ${verificationToken}
+    </code>
+    <div style="background: #6c757d; color: white; padding: 8px 12px; border-radius: 4px; font-size: 12px; white-space: nowrap;">
+      Copy Token
+    </div>
+  </div>
+  <p style="margin: 8px 0 0 0; color: #6c757d; font-size: 12px;">
+    <em>Select and copy the token above, then paste it on the verification page</em>
+  </p>
+</div>
+        
+        <p style="margin: 12px 0 0 0; color: #6c757d; font-size: 13px;">
+          Go to: <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/verify-email" style="color: #007bff;">${process.env.FRONTEND_URL || 'http://localhost:3000'}/verify-email</a> and paste this token.
+        </p>
+      </div>
+      
+      <!-- Alternative Link -->
+      <div style="margin: 20px 0;">
+        <p style="margin-bottom: 8px; color: #6c757d; font-size: 14px;">
+          Or copy and paste this full verification link in your browser:
+        </p>
+        <div style="background: #f8f9fa; padding: 12px; border-radius: 4px; border-left: 4px solid #007bff;">
+          <a href="${verificationLink}" 
+             style="color: #007bff; text-decoration: none; word-break: break-all; font-size: 13px;">
+            ${verificationLink}
+          </a>
+        </div>
+      </div>
+      
+      <!-- Important Notes -->
+      <div style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 4px; padding: 15px; margin: 20px 0;">
+        <p style="margin: 0; color: #856404; font-size: 14px;">
+          <strong>Important:</strong> This verification link and token will expire in 24 hours.
+        </p>
+      </div>
+      
+      <!-- Security Notice -->
+      <div style="border-top: 1px solid #eee; padding-top: 20px; margin-top: 25px;">
+        <p style="color: #6c757d; font-size: 12px; margin: 0;">
+          If you didn't start a registration with Bothell Select Basketball, please ignore this email.
+        </p>
+      </div>
+    </div>
+    
+    <!-- Footer -->
+    <div style="text-align: center; margin-top: 20px;">
+      <p style="color: #6c757d; font-size: 12px; margin: 0;">
+        Bothell Select Basketball<br>
+        © ${new Date().getFullYear()} All rights reserved
+      </p>
+    </div>
+  </div>
+`;
+
+      await sendEmail({
+        to: parent.email,
+        subject: 'Verify Your Email - Bothell Select Basketball',
+        html: emailHtml,
+      });
+
+      res.json({
+        success: true,
+        message: 'Verification email sent successfully',
+      });
+    } catch (error) {
+      console.error('Error sending verification email:', error);
+      res.status(500).json({
+        error: 'Failed to send verification email',
+        details:
+          process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    }
+  }
+);
+
+// Verify email with token
+router.post(
+  '/auth/verify-email',
+  [body('token').notEmpty().withMessage('Verification token is required')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    try {
+      const { token } = req.body;
+
+      console.log('🔐 Email verification attempt:', {
+        token: token,
+        tokenLength: token.length,
+        timestamp: new Date().toISOString(),
+        tempStorageSize: tempTokenStorage.size,
+      });
+
+      // ✅ SIMPLE TOKEN VERIFICATION ONLY
+      let foundEmail = null;
+      let tempData = null;
+
+      // Check all entries in temp storage
+      for (const [email, data] of tempTokenStorage.entries()) {
+        console.log('Checking email:', email, {
+          storedToken: data.token,
+          storedTokenLength: data.token?.length,
+          expires: new Date(data.expires),
+          isExpired: data.expires < Date.now(),
+        });
+
+        if (data.token === token) {
+          if (data.expires > Date.now()) {
+            foundEmail = email;
+            tempData = data;
+            console.log('✅ Token MATCH found for email:', email);
+            break;
+          } else {
+            console.log('❌ Token EXPIRED for email:', email);
+            // Remove expired token
+            tempTokenStorage.delete(email);
+          }
+        }
+      }
+
+      if (!foundEmail || !tempData) {
+        console.log('❌ Token verification FAILED - no valid token found');
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid or expired verification token',
+        });
+      }
+
+      console.log('✅ Token verified successfully for:', foundEmail);
+
+      res.json({
+        success: true,
+        message: 'Email verified successfully',
+        email: foundEmail,
+      });
+    } catch (error) {
+      console.error('❌ Error verifying email token:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to verify email token',
+        details:
+          process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    }
+  }
+);
+
+// Check verification status
+router.get('/auth/verification-status', authenticate, async (req, res) => {
+  try {
+    const parent = await Parent.findById(req.user.id);
+
+    if (!parent) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({
+      verified: parent.emailVerified || false,
+      email: parent.email,
+      verifiedAt: parent.emailVerified ? parent.updatedAt : null,
+      hasPendingVerification:
+        !parent.emailVerified &&
+        parent.emailVerificationToken &&
+        parent.emailVerificationExpires > Date.now(),
+    });
+  } catch (error) {
+    console.error('Error checking verification status:', error);
+    res.status(500).json({
+      error: 'Failed to check verification status',
+      details:
+        process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  }
+});
+
+// Resend verification email
+router.post(
+  '/auth/resend-verification-email',
+  [body('email').isEmail().withMessage('Valid email is required')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    try {
+      const { email } = req.body;
+      const normalizedEmail = email.toLowerCase().trim();
+
+      console.log('Resend verification request for:', normalizedEmail);
+
+      // ✅ Check temporary storage
+      const tempData = tempTokenStorage.get(normalizedEmail);
+
+      if (!tempData) {
+        return res.status(404).json({
+          success: false,
+          error:
+            'No pending registration found. Please start the registration process again.',
+        });
+      }
+
+      // Check rate limiting
+      if (Date.now() - tempData.createdAt < 2 * 60 * 1000) {
+        // 2 minutes
+        return res.status(429).json({
+          success: false,
+          error:
+            'Verification email was recently sent. Please check your email and wait 2 minutes before requesting another.',
+        });
+      }
+
+      // Generate new token
+      const newToken = crypto.randomBytes(32).toString('hex');
+
+      // Update temporary storage
+      tempTokenStorage.set(normalizedEmail, {
+        ...tempData,
+        token: newToken,
+        createdAt: Date.now(),
+      });
+
+      // Send new verification email (same template)
+      const emailHtml = `
+<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#f9f9f9;padding:20px">
+  <div style="background:white;border-radius:8px;padding:30px">
+    <div style="text-align:center;margin-bottom:20px">
+      <h2 style="color:#333;margin:0">Complete Your Registration</h2>
+    </div>
+    
+    <p>Hello,</p>
+    
+    <p>You requested a new verification email. Please verify your email address to continue with your registration.</p>
+    
+    <div style="background:#f8f9fa;border:1px solid #e9ecef;border-radius:6px;padding:20px;margin:25px 0">
+      <h3 style="color:#495057;margin-top:0;font-size:16px">📋 Verification Token</h3>
+      <p style="margin-bottom:12px;color:#6c757d;font-size:14px">
+        Select and copy the token below:
+      </p>
+      
+      <div style="background:white;border:2px dashed #dee2e6;border-radius:4px;padding:15px;margin:15px 0; cursor: text;">
+        <div style="display:flex; justify-content: space-between; align-items: center; gap: 10px;">
+          <code style="flex: 1; background:none;border:none;padding:0;font-family:'Courier New',monospace;font-size:14px;color:#212529;word-break:break-all; user-select: all; -webkit-user-select: all; cursor: text;"
+                onclick="this.select(); document.execCommand('copy');">
+            ${newToken}
+          </code>
+        </div>
+        <p style="margin:8px 0 0 0;color:#6c757d;font-size:12px;font-style:italic;">
+          Click on the token to select it, then use Ctrl+C (Cmd+C on Mac) to copy
+        </p>
+      </div>
+    </div>
+  </div>
+</div>`;
+
+      await sendEmail({
+        to: normalizedEmail,
+        subject: 'Verify Your Email - Bothell Select Basketball',
+        html: emailHtml,
+      });
+
+      res.json({
+        success: true,
+        message: 'Verification email sent successfully',
+      });
+    } catch (error) {
+      console.error('Error resending verification email:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to resend verification email',
+      });
+    }
+  }
+);
+
+// Create temporary account (for registration flow)
+router.post(
+  '/auth/create-temp-account',
+  [
+    body('email').isEmail().withMessage('Valid email is required'),
+    body('password')
+      .isLength({ min: 6 })
+      .withMessage('Password must be at least 6 characters'),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    try {
+      const { email, password } = req.body;
+      const normalizedEmail = email.toLowerCase().trim();
+
+      console.log('🔐 Creating temp account for:', normalizedEmail);
+
+      // Check if email already exists in Parent collection
+      const existingParent = await Parent.findOne({ email: normalizedEmail });
+      if (existingParent) {
+        return res.status(400).json({
+          error: 'Email already registered',
+          message:
+            'This email is already associated with an account. Please login instead.',
+        });
+      }
+
+      // Generate temp token
+      const tempToken = crypto.randomBytes(32).toString('hex');
+      const tokenExpires = Date.now() + 30 * 60 * 1000; // 30 minutes
+
+      // ✅ Store ONLY in temporary storage (NO database record)
+      tempTokenStorage.set(normalizedEmail, {
+        token: tempToken,
+        expires: tokenExpires,
+        password: password.trim(),
+        createdAt: Date.now(),
+      });
+
+      console.log('✅ Token stored in temporary storage:', {
+        email: normalizedEmail,
+        token: tempToken,
+        expires: new Date(tokenExpires),
+        tempStorageSize: tempTokenStorage.size,
+      });
+
+      // Send verification email
+      const emailHtml = `
+<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#f9f9f9;padding:20px">
+  <div style="background:white;border-radius:8px;padding:30px">
+    <div style="text-align:center;margin-bottom:20px">
+      <h2 style="color:#333;margin:0">Complete Your Registration</h2>
+    </div>
+    
+    <p>Hello,</p>
+    
+    <p>Thank you for starting your registration with Bothell Select Basketball. Please verify your email address to continue with your registration.</p>
+    
+    <div style="background:#f8f9fa;border:1px solid #e9ecef;border-radius:6px;padding:20px;margin:25px 0">
+      <h3 style="color:#495057;margin-top:0;font-size:16px">📋 Verification Token</h3>
+      <p style="margin-bottom:12px;color:#6c757d;font-size:14px">
+        Select and copy the token below:
+      </p>
+      
+      <div style="background:white;border:2px dashed #dee2e6;border-radius:4px;padding:15px;margin:15px 0; cursor: text;">
+        <div style="display:flex; justify-content: space-between; align-items: center; gap: 10px;">
+          <code style="flex: 1; background:none;border:none;padding:0;font-family:'Courier New',monospace;font-size:14px;color:#212529;word-break:break-all; user-select: all; -webkit-user-select: all; cursor: text;"
+                onclick="this.select(); document.execCommand('copy');">
+            ${tempToken}
+          </code>
+        </div>
+        <p style="margin:8px 0 0 0;color:#6c757d;font-size:12px;font-style:italic;">
+          Click on the token to select it, then use Ctrl+C (Cmd+C on Mac) to copy
+        </p>
+      </div>
+      
+      <div style="background:#e7f3ff;border:1px solid #b3d9ff;border-radius:4px;padding:12px;margin:10px 0;">
+        <p style="margin:0;color:#0066cc;font-size:13px;">
+          <strong>💡 Quick Tip:</strong> Double-click the token to select it, then press Ctrl+C to copy
+        </p>
+      </div>
+      
+      <p style="margin:12px 0 0 0;color:#6c757d;font-size:13px">
+        Return to your registration page and paste this token in the verification field.
+      </p>
+    </div>
+    
+    <div style="background:#fff3cd;border:1px solid #ffeaa7;border-radius:4px;padding:15px;margin:20px 0">
+      <p style="margin:0;color:#856404;font-size:14px">
+        <strong>Important:</strong> This registration token will expire in 30 minutes.
+      </p>
+    </div>
+    
+    <div style="border-top:1px solid #eee;padding-top:20px;margin-top:25px">
+      <p style="color:#6c757d;font-size:12px;margin:0">
+        If you didn't start a registration with Bothell Select Basketball, please ignore this email.
+      </p>
+    </div>
+  </div>
+  
+  <div style="text-align:center;margin-top:20px">
+    <p style="color:#6c757d;font-size:12px;margin:0">
+      Bothell Select Basketball<br>
+      © ${new Date().getFullYear()} All rights reserved
+    </p>
+  </div>
+</div>`;
+
+      await sendEmail({
+        to: normalizedEmail,
+        subject: 'Verify Your Email - Bothell Select Basketball',
+        html: emailHtml,
+      });
+
+      res.json({
+        success: true,
+        message: 'Temporary account created and verification email sent',
+        tempToken: tempToken,
+        email: normalizedEmail,
+      });
+    } catch (error) {
+      console.error('Error creating temporary account:', error);
+      res.status(500).json({
+        error: 'Failed to create temporary account',
+        details: error.message,
       });
     }
   }
