@@ -324,15 +324,16 @@ router.post(
     body('aauNumber').optional(),
     body('registrationYear')
       .isNumeric()
-      .withMessage('Registration year must be a number'),
-    body('season').notEmpty().withMessage('Season is required'),
+      .withMessage('Registration year must be number'),
+    body('season').optional().isString(), // Keep optional
     body('parentId').notEmpty().withMessage('Parent ID is required'),
     body('grade').optional().isString(),
     body('isGradeOverridden').optional().isBoolean(),
-    body('tryoutId')
+    body('tryoutId').optional().isString(),
+    body('skipSeasonRegistration') // New flag for basic registration
       .optional()
-      .isString()
-      .withMessage('Tryout ID must be a string'),
+      .isBoolean()
+      .withMessage('skipSeasonRegistration must be boolean'),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -354,6 +355,7 @@ router.post(
       grade,
       isGradeOverridden = false,
       tryoutId,
+      skipSeasonRegistration = false, // Default to false for backward compatibility
     } = req.body;
 
     // Calculate grade if not overridden
@@ -365,36 +367,40 @@ router.post(
     session.startTransaction();
 
     try {
-      // Generate tryoutId if not provided
+      // Generate tryoutId only if season is provided AND not skipping season registration
       const finalTryoutId =
-        tryoutId || generateTryoutId(season, registrationYear);
+        season && !skipSeasonRegistration
+          ? tryoutId || generateTryoutId(season, registrationYear)
+          : null;
 
       // Normalize inputs for consistency
-      const normalizedSeason = season.trim();
-      const normalizedTryoutId = finalTryoutId.trim();
+      const normalizedSeason = season ? season.trim() : null;
+      const normalizedTryoutId = finalTryoutId ? finalTryoutId.trim() : null;
 
-      // Check if a player with the same fullName and dob is already registered for this tryout
-      const existingPlayer = await Player.findOne({
-        parentId,
-        fullName,
-        dob: new Date(dob),
-        'seasons.season': normalizedSeason,
-        'seasons.year': registrationYear,
-        'seasons.tryoutId': normalizedTryoutId,
-      }).session(session);
-
-      if (existingPlayer) {
-        await session.abortTransaction();
-        console.log('Duplicate player registration attempt:', {
-          fullName,
+      // Check for duplicate registration ONLY if season is provided
+      if (normalizedSeason && !skipSeasonRegistration) {
+        const existingPlayer = await Player.findOne({
           parentId,
-          season: normalizedSeason,
-          year: registrationYear,
-          tryoutId: normalizedTryoutId,
-        });
-        return res.status(400).json({
-          error: `Player ${fullName} is already registered for this tryout`,
-        });
+          fullName,
+          dob: new Date(dob),
+          'seasons.season': normalizedSeason,
+          'seasons.year': registrationYear,
+          'seasons.tryoutId': normalizedTryoutId,
+        }).session(session);
+
+        if (existingPlayer) {
+          await session.abortTransaction();
+          console.log('Duplicate player registration attempt:', {
+            fullName,
+            parentId,
+            season: normalizedSeason,
+            year: registrationYear,
+            tryoutId: normalizedTryoutId,
+          });
+          return res.status(400).json({
+            error: `Player ${fullName} is already registered for this tryout`,
+          });
+        }
       }
 
       // Verify parent exists
@@ -405,8 +411,8 @@ router.post(
         return res.status(400).json({ error: 'Parent not found' });
       }
 
-      // Create new player
-      const player = new Player({
+      // Create player - conditionally add seasons array
+      const playerData = {
         fullName,
         gender,
         dob: new Date(dob),
@@ -414,14 +420,20 @@ router.post(
         healthConcerns: healthConcerns || '',
         aauNumber: aauNumber || '',
         registrationYear,
-        season: normalizedSeason,
         parentId,
         grade: calculatedGrade,
         isGradeOverridden,
         paymentStatus: 'pending',
         paymentComplete: false,
         registrationComplete: true,
-        seasons: [
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      // Only add season and seasons array if not skipping season registration
+      if (normalizedSeason && !skipSeasonRegistration) {
+        playerData.season = normalizedSeason;
+        playerData.seasons = [
           {
             season: normalizedSeason,
             year: registrationYear,
@@ -430,11 +442,10 @@ router.post(
             paymentStatus: 'pending',
             paymentComplete: false,
           },
-        ],
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
+        ];
+      }
 
+      const player = new Player(playerData);
       await player.save({ session });
 
       // Update parent's players array
@@ -444,21 +455,23 @@ router.post(
         { new: true, session }
       );
 
-      // Create registration document
-      const registration = new Registration({
-        player: player._id,
-        parent: parentId,
-        season: normalizedSeason,
-        year: registrationYear,
-        tryoutId: normalizedTryoutId,
-        paymentStatus: 'pending',
-        paymentComplete: false,
-        registrationComplete: true,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
+      // Create registration document ONLY if season is provided
+      if (normalizedSeason && !skipSeasonRegistration) {
+        const registration = new Registration({
+          player: player._id,
+          parent: parentId,
+          season: normalizedSeason,
+          year: registrationYear,
+          tryoutId: normalizedTryoutId,
+          paymentStatus: 'pending',
+          paymentComplete: false,
+          registrationComplete: true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
 
-      await registration.save({ session });
+        await registration.save({ session });
+      }
 
       await session.commitTransaction();
 
@@ -466,35 +479,61 @@ router.post(
         playerId: player._id,
         fullName,
         parentId,
-        season: normalizedSeason,
+        season: normalizedSeason || 'No season (basic registration)',
         year: registrationYear,
         tryoutId: normalizedTryoutId,
         paymentStatus: player.paymentStatus,
         paymentComplete: player.paymentComplete,
         registrationComplete: player.registrationComplete,
-        seasons: player.seasons,
+        seasons: player.seasons || 'No seasons array',
       });
-      console.log('Created registration:', {
-        registrationId: registration._id,
+
+      // Send tryout confirmation email ONLY if season is provided
+      let registration = null;
+      if (normalizedSeason && !skipSeasonRegistration) {
+        registration = new Registration({
+          player: player._id,
+          parent: parentId,
+          season: normalizedSeason,
+          year: registrationYear,
+          tryoutId: normalizedTryoutId,
+          paymentStatus: 'pending',
+          paymentComplete: false,
+          registrationComplete: true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+
+        await registration.save({ session });
+      }
+
+      await session.commitTransaction();
+
+      console.log('Registered player:', {
         playerId: player._id,
+        fullName,
         parentId,
-        season: normalizedSeason,
+        season: normalizedSeason || 'No season (basic registration)',
         year: registrationYear,
         tryoutId: normalizedTryoutId,
-        paymentStatus: registration.paymentStatus,
-        paymentComplete: registration.paymentComplete,
-        registrationComplete: registration.registrationComplete,
+        paymentStatus: player.paymentStatus,
+        paymentComplete: player.paymentComplete,
+        registrationComplete: player.registrationComplete,
+        seasons: player.seasons || 'No seasons array',
       });
 
-      // Send tryout confirmation email (async)
-      sendTryoutEmail(
-        parent.email,
-        player.fullName,
-        normalizedSeason,
-        registrationYear
-      ).catch((err) => console.error('Tryout email failed:', err));
+      // Send tryout confirmation email ONLY if season is provided
+      if (normalizedSeason && !skipSeasonRegistration) {
+        sendTryoutEmail(
+          parent.email,
+          player.fullName,
+          normalizedSeason,
+          registrationYear
+        ).catch((err) => console.error('Tryout email failed:', err));
+      }
 
-      res.status(201).json({
+      // Build response object
+      const responseData = {
         message: 'Player registered successfully',
         player: {
           ...player.toObject(),
@@ -505,7 +544,11 @@ router.post(
           paymentComplete: player.paymentComplete,
           registrationComplete: player.registrationComplete,
         },
-        registration: {
+      };
+
+      // Add registration data ONLY if it exists
+      if (registration) {
+        responseData.registration = {
           id: registration._id,
           playerId: player._id,
           parentId,
@@ -515,8 +558,10 @@ router.post(
           paymentStatus: registration.paymentStatus,
           paymentComplete: registration.paymentComplete,
           registrationComplete: registration.registrationComplete,
-        },
-      });
+        };
+      }
+
+      res.status(201).json(responseData);
     } catch (error) {
       await session.abortTransaction();
       console.error('Error registering player:', error.message, error.stack);
