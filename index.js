@@ -28,6 +28,7 @@ const teamRoutes = require('./routes/teamRoutes');
 const adminDashboardRoutes = require('./routes/adminDashboard');
 const spotlightRoutes = require('./routes/spotlightRoutes');
 const schoolRoutes = require('./routes/schoolRoutes');
+const registrationRoutes = require('./routes/registrationRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -87,6 +88,7 @@ app.use('/api', teamRoutes);
 app.use('/api/admin', adminDashboardRoutes);
 app.use('/api/spotlight', spotlightRoutes);
 app.use('/api/schools', schoolRoutes);
+app.use('/api/admin', registrationRoutes);
 
 // Connect to MongoDB
 mongoose
@@ -96,35 +98,6 @@ mongoose
     console.error('Failed to connect to MongoDB:', err.message);
     process.exit(1);
   });
-
-// Player Registration Routes
-
-// Check if a player is already registered for a season and year
-app.get(
-  '/api/players/:playerId/registrations',
-  authenticate,
-  async (req, res) => {
-    const { playerId } = req.params;
-    const { season, year } = req.query;
-
-    try {
-      const registration = await PlayerRegistration.findOne({
-        playerId,
-        season,
-        year,
-      });
-
-      if (registration) {
-        return res.status(200).json({ isRegistered: true });
-      } else {
-        return res.status(200).json({ isRegistered: false });
-      }
-    } catch (error) {
-      console.error('Error checking player registration:', error);
-      return res.status(500).json({ error: 'Internal server error' });
-    }
-  }
-);
 
 // Backend route for fetching player data
 app.get('/api/player/:playerId', async (req, res) => {
@@ -138,43 +111,6 @@ app.get('/api/player/:playerId', async (req, res) => {
   } catch (error) {
     console.error('Error fetching player:', error);
     res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Register a player for a season and year
-app.post('/api/players/register', authenticate, async (req, res) => {
-  const { playerId, season, year, grade, schoolName, gender } = req.body;
-
-  try {
-    // Check if the player is already registered for the season and year
-    const existingRegistration = await PlayerRegistration.findOne({
-      playerId,
-      season,
-      year,
-    });
-
-    if (existingRegistration) {
-      return res
-        .status(400)
-        .json({ error: 'Player already registered for this season' });
-    }
-
-    // Create a new registration record
-    const newRegistration = new PlayerRegistration({
-      playerId,
-      season,
-      year,
-      grade,
-      schoolName,
-      gender,
-    });
-
-    await newRegistration.save();
-
-    return res.status(201).json({ message: 'Player registered successfully' });
-  } catch (error) {
-    console.error('Error registering player:', error);
-    return res.status(500).json({ error: 'Internal server error' });
   }
 });
 

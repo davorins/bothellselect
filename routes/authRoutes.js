@@ -25,6 +25,7 @@ const {
 const { calculateGradeFromDOB } = require('../utils/gradeUtils');
 
 const router = express.Router();
+const emailRateLimit = new Map();
 
 // Temporary token storage (in-memory)
 const tempTokenStorage = new Map();
@@ -325,12 +326,12 @@ router.post(
     body('registrationYear')
       .isNumeric()
       .withMessage('Registration year must be number'),
-    body('season').optional().isString(), // Keep optional
+    body('season').optional().isString(),
     body('parentId').notEmpty().withMessage('Parent ID is required'),
     body('grade').optional().isString(),
     body('isGradeOverridden').optional().isBoolean(),
     body('tryoutId').optional().isString(),
-    body('skipSeasonRegistration') // New flag for basic registration
+    body('skipSeasonRegistration')
       .optional()
       .isBoolean()
       .withMessage('skipSeasonRegistration must be boolean'),
@@ -355,7 +356,7 @@ router.post(
       grade,
       isGradeOverridden = false,
       tryoutId,
-      skipSeasonRegistration = false, // Default to false for backward compatibility
+      skipSeasonRegistration = false,
     } = req.body;
 
     // Calculate grade if not overridden
@@ -364,33 +365,67 @@ router.post(
       : calculateGradeFromDOB(dob, registrationYear);
 
     const session = await mongoose.startSession();
-    session.startTransaction();
 
     try {
+      await session.startTransaction();
+
+      // 🛡️ DUPLICATE CHECK
+      const existingPlayer = await Player.findOne({
+        parentId,
+        fullName: { $regex: new RegExp(`^${fullName.trim()}$`, 'i') },
+        dob: new Date(dob),
+        gender: gender,
+      }).session(session);
+
+      if (existingPlayer) {
+        await session.abortTransaction();
+        console.log('❌ Duplicate player detected:', {
+          fullName,
+          parentId,
+          dob,
+          gender,
+          existingPlayerId: existingPlayer._id,
+        });
+        return res.status(400).json({
+          error: `Player "${fullName}" already exists in your account.`,
+          duplicatePlayerId: existingPlayer._id,
+          existingPlayer: {
+            id: existingPlayer._id,
+            fullName: existingPlayer.fullName,
+            seasons: existingPlayer.seasons,
+          },
+        });
+      }
+
       // Generate tryoutId only if season is provided AND not skipping season registration
-      const finalTryoutId =
-        season && !skipSeasonRegistration
-          ? tryoutId || generateTryoutId(season, registrationYear)
-          : null;
+      const shouldCreateSeasonRegistration = season && !skipSeasonRegistration;
+      const finalTryoutId = shouldCreateSeasonRegistration
+        ? tryoutId || generateTryoutId(season, registrationYear)
+        : null;
 
       // Normalize inputs for consistency
       const normalizedSeason = season ? season.trim() : null;
       const normalizedTryoutId = finalTryoutId ? finalTryoutId.trim() : null;
 
-      // Check for duplicate registration ONLY if season is provided
-      if (normalizedSeason && !skipSeasonRegistration) {
+      // Check for duplicate registration ONLY if creating season registration
+      if (shouldCreateSeasonRegistration) {
         const existingPlayer = await Player.findOne({
           parentId,
-          fullName,
+          fullName: { $regex: new RegExp(`^${fullName.trim()}$`, 'i') },
           dob: new Date(dob),
-          'seasons.season': normalizedSeason,
-          'seasons.year': registrationYear,
-          'seasons.tryoutId': normalizedTryoutId,
+          seasons: {
+            $elemMatch: {
+              season: normalizedSeason,
+              year: registrationYear,
+              // Only check tryoutId if it's provided
+              ...(normalizedTryoutId && { tryoutId: normalizedTryoutId }),
+            },
+          },
         }).session(session);
 
         if (existingPlayer) {
           await session.abortTransaction();
-          console.log('Duplicate player registration attempt:', {
+          console.log('❌ Duplicate player registration attempt:', {
             fullName,
             parentId,
             season: normalizedSeason,
@@ -398,7 +433,7 @@ router.post(
             tryoutId: normalizedTryoutId,
           });
           return res.status(400).json({
-            error: `Player ${fullName} is already registered for this tryout`,
+            error: `Player ${fullName} is already registered for ${normalizedSeason} ${registrationYear}`,
           });
         }
       }
@@ -411,12 +446,12 @@ router.post(
         return res.status(400).json({ error: 'Parent not found' });
       }
 
-      // Create player - conditionally add seasons array
+      // Create player data
       const playerData = {
-        fullName,
+        fullName: fullName.trim(),
         gender,
         dob: new Date(dob),
-        schoolName,
+        schoolName: schoolName.trim(),
         healthConcerns: healthConcerns || '',
         aauNumber: aauNumber || '',
         registrationYear,
@@ -430,8 +465,8 @@ router.post(
         updatedAt: new Date(),
       };
 
-      // Only add season and seasons array if not skipping season registration
-      if (normalizedSeason && !skipSeasonRegistration) {
+      // Only add season data if creating season registration
+      if (shouldCreateSeasonRegistration) {
         playerData.season = normalizedSeason;
         playerData.seasons = [
           {
@@ -452,45 +487,13 @@ router.post(
       await Parent.findByIdAndUpdate(
         parentId,
         { $push: { players: player._id } },
-        { new: true, session }
+        { session }
       );
 
-      // Create registration document ONLY if season is provided
-      if (normalizedSeason && !skipSeasonRegistration) {
-        const registration = new Registration({
-          player: player._id,
-          parent: parentId,
-          season: normalizedSeason,
-          year: registrationYear,
-          tryoutId: normalizedTryoutId,
-          paymentStatus: 'pending',
-          paymentComplete: false,
-          registrationComplete: true,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        });
-
-        await registration.save({ session });
-      }
-
-      await session.commitTransaction();
-
-      console.log('Registered player:', {
-        playerId: player._id,
-        fullName,
-        parentId,
-        season: normalizedSeason || 'No season (basic registration)',
-        year: registrationYear,
-        tryoutId: normalizedTryoutId,
-        paymentStatus: player.paymentStatus,
-        paymentComplete: player.paymentComplete,
-        registrationComplete: player.registrationComplete,
-        seasons: player.seasons || 'No seasons array',
-      });
-
-      // Send tryout confirmation email ONLY if season is provided
       let registration = null;
-      if (normalizedSeason && !skipSeasonRegistration) {
+
+      // Create registration document ONLY if creating season registration
+      if (shouldCreateSeasonRegistration) {
         registration = new Registration({
           player: player._id,
           parent: parentId,
@@ -505,44 +508,54 @@ router.post(
         });
 
         await registration.save({ session });
+
+        // Send tryout confirmation email
+        try {
+          await sendTryoutEmail(
+            parent.email,
+            player.fullName,
+            normalizedSeason,
+            registrationYear
+          );
+          console.log('Tryout confirmation email sent successfully');
+        } catch (emailError) {
+          console.error('Tryout email failed:', emailError);
+          // Don't fail the registration if email fails
+        }
       }
 
       await session.commitTransaction();
+      await session.endSession();
 
-      console.log('Registered player:', {
+      console.log('Registered player successfully:', {
         playerId: player._id,
-        fullName,
+        fullName: player.fullName,
         parentId,
         season: normalizedSeason || 'No season (basic registration)',
         year: registrationYear,
-        tryoutId: normalizedTryoutId,
+        hasSeasonRegistration: shouldCreateSeasonRegistration,
         paymentStatus: player.paymentStatus,
-        paymentComplete: player.paymentComplete,
-        registrationComplete: player.registrationComplete,
-        seasons: player.seasons || 'No seasons array',
       });
-
-      // Send tryout confirmation email ONLY if season is provided
-      if (normalizedSeason && !skipSeasonRegistration) {
-        sendTryoutEmail(
-          parent.email,
-          player.fullName,
-          normalizedSeason,
-          registrationYear
-        ).catch((err) => console.error('Tryout email failed:', err));
-      }
 
       // Build response object
       const responseData = {
-        message: 'Player registered successfully',
+        message: shouldCreateSeasonRegistration
+          ? 'Player registered successfully for season'
+          : 'Player registered successfully',
         player: {
-          ...player.toObject(),
-          season: normalizedSeason,
-          registrationYear,
-          tryoutId: normalizedTryoutId,
+          _id: player._id,
+          fullName: player.fullName,
+          gender: player.gender,
+          dob: player.dob,
+          schoolName: player.schoolName,
+          grade: player.grade,
+          registrationYear: player.registrationYear,
+          season: player.season,
+          parentId: player.parentId,
           paymentStatus: player.paymentStatus,
           paymentComplete: player.paymentComplete,
           registrationComplete: player.registrationComplete,
+          seasons: player.seasons || [],
         },
       };
 
@@ -552,9 +565,9 @@ router.post(
           id: registration._id,
           playerId: player._id,
           parentId,
-          season: normalizedSeason,
-          year: registrationYear,
-          tryoutId: normalizedTryoutId,
+          season: registration.season,
+          year: registration.year,
+          tryoutId: registration.tryoutId,
           paymentStatus: registration.paymentStatus,
           paymentComplete: registration.paymentComplete,
           registrationComplete: registration.registrationComplete,
@@ -563,15 +576,20 @@ router.post(
 
       res.status(201).json(responseData);
     } catch (error) {
-      await session.abortTransaction();
+      // Safely abort transaction if it was started
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
+      await session.endSession();
+
       console.error('Error registering player:', error.message, error.stack);
       res.status(500).json({
         error: 'Failed to register player',
         details:
-          process.env.NODE_ENV === 'development' ? error.message : undefined,
+          process.env.NODE_ENV === 'development'
+            ? error.message
+            : 'Internal server error',
       });
-    } finally {
-      session.endSession();
     }
   }
 );
@@ -3409,6 +3427,419 @@ router.post(
   }
 );
 
+router.post(
+  '/register/tournament-team-multiple',
+  optionalAuth,
+  [
+    body('email')
+      .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('Email is required')
+      .isEmail()
+      .normalizeEmail()
+      .withMessage('Invalid email'),
+    body('password')
+      .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('Password is required')
+      .isLength({ min: 6 })
+      .withMessage('Password must be at least 6 characters')
+      .custom((value) => value.trim() === value)
+      .withMessage('Password cannot start or end with spaces'),
+    body('fullName')
+      .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('Full name is required')
+      .notEmpty()
+      .withMessage('Full name is required'),
+    body('phone')
+      .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('Phone number is required')
+      .matches(/^\(?(\d{3})\)?[-.\s]?(\d{3})[-.\s]?(\d{4})$/)
+      .withMessage('Invalid phone number format')
+      .customSanitizer((value) => {
+        const digits = value.replace(/\D/g, '');
+        return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+      }),
+    body('isCoach')
+      .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('isCoach is required')
+      .isBoolean()
+      .withMessage('isCoach must be a boolean'),
+    body('aauNumber')
+      .if((value, { req }) => req.body.isCoach === true && !req.user)
+      .exists()
+      .withMessage('AAU number is required for coaches')
+      .notEmpty()
+      .withMessage('AAU number is required for coaches'),
+    body('relationship')
+      .optional()
+      .isIn(['Parent', 'Guardian', 'Coach', 'Other'])
+      .withMessage('Invalid relationship value'),
+    body('address.street')
+      .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('Street address is required')
+      .isLength({ min: 5 })
+      .withMessage('Street address must be at least 5 characters'),
+    body('address.city')
+      .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('City is required')
+      .notEmpty()
+      .withMessage('City is required'),
+    body('address.state')
+      .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('State is required')
+      .matches(/^[A-Z]{2}$/)
+      .withMessage('State must be a valid 2-letter code (e.g., WA)'),
+    body('address.zip')
+      .if((value, { req }) => !req.user)
+      .exists()
+      .withMessage('ZIP code is required')
+      .matches(/^\d{5}(-\d{4})?$/)
+      .withMessage('Invalid ZIP code'),
+    body('agreeToTerms')
+      .exists()
+      .withMessage('You must agree to the terms')
+      .equals('true')
+      .withMessage('You must agree to the terms'),
+    body('teams')
+      .isArray({ min: 1 })
+      .withMessage('At least one team is required'),
+    body('teams.*.name').notEmpty().withMessage('Team name is required'),
+    body('teams.*.grade').notEmpty().withMessage('Grade is required'),
+    body('teams.*.sex')
+      .isIn(['Male', 'Female', 'Coed'])
+      .withMessage('Invalid team gender'),
+    body('teams.*.levelOfCompetition')
+      .isIn(['Gold', 'Silver'])
+      .withMessage('Invalid competition level'),
+    body('tournament')
+      .notEmpty()
+      .withMessage('Tournament name is required for team registration'),
+    body('year')
+      .isInt({ min: 2020, max: 2030 })
+      .withMessage('Year must be between 2020 and 2030')
+      .toInt(),
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      console.log('Validation errors:', errors.array());
+      return res.status(400).json({
+        success: false,
+        error: 'Validation failed',
+        details: errors.array().map((err) => ({
+          msg: err.msg,
+          path: err.param,
+        })),
+      });
+    }
+
+    const session = await mongoose.startSession();
+    session.startTransaction();
+
+    try {
+      const {
+        email,
+        password,
+        fullName,
+        phone,
+        isCoach,
+        aauNumber,
+        relationship,
+        teams,
+        agreeToTerms,
+        tournament,
+        year,
+        address,
+        isAdmin,
+      } = req.body;
+
+      let parent;
+
+      // Handle authenticated user
+      if (req.user) {
+        parent = await Parent.findById(req.user.id).session(session);
+        if (!parent) {
+          await session.abortTransaction();
+          return res
+            .status(404)
+            .json({ success: false, error: 'Parent not found' });
+        }
+        if (isCoach && (!parent.aauNumber || aauNumber)) {
+          parent.aauNumber = aauNumber?.trim() || parent.aauNumber;
+          parent.isCoach = true;
+          await parent.save({ session });
+        }
+      } else {
+        // Handle new user registration
+        const normalizedEmail = email.toLowerCase().trim();
+        const existingParent = await Parent.findOne({
+          email: normalizedEmail,
+        }).session(session);
+        if (existingParent) {
+          await session.abortTransaction();
+          return res.status(400).json({
+            success: false,
+            error: 'Email already registered',
+            details: [{ msg: 'Email already registered', path: 'email' }],
+          });
+        }
+
+        const rawPassword = password.trim();
+        if (!rawPassword) {
+          await session.abortTransaction();
+          return res
+            .status(400)
+            .json({ success: false, error: 'Password is required' });
+        }
+
+        parent = new Parent({
+          email: normalizedEmail,
+          password: rawPassword,
+          fullName: fullName.trim(),
+          phone: phone.replace(/\D/g, ''),
+          address: {
+            street: address.street,
+            street2: address.street2 || '',
+            city: address.city,
+            state: address.state.toUpperCase(),
+            zip: address.zip,
+          },
+          isCoach,
+          aauNumber: isCoach ? aauNumber?.trim() : undefined,
+          relationship: relationship || 'Parent',
+          agreeToTerms,
+          role: isAdmin ? 'admin' : isCoach ? 'coach' : 'user',
+          registrationComplete: true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+
+        await parent.save({ session });
+      }
+
+      const teamDocs = [];
+      const registrations = [];
+
+      // Process each team
+      for (const teamData of teams) {
+        // Check for existing registration
+        const existingRegistration = await Registration.findOne({
+          parent: parent._id,
+          tournament: tournament.trim(),
+          year,
+          'team.name': teamData.name.trim(),
+        }).session(session);
+
+        if (existingRegistration) {
+          await session.abortTransaction();
+          return res.status(400).json({
+            success: false,
+            error: 'Duplicate registration',
+            details: [
+              {
+                msg: `You have already registered team "${teamData.name}" for this tournament`,
+                path: 'teams',
+              },
+            ],
+          });
+        }
+
+        // Create or find team
+        let teamDoc;
+
+        // Check if team already exists with same name and coach
+        const existingTeam = await Team.findOne({
+          name: teamData.name.trim(),
+          coachIds: parent._id,
+        }).session(session);
+
+        if (existingTeam) {
+          teamDoc = existingTeam;
+
+          // Check if team is already registered for this tournament
+          const tournamentEntry = teamDoc.tournaments.find(
+            (t) => t.tournament === tournament && t.year === year
+          );
+
+          if (tournamentEntry) {
+            if (
+              tournamentEntry.levelOfCompetition !== teamData.levelOfCompetition
+            ) {
+              await session.abortTransaction();
+              return res.status(400).json({
+                success: false,
+                error: `Level of competition does not match existing team registration for ${teamData.name}`,
+              });
+            }
+          } else {
+            teamDoc.tournaments.push({
+              tournament: tournament.trim(),
+              year,
+              levelOfCompetition: teamData.levelOfCompetition,
+              paymentStatus: 'pending',
+              paymentComplete: false,
+            });
+          }
+
+          if (!teamDoc.coachIds.includes(parent._id)) {
+            teamDoc.coachIds.push(parent._id);
+          }
+          teamDoc.tournament = tournament.trim();
+          teamDoc.registrationYear = year;
+          await teamDoc.save({ session });
+        } else {
+          teamDoc = new Team({
+            name: teamData.name.trim(),
+            coachIds: [parent._id],
+            grade: teamData.grade,
+            sex: teamData.sex,
+            levelOfCompetition: teamData.levelOfCompetition,
+            tournament: tournament.trim(),
+            registrationYear: year,
+            tournaments: [
+              {
+                tournament: tournament.trim(),
+                year,
+                levelOfCompetition: teamData.levelOfCompetition,
+                paymentStatus: 'pending',
+                paymentComplete: false,
+              },
+            ],
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+          await teamDoc.save({ session });
+        }
+
+        teamDocs.push(teamDoc);
+
+        // Create registration
+        const registration = new Registration({
+          team: teamDoc._id,
+          parent: parent._id,
+          tournament: tournament.trim(),
+          year,
+          levelOfCompetition: teamData.levelOfCompetition,
+          paymentStatus: 'pending',
+          paymentComplete: false,
+          registrationComplete: true,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+
+        await registration.save({ session });
+        registrations.push(registration);
+
+        // Update team's tournament registrationId
+        const tournamentEntry = teamDoc.tournaments.find(
+          (t) => t.tournament === tournament && t.year === year
+        );
+        if (tournamentEntry && !tournamentEntry.registrationId) {
+          tournamentEntry.registrationId = registration._id;
+          await teamDoc.save({ session });
+        }
+      }
+
+      await session.commitTransaction();
+
+      if (!req.user) {
+        sendWelcomeEmail(parent._id, null).catch((err) =>
+          console.error('Welcome email failed:', err)
+        );
+      }
+
+      const token = generateToken({
+        id: parent._id,
+        role: parent.role,
+        email: parent.email,
+        address: parent.address,
+        registrationComplete: true,
+      });
+
+      res.status(201).json({
+        success: true,
+        message: `${teams.length} team(s) registered successfully. Please complete payment.`,
+        registrationStatus: {
+          parentRegistered: true,
+          teamsRegistered: true,
+          paymentCompleted: false,
+          nextStep: 'payment',
+        },
+        parent: {
+          id: parent._id,
+          email: parent.email,
+          fullName: parent.fullName,
+          role: parent.role,
+          registrationComplete: true,
+        },
+        teams: teamDocs.map((team) => ({
+          id: team._id,
+          name: team.name,
+          grade: team.grade,
+          sex: team.sex,
+          levelOfCompetition: team.levelOfCompetition,
+          tournaments: team.tournaments,
+          tournament: team.tournament,
+          registrationYear: team.registrationYear,
+        })),
+        registrations: registrations.map((reg) => ({
+          id: reg._id,
+          teamId: reg.team,
+          tournament,
+          year,
+          levelOfCompetition: reg.levelOfCompetition,
+          paymentStatus: reg.paymentStatus,
+          paymentComplete: reg.paymentComplete,
+        })),
+        token,
+      });
+    } catch (error) {
+      await session.abortTransaction();
+      console.error('Multiple tournament team registration error:', {
+        message: error.message,
+        stack: error.stack,
+        requestBody: req.body,
+      });
+
+      if (error.name === 'MongoServerError' && error.code === 11000) {
+        return res.status(400).json({
+          success: false,
+          error: 'Registration error',
+          details: 'Please try again with slightly different team names',
+        });
+      }
+
+      if (error.name === 'ValidationError') {
+        const errors = Object.values(error.errors).map((err) => ({
+          msg: err.message,
+          path: err.path,
+        }));
+        return res.status(400).json({
+          success: false,
+          error: 'Validation failed',
+          details: errors,
+        });
+      }
+
+      res.status(500).json({
+        success: false,
+        error: 'Failed to register teams',
+        details:
+          process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    } finally {
+      session.endSession();
+    }
+  }
+);
+
 // Get registrations with payment status
 router.get('/registrations', authenticate, async (req, res) => {
   try {
@@ -4020,9 +4451,8 @@ router.post(
         });
       }
 
-      // Check rate limiting
+      // Check if we sent an email recently (within 2 minutes)
       if (Date.now() - tempData.createdAt < 2 * 60 * 1000) {
-        // 2 minutes
         return res.status(429).json({
           success: false,
           error:
@@ -4030,54 +4460,15 @@ router.post(
         });
       }
 
-      // Generate new token
-      const newToken = crypto.randomBytes(32).toString('hex');
+      // Use the existing token
+      const existingToken = tempData.token;
 
-      // Update temporary storage
-      tempTokenStorage.set(normalizedEmail, {
-        ...tempData,
-        token: newToken,
-        createdAt: Date.now(),
-      });
+      // Update the creation time to track resend attempts
+      tempData.createdAt = Date.now();
+      tempTokenStorage.set(normalizedEmail, tempData);
 
-      // Send new verification email (same template)
-      const emailHtml = `
-<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#f9f9f9;padding:20px">
-  <div style="background:white;border-radius:8px;padding:30px">
-    <div style="text-align:center;margin-bottom:20px">
-      <h2 style="color:#333;margin:0">Complete Your Registration</h2>
-    </div>
-    
-    <p>Hello,</p>
-    
-    <p>You requested a new verification email. Please verify your email address to continue with your registration.</p>
-    
-    <div style="background:#f8f9fa;border:1px solid #e9ecef;border-radius:6px;padding:20px;margin:25px 0">
-      <h3 style="color:#495057;margin-top:0;font-size:16px">📋 Verification Token</h3>
-      <p style="margin-bottom:12px;color:#6c757d;font-size:14px">
-        Select and copy the token below:
-      </p>
-      
-      <div style="background:white;border:2px dashed #dee2e6;border-radius:4px;padding:15px;margin:15px 0; cursor: text;">
-        <div style="display:flex; justify-content: space-between; align-items: center; gap: 10px;">
-          <code style="flex: 1; background:none;border:none;padding:0;font-family:'Courier New',monospace;font-size:14px;color:#212529;word-break:break-all; user-select: all; -webkit-user-select: all; cursor: text;"
-                onclick="this.select(); document.execCommand('copy');">
-            ${newToken}
-          </code>
-        </div>
-        <p style="margin:8px 0 0 0;color:#6c757d;font-size:12px;font-style:italic;">
-          Click on the token to select it, then use Ctrl+C (Cmd+C on Mac) to copy
-        </p>
-      </div>
-    </div>
-  </div>
-</div>`;
-
-      await sendEmail({
-        to: normalizedEmail,
-        subject: 'Verify Your Email - Bothell Select Basketball',
-        html: emailHtml,
-      });
+      // 🔥 SEND THE EMAIL with existing token
+      await sendVerificationEmailWithToken(normalizedEmail, existingToken);
 
       res.json({
         success: true,
@@ -4124,11 +4515,32 @@ router.post(
         });
       }
 
-      // Generate temp token
+      // 🔥 FIX: Check for existing temp account but STILL SEND EMAIL if needed
+      const existingTempData = tempTokenStorage.get(normalizedEmail);
+
+      // If we have an existing temp account that's still valid, return that token
+      if (existingTempData && existingTempData.expires > Date.now()) {
+        console.log('ℹ️ Existing temp account found, returning existing token');
+
+        // 🔥 CRITICAL: Still send the email with the existing token
+        await sendVerificationEmailWithToken(
+          normalizedEmail,
+          existingTempData.token
+        );
+
+        return res.json({
+          success: true,
+          message: 'Verification email sent',
+          tempToken: existingTempData.token,
+          email: normalizedEmail,
+        });
+      }
+
+      // Generate new temp token
       const tempToken = crypto.randomBytes(32).toString('hex');
       const tokenExpires = Date.now() + 30 * 60 * 1000; // 30 minutes
 
-      // ✅ Store ONLY in temporary storage (NO database record)
+      // ✅ Store in temporary storage
       tempTokenStorage.set(normalizedEmail, {
         token: tempToken,
         expires: tokenExpires,
@@ -4143,8 +4555,29 @@ router.post(
         tempStorageSize: tempTokenStorage.size,
       });
 
-      // Send verification email
-      const emailHtml = `
+      // 🔥 CRITICAL: Always send verification email
+      await sendVerificationEmailWithToken(normalizedEmail, tempToken);
+
+      res.json({
+        success: true,
+        message: 'Temporary account created and verification email sent',
+        tempToken: tempToken,
+        email: normalizedEmail,
+      });
+    } catch (error) {
+      console.error('Error creating temporary account:', error);
+      res.status(500).json({
+        error: 'Failed to create temporary account',
+        details: error.message,
+      });
+    }
+  }
+);
+
+// 🔥 ADD THIS HELPER FUNCTION to send verification emails
+const sendVerificationEmailWithToken = async (email, token) => {
+  try {
+    const emailHtml = `
 <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;background:#f9f9f9;padding:20px">
   <div style="background:white;border-radius:8px;padding:30px">
     <div style="text-align:center;margin-bottom:20px">
@@ -4165,7 +4598,7 @@ router.post(
         <div style="display:flex; justify-content: space-between; align-items: center; gap: 10px;">
           <code style="flex: 1; background:none;border:none;padding:0;font-family:'Courier New',monospace;font-size:14px;color:#212529;word-break:break-all; user-select: all; -webkit-user-select: all; cursor: text;"
                 onclick="this.select(); document.execCommand('copy');">
-            ${tempToken}
+            ${token}
           </code>
         </div>
         <p style="margin:8px 0 0 0;color:#6c757d;font-size:12px;font-style:italic;">
@@ -4205,26 +4638,114 @@ router.post(
   </div>
 </div>`;
 
-      await sendEmail({
-        to: normalizedEmail,
-        subject: 'Verify Your Email - Bothell Select Basketball',
-        html: emailHtml,
-      });
+    await sendEmail({
+      to: email,
+      subject: 'Verify Your Email - Bothell Select Basketball',
+      html: emailHtml,
+    });
 
-      res.json({
-        success: true,
-        message: 'Temporary account created and verification email sent',
-        tempToken: tempToken,
-        email: normalizedEmail,
-      });
-    } catch (error) {
-      console.error('Error creating temporary account:', error);
-      res.status(500).json({
-        error: 'Failed to create temporary account',
-        details: error.message,
-      });
-    }
+    console.log('✅ Verification email sent to:', email);
+  } catch (emailError) {
+    console.error('❌ Failed to send verification email:', emailError);
+    throw new Error('Failed to send verification email');
   }
-);
+};
+
+// Get current user profile
+router.get('/users/profile', authenticate, async (req, res) => {
+  try {
+    const parent = await Parent.findById(req.user.id)
+      .select('-password')
+      .populate('players')
+      .lean();
+
+    if (!parent) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json(parent);
+  } catch (error) {
+    console.error('Error fetching user profile:', error);
+    res.status(500).json({
+      error: 'Failed to fetch user profile',
+      details: error.message,
+    });
+  }
+});
+
+// Get user's own guardians
+router.get('/guardians/my-guardians', authenticate, async (req, res) => {
+  try {
+    const parent = await Parent.findById(req.user.id)
+      .select(
+        'additionalGuardians fullName email phone address relationship isCoach aauNumber'
+      )
+      .lean();
+
+    if (!parent) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Include the main parent as the primary guardian
+    const guardians = [
+      {
+        _id: parent._id,
+        fullName: parent.fullName,
+        email: parent.email,
+        phone: parent.phone,
+        address: parent.address,
+        relationship: parent.relationship || 'Parent',
+        isCoach: parent.isCoach || false,
+        aauNumber: parent.aauNumber || '',
+        isPrimary: true,
+      },
+      ...(parent.additionalGuardians || []).map((g) => ({
+        ...g,
+        isPrimary: false,
+      })),
+    ];
+
+    res.json(guardians);
+  } catch (error) {
+    console.error('Error fetching user guardians:', error);
+    res.status(500).json({
+      error: 'Failed to fetch guardians',
+      details: error.message,
+    });
+  }
+});
+
+// Get user's own players
+router.get('/players/my-players', authenticate, async (req, res) => {
+  try {
+    const players = await Player.find({ parentId: req.user.id })
+      .populate('parentId', 'fullName email')
+      .lean();
+
+    // Return empty array instead of error if no players found
+    if (!players || players.length === 0) {
+      return res.json([]);
+    }
+
+    // Transform the response to include avatar URLs
+    const playersWithAvatars = players.map((player) => ({
+      ...player,
+      avatar: player.avatar || null,
+      imgSrc: player.avatar
+        ? `${player.avatar}${player.avatar.includes('?') ? '&' : '?'}ts=${Date.now()}`
+        : player.gender === 'Female'
+          ? 'https://bothell-select.onrender.com/uploads/avatars/girl.png'
+          : 'https://bothell-select.onrender.com/uploads/avatars/boy.png',
+    }));
+
+    res.json(playersWithAvatars);
+  } catch (error) {
+    console.error('Error fetching user players:', error);
+    res.status(500).json({
+      error: 'Failed to fetch players',
+      details: error.message,
+    });
+  }
+});
 
 module.exports = router;
