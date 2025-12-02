@@ -128,7 +128,7 @@ async function cleanSchools() {
         'Shelton View EL',
       ],
 
-      'Bothell High School': ['Bothell High', 'Bothell HS'],
+      'Bothell High School': ['Bothell High', 'Bothell HS', 'bothell'],
 
       'Evergreen Academy Elementary School': [
         'Evergreen Academy Elementary',
@@ -175,12 +175,6 @@ async function cleanSchools() {
 
       'Valley View Christian School': ['Valley View', 'Valley View Christian'],
 
-      'Harbour Pointe Middle School': [
-        'Harbour Pointe',
-        'Harbour Pointe Middle',
-        'Harbour Pointe Ml',
-      ],
-
       'Sky Valley Education Center ': ['SVEC'],
 
       'Timbercrest Middle School': [
@@ -197,16 +191,26 @@ async function cleanSchools() {
 
       'Odysey Elementary School': ['Odysey', 'Odysey Elementary', 'Odysey El'],
 
-      'Harbor Pointe Middle School': [
+      'Harbour Pointe Middle School': [
         'Harbor Pointe',
         'Harbor Pointe Middle',
         'Harbor Pointe Ml',
+        'Harbor Pointe Middle School',
       ],
 
       'Fernwood Elementary School': [
         'Fernwood',
         'Fernwood Elementary',
         'Fernwood El',
+      ],
+
+      'Basis Independent Bothell': ['BASIS', 'Basis Independant Bothell'],
+
+      'Innovation Lab High School': [
+        'Innovation Lab',
+        'ILHS',
+        'Innovation Lab Highschool',
+        'Innovation Lab HS',
       ],
     };
 
