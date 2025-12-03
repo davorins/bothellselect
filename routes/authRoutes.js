@@ -19,6 +19,7 @@ const {
 const {
   sendEmail,
   sendWelcomeEmail,
+  sendTournamentWelcomeEmail,
   sendResetEmail,
   sendTryoutEmail,
 } = require('../utils/email');
@@ -3199,7 +3200,7 @@ router.post(
       await session.commitTransaction();
 
       if (!req.user) {
-        sendWelcomeEmail(parent._id, null).catch((err) =>
+        sendTournamentWelcomeEmail(parent._id, null).catch((err) =>
           console.error('Welcome email failed:', err)
         );
       }
@@ -3750,7 +3751,7 @@ router.post(
       await session.commitTransaction();
 
       if (!req.user) {
-        sendWelcomeEmail(parent._id, null).catch((err) =>
+        sendTournamentWelcomeEmail(parent._id, null).catch((err) =>
           console.error('Welcome email failed:', err)
         );
       }
@@ -3780,7 +3781,7 @@ router.post(
           registrationComplete: true,
         },
         teams: teamDocs.map((team) => ({
-          id: team._id,
+          _id: team._id.toString(),
           name: team.name,
           grade: team.grade,
           sex: team.sex,

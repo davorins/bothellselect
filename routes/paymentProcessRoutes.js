@@ -9,7 +9,10 @@ const Parent = require('../models/Parent');
 const Player = require('../models/Player');
 const Registration = require('../models/Registration');
 const Team = require('../models/Team');
-const { sendEmail } = require('../utils/email');
+const {
+  sendTournamentRegistrationEmail,
+  sendEmail,
+} = require('../utils/email');
 const crypto = require('crypto');
 const { body, validationResult } = require('express-validator');
 
@@ -355,55 +358,13 @@ router.post('/tournament-team', authenticate, async (req, res) => {
 
     // Send confirmation email
     try {
-      await sendEmail({
-        to: buyerEmailAddress,
-        subject:
-          'Tournament Registration Confirmation - Bothell Select Basketball',
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; background: #f9fafb; padding: 20px;">
-            <div style="text-align: center; margin-bottom: 20px;">
-              <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px; height: auto;">
-            </div>
-            
-            <div style="background: #1a56db; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
-              <h1 style="margin: 0;">🎉 Tournament Registration Confirmed!</h1>
-            </div>
-            
-            <div style="background: white; padding: 20px; border-radius: 0 0 5px 5px;">
-              <p style="font-size: 16px;">Dear ${parent.fullName || 'Coach'},</p>
-              
-              <p style="font-size: 16px;">Thank you for your payment! Your tournament registration has been confirmed.</p>
-              
-              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #1a56db;">
-                <h3 style="margin-top: 0; color: #1a56db;">Registration Details</h3>
-                <p style="margin: 8px 0;"><strong>Team:</strong> ${team.name}</p>
-                <p style="margin: 8px 0;"><strong>Tournament:</strong> ${tournament} ${year}</p>
-                <p style="margin: 8px 0;"><strong>Grade:</strong> ${team.grade}</p>
-                <p style="margin: 8px 0;"><strong>Gender:</strong> ${team.sex}</p>
-                <p style="margin: 8px 0;"><strong>Level:</strong> ${team.levelOfCompetition || 'Silver'}</p>
-                <p style="margin: 8px 0;"><strong>Registration Fee:</strong> $${amount / 100}</p>
-                <p style="margin: 8px 0;"><strong>Payment ID:</strong> ${paymentResult.id}</p>
-              </div>
-              
-              <p style="font-size: 16px;"><strong>What's Next?</strong></p>
-              <ul style="font-size: 14px;">
-                <li>You will receive tournament schedule and bracket information via email</li>
-                <li>Check the tournament website for updates and rules</li>
-                <li>Ensure all player waivers and forms are completed</li>
-              </ul>
-              
-              <p style="font-size: 14px; color: #555;">If you have any questions, please contact us at bothellselect@proton.me</p>
-              
-              <p style="font-size: 16px; font-weight: bold;">Good luck in the tournament! 🏀</p>
-            </div>
-            
-            <div style="background: #e5e7eb; padding: 15px; text-align: center; font-size: 14px; color: #555; border-radius: 0 0 5px 5px;">
-              <p style="margin: 0;">Bothell Select Basketball<br>
-              bothellselect@proton.me</p>
-            </div>
-          </div>
-        `,
-      });
+      await sendTournamentRegistrationEmail(
+        parent._id,
+        [teamId],
+        tournament,
+        year,
+        amount / 100
+      );
 
       console.log('Tournament confirmation email sent successfully');
     } catch (emailError) {
@@ -470,7 +431,7 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
       sourceId,
       amount,
       email: buyerEmailAddress,
-      teamIds, // CHANGED: Now an array of team IDs
+      teamIds,
       tournament,
       year,
       cardDetails,
@@ -630,6 +591,7 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
     const updatedTeams = [];
     const teamCount = teamIds.length;
     const amountPerTeam = amount / 100 / teamCount;
+    const invalidTeams = [];
 
     for (const teamId of teamIds) {
       console.log('Processing team:', teamId);
@@ -642,7 +604,8 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
 
       if (!team) {
         console.log('Team not found or unauthorized:', { teamId, parentId });
-        continue; // Skip this team but continue with others
+        invalidTeams.push(teamId);
+        continue;
       }
 
       // Update team tournament payment status
@@ -709,10 +672,21 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
       );
     }
 
+    // Check if any teams were processed
+    if (updatedTeams.length === 0) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        success: false,
+        error: 'No teams processed',
+        message: `Could not process payment for any teams. Invalid or unauthorized teams: ${invalidTeams.join(', ')}`,
+        invalidTeams: invalidTeams,
+      });
+    }
+
     // Create Payment record for multiple teams
     const payment = new Payment({
       parentId: parent._id,
-      teamIds: teamIds, // Store array of team IDs
+      teamIds: updatedTeams.map((team) => team._id),
       paymentId: paymentResult.id,
       locationId: process.env.SQUARE_LOCATION_ID,
       buyerEmail: buyerEmailAddress,
@@ -740,71 +714,13 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
     try {
       const teamNames = updatedTeams.map((team) => team.name).join(', ');
 
-      await sendEmail({
-        to: buyerEmailAddress,
-        subject:
-          'Tournament Registration Confirmation - Bothell Select Basketball',
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; background: #f9fafb; padding: 20px;">
-            <div style="text-align: center; margin-bottom: 20px;">
-              <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px; height: auto;">
-            </div>
-            
-            <div style="background: #1a56db; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
-              <h1 style="margin: 0;">🎉 Tournament Registration Confirmed!</h1>
-            </div>
-            
-            <div style="background: white; padding: 20px; border-radius: 0 0 5px 5px;">
-              <p style="font-size: 16px;">Dear ${parent.fullName || 'Coach'},</p>
-              
-              <p style="font-size: 16px;">Thank you for your payment! Your tournament registration for ${updatedTeams.length} team(s) has been confirmed.</p>
-              
-              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #1a56db;">
-                <h3 style="margin-top: 0; color: #1a56db;">Registration Details</h3>
-                <p style="margin: 8px 0;"><strong>Number of Teams:</strong> ${updatedTeams.length}</p>
-                <p style="margin: 8px 0;"><strong>Teams Registered:</strong> ${teamNames}</p>
-                <p style="margin: 8px 0;"><strong>Tournament:</strong> ${tournament} ${year}</p>
-                <p style="margin: 8px 0;"><strong>Total Registration Fee:</strong> $${amount / 100}</p>
-                <p style="margin: 8px 0;"><strong>Fee per Team:</strong> $${amountPerTeam}</p>
-                <p style="margin: 8px 0;"><strong>Payment ID:</strong> ${paymentResult.id}</p>
-              </div>
-              
-              <div style="margin: 20px 0;">
-                <h4 style="color: #1a56db;">Team Details:</h4>
-                ${updatedTeams
-                  .map(
-                    (team, index) => `
-                  <div style="background: #f0f4f8; padding: 10px; border-radius: 4px; margin: 10px 0;">
-                    <h5 style="margin: 0;">Team ${index + 1}: ${team.name}</h5>
-                    <p style="margin: 5px 0;"><strong>Grade:</strong> ${team.grade}</p>
-                    <p style="margin: 5px 0;"><strong>Gender:</strong> ${team.sex}</p>
-                    <p style="margin: 5px 0;"><strong>Level:</strong> ${team.levelOfCompetition || 'Silver'}</p>
-                  </div>
-                `
-                  )
-                  .join('')}
-              </div>
-              
-              <p style="font-size: 16px;"><strong>What's Next?</strong></p>
-              <ul style="font-size: 14px;">
-                <li>You will receive tournament schedule and bracket information via email</li>
-                <li>Check the tournament website for updates and rules</li>
-                <li>Ensure all player waivers and forms are completed</li>
-                <li>Each team will be scheduled separately based on their division</li>
-              </ul>
-              
-              <p style="font-size: 14px; color: #555;">If you have any questions, please contact us at bothellselect@proton.me</p>
-              
-              <p style="font-size: 16px; font-weight: bold;">Good luck in the tournament! 🏀</p>
-            </div>
-            
-            <div style="background: #e5e7eb; padding: 15px; text-align: center; font-size: 14px; color: #555; border-radius: 0 0 5px 5px;">
-              <p style="margin: 0;">Bothell Select Basketball<br>
-              bothellselect@proton.me</p>
-            </div>
-          </div>
-        `,
-      });
+      await sendTournamentRegistrationEmail(
+        parent._id,
+        updatedTeams.map((team) => team._id),
+        tournament,
+        year,
+        amount / 100
+      );
 
       console.log('Tournament confirmation email sent for multiple teams');
     } catch (emailError) {
