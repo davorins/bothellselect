@@ -10,6 +10,7 @@ const Payment = require('../models/Payment');
 const Team = require('../models/Team');
 const Registration = require('../models/Registration');
 const Notification = require('../models/Notification');
+const TournamentConfig = require('../models/TournamentConfig');
 const {
   comparePasswords,
   hashPassword,
@@ -22,6 +23,8 @@ const {
   sendTournamentWelcomeEmail,
   sendResetEmail,
   sendTryoutEmail,
+  sendRegistrationPendingEmail,
+  sendTrainingRegistrationPendingEmail,
 } = require('../utils/email');
 const { calculateGradeFromDOB } = require('../utils/gradeUtils');
 
@@ -164,6 +167,7 @@ const addressUtils = {
 const { parseAddress, ensureAddress } = addressUtils;
 
 // Register a new parent
+// Register a new parent - MODIFY THIS ENDPOINT
 router.post(
   '/register',
   [
@@ -270,6 +274,86 @@ router.post(
 
       const parent = new Parent(parentData);
       await parent.save();
+
+      // ✅ ADD THIS: Send welcome email for account creation
+      try {
+        // Import the email function
+        const { sendEmail } = require('../utils/email');
+
+        // Create welcome email content
+        const welcomeEmailHtml = `
+          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px;">
+            <div style="text-align: center; margin-bottom: 20px;">
+              <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px;">
+            </div>
+            
+            <div style="background: #f8f9fa; padding: 30px; border-radius: 8px;">
+              <h1 style="color: #333; text-align: center;">Welcome to Bothell Select Basketball!</h1>
+              
+              <div style="margin: 30px 0;">
+                <p>Dear <strong>${parent.fullName}</strong>,</p>
+                
+                <p>Thank you for creating an account with Bothell Select Basketball! We're excited to have you join our community.</p>
+                
+                <div style="background: white; padding: 20px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #506ee4;">
+                  <h3 style="margin-top: 0; color: #506ee4;">🎉 Account Created Successfully</h3>
+                  <p><strong>Email:</strong> ${parent.email}</p>
+                  <p><strong>Account Type:</strong> ${parent.isCoach ? 'Coach Account' : 'Parent/Guardian Account'}</p>
+                  ${parent.isCoach && parent.aauNumber ? `<p><strong>AAU Number:</strong> ${parent.aauNumber}</p>` : ''}
+                </div>
+                
+                <h3>📋 What You Can Do Now:</h3>
+                <ul style="padding-left: 20px;">
+                  <li>Add players to your account</li>
+                  <li>Register for upcoming tryouts and seasons</li>
+                  <li>Sign up for tournaments and training programs</li>
+                  <li>Manage your profile and payment information</li>
+                  <li>Receive notifications about important dates</li>
+                </ul>
+                
+                <div style="text-align: center; margin: 30px 0;">
+                  <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}/dashboard" 
+                     style="background: #506ee4; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
+                    Go to Your Dashboard
+                  </a>
+                </div>
+                
+                <div style="background: #fff3cd; padding: 15px; border-radius: 4px; margin: 20px 0;">
+                  <h4 style="margin-top: 0; color: #856404;">🔒 Account Security</h4>
+                  <p style="color: #856404; margin: 0;">
+                    For security reasons, please keep your login credentials confidential and change your password periodically.
+                  </p>
+                </div>
+                
+                <p>If you have any questions or need assistance, please contact us at <a href="mailto:bothellselect@proton.me">bothellselect@proton.me</a></p>
+                
+                <p style="text-align: center; margin-top: 30px;">
+                  <strong>Welcome to the Bothell Select family! 🏀</strong>
+                </p>
+              </div>
+            </div>
+            
+            <div style="text-align: center; margin-top: 30px; color: #666; font-size: 14px;">
+              <p>Bothell Select Basketball<br>
+              bothellselect@proton.me</p>
+            </div>
+          </div>
+        `;
+
+        await sendEmail({
+          to: parent.email,
+          subject: 'Welcome to Bothell Select Basketball!',
+          html: welcomeEmailHtml,
+        });
+
+        console.log('✅ Welcome email sent to:', parent.email);
+      } catch (emailError) {
+        console.error(
+          '⚠️ Welcome email failed (but registration succeeded):',
+          emailError
+        );
+        // Don't fail the registration if email fails
+      }
 
       if (registerType === 'adminCreate') {
         return res.status(201).json({
@@ -526,6 +610,39 @@ router.post(
       }
 
       await session.commitTransaction();
+
+      if (shouldCreateSeasonRegistration && !req.body.immediatePaymentFlow) {
+        // Send pending payment email if not part of immediate payment
+        try {
+          await sendRegistrationPendingEmail(
+            parentId,
+            [player._id],
+            normalizedSeason || season,
+            registrationYear,
+            req.body.packageInfo || null
+          );
+          console.log('Pending payment email sent for new registration');
+        } catch (emailError) {
+          console.error('Failed to send pending payment email:', emailError);
+          // Don't fail the registration if email fails
+        }
+      }
+
+      // Send tryout confirmation email (existing code)
+      if (shouldCreateSeasonRegistration) {
+        try {
+          await sendTryoutEmail(
+            parent.email,
+            player.fullName,
+            normalizedSeason,
+            registrationYear
+          );
+          console.log('Tryout confirmation email sent successfully');
+        } catch (emailError) {
+          console.error('Tryout email failed:', emailError);
+        }
+      }
+
       await session.endSession();
 
       console.log('Registered player successfully:', {
@@ -2981,7 +3098,7 @@ router.post(
     body('team.name').notEmpty().withMessage('Team name is required'),
     body('team.grade').notEmpty().withMessage('Grade is required'),
     body('team.sex')
-      .isIn(['Male', 'Female', 'Coed'])
+      .isIn(['Male', 'Female'])
       .withMessage('Invalid team gender'),
     body('team.levelOfCompetition')
       .isIn(['Gold', 'Silver'])
@@ -3514,7 +3631,7 @@ router.post(
     body('teams.*.name').notEmpty().withMessage('Team name is required'),
     body('teams.*.grade').notEmpty().withMessage('Grade is required'),
     body('teams.*.sex')
-      .isIn(['Male', 'Female', 'Coed'])
+      .isIn(['Male', 'Female'])
       .withMessage('Invalid team gender'),
     body('teams.*.levelOfCompetition')
       .isIn(['Gold', 'Silver'])
@@ -3526,8 +3643,19 @@ router.post(
       .isInt({ min: 2020, max: 2030 })
       .withMessage('Year must be between 2020 and 2030')
       .toInt(),
+    body('tournamentName')
+      .notEmpty()
+      .withMessage('Tournament name is required'),
+    body('tournamentId')
+      .optional()
+      .isMongoId()
+      .withMessage('Invalid tournament ID format'),
   ],
   async (req, res) => {
+    let tournamentId = req.body.tournamentId;
+    if (!tournamentId || !mongoose.Types.ObjectId.isValid(tournamentId)) {
+      tournamentId = new mongoose.Types.ObjectId();
+    }
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       console.log('Validation errors:', errors.array());
@@ -3947,19 +4075,46 @@ router.get('/teams/all', authenticate, async (req, res) => {
   }
 });
 
-// Get current tournament endpoint
 router.get('/tournaments/current', async (req, res) => {
   try {
-    const currentTournament = {
-      tournament: 'Winter Classic Tournament',
-      year: 2025,
-      tournamentId: 'winter-classic-2025',
+    // Get the actual active tournament from database
+    const tournamentConfig = await TournamentConfig.findOne({ isActive: true })
+      .sort({ createdAt: -1 }) // Get the most recent active tournament
+      .lean();
+
+    if (!tournamentConfig) {
+      // Return a fallback if no active tournament is found
+      return res.json({
+        tournament: 'Upcoming Tournament',
+        year: new Date().getFullYear(),
+        tournamentId: 'default-tournament',
+        registrationOpen: false,
+        fee: 0,
+        deadline: null,
+        message: 'No active tournament found',
+      });
+    }
+
+    // Transform the data to match what frontend expects
+    const response = {
+      tournament: tournamentConfig.tournamentName,
+      year: tournamentConfig.tournamentYear,
+      tournamentId: tournamentConfig._id.toString(),
       registrationOpen: true,
-      fee: 425,
-      deadline: '2025-02-28',
+      fee: tournamentConfig.tournamentFee || 425,
+      deadline: tournamentConfig.registrationDeadline,
+      // Include additional config data if needed
+      config: {
+        displayName: tournamentConfig.displayName,
+        divisions: tournamentConfig.divisions,
+        locations: tournamentConfig.locations,
+        requiresRoster: tournamentConfig.requiresRoster,
+        requiresInsurance: tournamentConfig.requiresInsurance,
+        tournamentDates: tournamentConfig.tournamentDates,
+      },
     };
 
-    res.json(currentTournament);
+    res.json(response);
   } catch (error) {
     console.error('Error fetching current tournament:', error);
     res.status(500).json({
@@ -4748,5 +4903,45 @@ router.get('/players/my-players', authenticate, async (req, res) => {
     });
   }
 });
+
+// Send training registration pending payment email
+router.post(
+  '/auth/send-training-registration-email',
+  authenticate,
+  [
+    body('season').notEmpty().withMessage('Season is required'),
+    body('year').isInt().withMessage('Year must be a number'),
+    body('packageInfo').optional().isObject(),
+    body('playersData').optional().isArray(),
+  ],
+  async (req, res) => {
+    try {
+      const { season, year, packageInfo, playersData = [] } = req.body;
+      const parentId = req.user.id;
+
+      // Send the training registration pending email
+      await sendTrainingRegistrationPendingEmail(
+        parentId,
+        [], // Empty playerIds array since we'll use playersData
+        season,
+        year,
+        packageInfo,
+        playersData
+      );
+
+      res.json({
+        success: true,
+        message: 'Training registration email sent successfully',
+      });
+    } catch (error) {
+      console.error('Error sending training registration email:', error);
+      res.status(500).json({
+        success: false,
+        error: 'Failed to send training registration email',
+        details: error.message,
+      });
+    }
+  }
+);
 
 module.exports = router;

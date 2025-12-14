@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const teamSchema = new mongoose.Schema({
   name: { type: String, required: true },
   grade: { type: String, required: true },
-  sex: { type: String, enum: ['Male', 'Female', 'Coed'], required: true },
+  sex: { type: String, enum: ['Male', 'Female'], required: true },
   levelOfCompetition: {
     type: String,
     enum: ['Gold', 'Silver'],

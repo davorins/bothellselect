@@ -1,3 +1,4 @@
+// registrationController.js
 const SeasonEvent = require('../models/SeasonEvent');
 const RegistrationFormConfig = require('../models/RegistrationFormConfig');
 

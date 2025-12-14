@@ -23,9 +23,9 @@ const paymentSchema = new mongoose.Schema(
     ],
 
     // Square Payment Details
-    paymentId: { type: String, required: true }, // Square transaction ID
-    orderId: { type: String }, // Your internal order reference
-    locationId: { type: String, required: true }, // Square location ID
+    paymentId: { type: String, required: true },
+    orderId: { type: String },
+    locationId: { type: String, required: true },
 
     // Card Information (safe to store)
     cardLastFour: { type: String, required: true },
@@ -41,7 +41,7 @@ const paymentSchema = new mongoose.Schema(
     currency: {
       type: String,
       default: 'USD',
-      enum: ['USD', 'CAD'], // Add other currencies as needed
+      enum: ['USD', 'CAD'],
     },
     status: {
       type: String,

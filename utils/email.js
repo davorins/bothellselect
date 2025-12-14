@@ -164,7 +164,7 @@ async function sendWelcomeEmail(parentId, playerId) {
               <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px; height: auto;">
             </div>
             
-            <div style="background: #1a56db; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+            <div style="background: #506ee4; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
               <h1 style="margin: 0;">Welcome to Bothell Select Basketball!</h1>
             </div>
             
@@ -173,8 +173,8 @@ async function sendWelcomeEmail(parentId, playerId) {
               
               <p style="font-size: 16px;">Welcome to the Bothell Select Basketball family! We're excited to have [player.firstName] join our program.</p>
               
-              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #1a56db;">
-                <h3 style="margin-top: 0; color: #1a56db;">Registration Confirmed</h3>
+              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
+                <h3 style="margin-top: 0; color: #506ee4;">Registration Confirmed</h3>
                 <p style="margin: 8px 0;"><strong>Player:</strong> [player.fullName]</p>
               </div>
               
@@ -282,7 +282,7 @@ async function sendTournamentWelcomeEmail(parentId, teamId, tournament, year) {
           <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px; height: auto;">
         </div>
         
-        <div style="background: #1a56db; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+        <div style="background: #506ee4; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
           <h1 style="margin: 0;">🏀 Tournament Registration Received!</h1>
         </div>
         
@@ -291,8 +291,8 @@ async function sendTournamentWelcomeEmail(parentId, teamId, tournament, year) {
           
           <p style="font-size: 16px;">Thank you for registering for the ${tournament} ${year} tournament!</p>
           
-          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #1a56db;">
-            <h3 style="margin-top: 0; color: #1a56db;">Registration Details</h3>
+          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
+            <h3 style="margin-top: 0; color: #506ee4;">Registration Details</h3>
             ${team ? `<p style="margin: 8px 0;"><strong>Team:</strong> ${team.name}</p>` : ''}
             <p style="margin: 8px 0;"><strong>Tournament:</strong> ${tournament} ${year}</p>
             <p style="margin: 8px 0;"><strong>Registration Fee:</strong> $425 per team</p>
@@ -400,7 +400,7 @@ async function sendTournamentRegistrationEmail(
           <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px; height: auto;">
         </div>
         
-        <div style="background: #1a56db; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+        <div style="background: #506ee4; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
           <h1 style="margin: 0;">🎉 Tournament Registration Confirmed!</h1>
         </div>
         
@@ -409,8 +409,8 @@ async function sendTournamentRegistrationEmail(
           
           <p style="font-size: 16px;">Thank you for your payment! Your tournament registration for ${teamCount} team(s) has been confirmed.</p>
           
-          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #1a56db;">
-            <h3 style="margin-top: 0; color: #1a56db;">Payment & Registration Details</h3>
+          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
+            <h3 style="margin-top: 0; color: #506ee4;">Payment & Registration Details</h3>
             <p style="margin: 8px 0;"><strong>Number of Teams:</strong> ${teamCount}</p>
             <p style="margin: 8px 0;"><strong>Tournament:</strong> ${tournament} ${year}</p>
             <p style="margin: 8px 0;"><strong>Total Amount Paid:</strong> $${totalAmount}</p>
@@ -421,7 +421,7 @@ async function sendTournamentRegistrationEmail(
             teams.length > 0
               ? `
           <div style="margin: 20px 0;">
-            <h4 style="color: #1a56db;">Team Details:</h4>
+            <h4 style="color: #506ee4;">Team Details:</h4>
             ${teamsInfoHtml}
           </div>
           `
@@ -678,6 +678,247 @@ async function sendResetEmail(email, resetToken) {
   }
 }
 
+// ============ TRAINING REGISTRATION PENDING PAYMENT EMAIL ============
+async function sendTrainingRegistrationPendingEmail(
+  parentId,
+  playerIds,
+  season,
+  year,
+  packageInfo = null,
+  playersData = []
+) {
+  try {
+    // 1. Get the parent data
+    const parent = await Parent.findById(parentId);
+    if (!parent) {
+      throw new Error(`Parent not found with ID: ${parentId}`);
+    }
+
+    // 2. Get player data if playerIds provided, otherwise use playersData
+    let players = [];
+    if (playerIds && playerIds.length > 0) {
+      players = await Player.find({ _id: { $in: playerIds } });
+    } else if (playersData && playersData.length > 0) {
+      players = playersData;
+    }
+
+    // 3. Build package info
+    let packageDetails = '';
+    if (packageInfo) {
+      packageDetails = `
+        <p style="margin: 8px 0;"><strong>Training Package:</strong> ${packageInfo.name}</p>
+        <p style="margin: 8px 0;"><strong>Package Price:</strong> $${packageInfo.price} per player</p>
+      `;
+    }
+
+    // 4. Build the training registration email
+    const subject = `Training Registration Received - Bothell Select ${season} ${year}`;
+
+    const emailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; background: #f9fafb; padding: 20px;">
+        <div style="text-align: center; margin-bottom: 20px;">
+          <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px; height: auto;">
+        </div>
+        
+        <div style="background: #506ee4; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+          <h1 style="margin: 0;">🏀 Training Registration Received!</h1>
+        </div>
+        
+        <div style="background: white; padding: 20px; border-radius: 0 0 5px 5px;">
+          <p style="font-size: 16px;">Dear ${parent.fullName || 'Valued Customer'},</p>
+          
+          <p style="font-size: 16px;">Thank you for registering for the Bothell Select ${season} ${year} training program! We've received your registration details for ${players.length} player(s).</p>
+          
+          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
+            <h3 style="margin-top: 0; color: #506ee4;">Training Registration Details</h3>
+            <p style="margin: 8px 0;"><strong>Number of Players:</strong> ${players.length}</p>
+            ${packageDetails}
+            <p style="margin: 8px 0;"><strong>Program:</strong> ${season} ${year}</p>
+            <p style="margin: 8px 0;"><strong>Players Registered:</strong></p>
+            <ul style="margin: 8px 0;">
+              ${players.map((p) => `<li>${p.fullName}</li>`).join('')}
+            </ul>
+          </div>
+          
+          <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #ffc107;">
+            <h4 style="margin-top: 0; color: #856404;">⚠️ Important: Payment Required</h4>
+            <p style="margin: 8px 0; color: #856404;">
+              <strong>Your training registration is not complete until payment is received.</strong> 
+              Please complete your payment to secure your spot(s) in the training program.
+            </p>
+            <p style="margin: 8px 0; color: #856404;">
+              You can complete your payment by logging into your account and visiting the "Training Registrations" section.
+            </p>
+          </div>
+          
+          <p style="font-size: 16px;"><strong>What's Next?</strong></p>
+          <ul style="font-size: 14px;">
+            <li>Complete your payment to secure your player's spot in training</li>
+            <li>You will receive training schedule information after payment is completed</li>
+            <li>Look out for training materials and session details from your coach</li>
+            <li>Training schedules will be shared via email and the team portal</li>
+          </ul>
+          
+          <p style="font-size: 14px; color: #555;">If you have any questions, please contact us at bothellselect@proton.me</p>
+          
+          <p style="font-size: 16px; font-weight: bold;">We look forward to training with you! 🏀</p>
+        </div>
+        
+        <div style="background: #e5e7eb; padding: 15px; text-align: center; font-size: 14px; color: #555; border-radius: 0 0 5px 5px;">
+          <p style="margin: 0;">Bothell Select Basketball<br>
+          bothellselect@proton.me</p>
+        </div>
+      </div>
+    `;
+
+    // 5. Send the email
+    const result = await sendEmail({
+      to: parent.email,
+      subject,
+      html: emailHtml,
+    });
+
+    console.log(
+      'Training registration pending payment email sent successfully:',
+      {
+        parentId,
+        playerCount: players.length,
+        season,
+        year,
+        email: parent.email,
+      }
+    );
+
+    return result;
+  } catch (err) {
+    console.error('Error in sendTrainingRegistrationPendingEmail:', {
+      error: err.message,
+      parentId,
+      playerIds,
+      season,
+      year,
+      timestamp: new Date().toISOString(),
+    });
+    throw err;
+  }
+}
+
+// ============ REGISTRATION PENDING PAYMENT EMAIL ============
+async function sendRegistrationPendingEmail(
+  parentId,
+  playerIds,
+  season,
+  year,
+  packageInfo = null
+) {
+  try {
+    // 1. Get the parent data
+    const parent = await Parent.findById(parentId);
+    if (!parent) {
+      throw new Error(`Parent not found with ID: ${parentId}`);
+    }
+
+    // 2. Get player data
+    const players = await Player.find({ _id: { $in: playerIds } });
+
+    // 3. Build the pending registration email
+    const subject = `Registration Received - Bothell Select ${season} ${year}`;
+
+    // Calculate package info if available
+    let packageDetails = '';
+    if (packageInfo) {
+      packageDetails = `
+        <p style="margin: 8px 0;"><strong>Selected Package:</strong> ${packageInfo.name}</p>
+        <p style="margin: 8px 0;"><strong>Package Price:</strong> $${packageInfo.price} per player</p>
+      `;
+    }
+
+    const emailHtml = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; background: #f9fafb; padding: 20px;">
+        <div style="text-align: center; margin-bottom: 20px;">
+          <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px; height: auto;">
+        </div>
+        
+        <div style="background: #506ee4; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+          <h1 style="margin: 0;">🏀 Registration Received!</h1>
+        </div>
+        
+        <div style="background: white; padding: 20px; border-radius: 0 0 5px 5px;">
+          <p style="font-size: 16px;">Dear ${parent.fullName || 'Valued Customer'},</p>
+          
+          <p style="font-size: 16px;">Thank you for registering for the Bothell Select ${season} ${year} program! We've received your registration details for ${players.length} player(s).</p>
+          
+          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
+            <h3 style="margin-top: 0; color: #506ee4;">Registration Details</h3>
+            <p style="margin: 8px 0;"><strong>Number of Players:</strong> ${players.length}</p>
+            ${packageDetails}
+            <p style="margin: 8px 0;"><strong>Season:</strong> ${season} ${year}</p>
+            <p style="margin: 8px 0;"><strong>Players Registered:</strong></p>
+            <ul style="margin: 8px 0;">
+              ${players.map((p) => `<li>${p.fullName}</li>`).join('')}
+            </ul>
+          </div>
+          
+          <div style="background: #fff3cd; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #ffc107;">
+            <h4 style="margin-top: 0; color: #856404;">⚠️ Important: Payment Required</h4>
+            <p style="margin: 8px 0; color: #856404;">
+              <strong>Your registration is not complete until payment is received.</strong> 
+              Please complete your payment within 7 days to secure your spot(s) in the program.
+            </p>
+            <p style="margin: 8px 0; color: #856404;">
+              You can complete your payment by logging into your account and visiting the "Registrations" section.
+            </p>
+          </div>
+          
+          <p style="font-size: 16px;"><strong>What's Next?</strong></p>
+          <ul style="font-size: 14px;">
+            <li>Complete your payment to secure your player's spot</li>
+            <li>You will receive schedule information after payment is completed</li>
+            <li>Look out for welcome materials from your coach</li>
+            <li>Practice schedules will be shared via email</li>
+          </ul>
+          
+          <p style="font-size: 14px; color: #555;">If you have any questions, please contact us at bothellselect@proton.me</p>
+          
+          <p style="font-size: 16px; font-weight: bold;">We look forward to having you in our program! 🏀</p>
+        </div>
+        
+        <div style="background: #e5e7eb; padding: 15px; text-align: center; font-size: 14px; color: #555; border-radius: 0 0 5px 5px;">
+          <p style="margin: 0;">Bothell Select Basketball<br>
+          bothellselect@proton.me</p>
+        </div>
+      </div>
+    `;
+
+    // 4. Send the email
+    const result = await sendEmail({
+      to: parent.email,
+      subject,
+      html: emailHtml,
+    });
+
+    console.log('Registration pending payment email sent successfully:', {
+      parentId,
+      playerCount: players.length,
+      season,
+      year,
+      email: parent.email,
+    });
+
+    return result;
+  } catch (err) {
+    console.error('Error in sendRegistrationPendingEmail:', {
+      error: err.message,
+      parentId,
+      playerIds,
+      season,
+      year,
+      timestamp: new Date().toISOString(),
+    });
+    throw err;
+  }
+}
+
 // ============ EXPORTS ============
 module.exports = {
   sendEmail,
@@ -687,4 +928,6 @@ module.exports = {
   sendTournamentRegistrationEmail, // For tournament registration (after payment)
   sendTryoutEmail,
   sendPaymentConfirmationEmail,
+  sendRegistrationPendingEmail,
+  sendTrainingRegistrationPendingEmail,
 };

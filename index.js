@@ -8,6 +8,7 @@ const cors = require('cors');
 const Player = require('./models/Player');
 const Parent = require('./models/Parent');
 const PlayerRegistration = require('./models/PlayerRegistration');
+const TournamentConfig = require('./models/TournamentConfig');
 const authRoutes = require('./routes/authRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const searchRoutes = require('./routes/searchRoutes');

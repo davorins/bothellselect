@@ -18,7 +18,7 @@ const internalTeamSchema = new mongoose.Schema(
     },
     gender: {
       type: String,
-      enum: ['Male', 'Female', 'Coed'],
+      enum: ['Male', 'Female'],
       required: true,
     },
     coachIds: [

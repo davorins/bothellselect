@@ -1,4 +1,4 @@
-// paymentProcessRoutes.js - COMPLETE PAYMENT PROCESSING SOLUTION
+// paymentProcessRoutes.js
 const express = require('express');
 const { authenticate } = require('../utils/auth');
 const Payment = require('../models/Payment');
@@ -36,7 +36,13 @@ router.post('/tournament-team', authenticate, async (req, res) => {
       teamId,
       tournament,
       year,
+      tournamentId,
       cardDetails,
+      cardLastFour,
+      cardBrand,
+      cardExpMonth,
+      cardExpYear,
+      tournaments,
       isAdmin = false,
     } = req.body;
 
@@ -46,12 +52,13 @@ router.post('/tournament-team', authenticate, async (req, res) => {
       teamId,
       tournament,
       year,
+      tournamentId,
       amount,
       parentId,
       email: buyerEmailAddress,
       hasToken: !!token,
       hasSourceId: !!sourceId,
-      cardDetails: cardDetails ? 'provided' : 'missing',
+      tournamentsCount: tournaments?.length || 0,
     });
 
     // Validate required fields with specific error messages
@@ -93,6 +100,33 @@ router.post('/tournament-team', authenticate, async (req, res) => {
         error: 'Payment token is required',
         message: 'No payment token or sourceId provided',
       });
+    }
+
+    // CRITICAL: Validate tournamentId
+    if (!tournamentId) {
+      console.warn(
+        'No tournamentId provided in request, attempting to use tournaments array'
+      );
+      // Try to get tournamentId from tournaments array
+      if (tournaments && tournaments.length > 0) {
+        const firstTournament = tournaments[0];
+        if (firstTournament.tournamentId) {
+          tournamentId = firstTournament.tournamentId;
+          console.log(
+            'Using tournamentId from tournaments array:',
+            tournamentId
+          );
+        }
+      }
+
+      if (!tournamentId) {
+        return res.status(400).json({
+          success: false,
+          error: 'Tournament ID is required',
+          message:
+            'No tournamentId provided. Please include tournamentId in the request.',
+        });
+      }
     }
 
     // Check Square configuration
@@ -142,6 +176,10 @@ router.post('/tournament-team', authenticate, async (req, res) => {
     }
 
     console.log('Team found:', team.name);
+    console.log(
+      'Current team tournaments:',
+      JSON.stringify(team.tournaments, null, 2)
+    );
 
     // Get parent for Square customer
     console.log('Looking up parent:', parentId);
@@ -262,46 +300,94 @@ router.post('/tournament-team', authenticate, async (req, res) => {
 
     console.log('Square payment completed successfully');
 
-    // Validate cardDetails before using them
-    if (!cardDetails) {
-      console.warn('No card details provided in request');
-    }
+    // Extract card details
+    const cardLast4 = cardDetails?.last_4 || cardLastFour || 'N/A';
+    const finalCardBrand = cardDetails?.card_brand || cardBrand || 'N/A';
+    const finalCardExpMonth = cardDetails?.exp_month || cardExpMonth || '0';
+    const finalCardExpYear = cardDetails?.exp_year || cardExpYear || '0';
 
-    // Update team tournament payment status
-    const tournamentIndex = team.tournaments.findIndex(
-      (t) => t.tournament === tournament && t.year === parseInt(year)
-    );
-
+    // CRITICAL FIX: Prepare tournament data according to TournamentRegistrationSchema
     const tournamentData = {
-      tournament: tournament,
+      tournamentId: new mongoose.Types.ObjectId(tournamentId), // MUST be ObjectId
+      tournamentName: tournament, // MUST be tournamentName, not tournament
       year: parseInt(year),
+      registrationDate: new Date(),
       paymentStatus: 'paid',
       paymentComplete: true,
-      paymentDate: new Date(),
-      paymentId: paymentResult.id, // REAL Square payment ID
-      cardLast4: cardDetails?.last_4 || 'N/A',
-      cardBrand: cardDetails?.card_brand || 'N/A',
       amountPaid: amount / 100,
-      levelOfCompetition: team.levelOfCompetition || 'Silver',
+      paymentId: paymentResult.id,
+      paymentMethod: 'card',
+      cardLast4: cardLast4,
+      cardBrand: finalCardBrand,
+      levelOfCompetition: team.levelOfCompetition || 'Gold',
+      // Add optional fields from tournaments array if available
+      ...(tournaments && tournaments[0]
+        ? {
+            registrationId: tournaments[0].registrationId || null,
+          }
+        : {}),
     };
+
+    console.log(
+      'Prepared tournament data for schema validation:',
+      tournamentData
+    );
+
+    // Initialize tournaments array if it doesn't exist
+    if (!team.tournaments || !Array.isArray(team.tournaments)) {
+      team.tournaments = [];
+    }
+
+    // Check if this tournament already exists
+    const tournamentIndex = team.tournaments.findIndex(
+      (t) =>
+        (t.tournamentName === tournament || t.tournament === tournament) &&
+        t.year === parseInt(year)
+    );
 
     if (tournamentIndex >= 0) {
       // Update existing tournament entry
+      console.log(
+        'Updating existing tournament entry at index:',
+        tournamentIndex
+      );
       team.tournaments[tournamentIndex] = {
         ...team.tournaments[tournamentIndex],
         ...tournamentData,
       };
     } else {
       // Add new tournament entry
+      console.log('Adding new tournament entry');
       team.tournaments.push(tournamentData);
     }
 
     // Update top-level team payment status
     team.paymentComplete = true;
     team.paymentStatus = 'paid';
+    team.updatedAt = new Date();
+
+    // Make sure tournament and registrationYear are set
+    team.tournament = tournament;
+    team.registrationYear = parseInt(year);
+
+    // Mark tournaments array as modified
     team.markModified('tournaments');
 
-    await team.save({ session });
+    try {
+      await team.save({ session });
+      console.log(
+        'Team saved successfully with tournaments:',
+        JSON.stringify(team.tournaments, null, 2)
+      );
+    } catch (saveError) {
+      console.error('Error saving team:', saveError.message);
+      console.error('Save error details:', {
+        teamId: team._id,
+        tournaments: team.tournaments,
+        validationErrors: saveError.errors || 'No validation errors',
+      });
+      throw new Error(`Failed to save team: ${saveError.message}`);
+    }
 
     console.log('Team updated with payment:', {
       teamId: team._id,
@@ -322,8 +408,8 @@ router.post('/tournament-team', authenticate, async (req, res) => {
           paymentComplete: true,
           paymentDate: new Date(),
           paymentId: paymentResult.id,
-          cardLast4: cardDetails?.last_4 || 'N/A',
-          cardBrand: cardDetails?.card_brand || 'N/A',
+          cardLast4: cardLast4,
+          cardBrand: finalCardBrand,
           amountPaid: amount / 100,
           updatedAt: new Date(),
         },
@@ -342,10 +428,10 @@ router.post('/tournament-team', authenticate, async (req, res) => {
       paymentId: paymentResult.id,
       locationId: process.env.SQUARE_LOCATION_ID,
       buyerEmail: buyerEmailAddress,
-      cardLastFour: cardDetails?.last_4 || 'N/A',
-      cardBrand: cardDetails?.card_brand || 'N/A',
-      cardExpMonth: cardDetails?.exp_month || 0,
-      cardExpYear: cardDetails?.exp_year || 0,
+      cardLastFour: cardLast4,
+      cardBrand: finalCardBrand,
+      cardExpMonth: finalCardExpMonth,
+      cardExpYear: finalCardExpYear,
       amount: amount / 100,
       currency: 'USD',
       status: 'completed',
@@ -706,6 +792,8 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
         year,
         amountPerTeam: amountPerTeam,
       },
+      cardExpMonth: req.body.cardExpMonth || cardDetails?.exp_month || '0',
+      cardExpYear: req.body.cardExpYear || cardDetails?.exp_year || '0',
     });
 
     await payment.save({ session });
@@ -984,6 +1072,8 @@ router.post(
           year: p.year,
           tryoutId: p.tryoutId.trim(),
         })),
+        cardExpMonth: req.body.cardExpMonth || cardDetails?.exp_month || '0',
+        cardExpYear: req.body.cardExpYear || cardDetails?.exp_year || '0',
       });
 
       await payment.save({ session });
@@ -1158,7 +1248,7 @@ router.post(
       try {
         const playerCount = players.length;
         const totalAmount = amount / 100;
-        const perPlayerAmount = 1050;
+        const perPlayerAmount = totalAmount / playerCount;
 
         await sendEmail({
           to: email,
@@ -1169,7 +1259,7 @@ router.post(
           <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px; height: auto;">
         </div>
         
-        <div style="background: #1a56db; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+        <div style="background: #506ee4; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
           <h1 style="margin: 0;">🎉 Payment Confirmed!</h1>
         </div>
         
@@ -1178,8 +1268,8 @@ router.post(
           
           <p style="font-size: 16px;">Thank you for your payment! Your registration has been confirmed.</p>
           
-          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #1a56db;">
-            <h3 style="margin-top: 0; color: #1a56db;">Payment Details</h3>
+          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
+            <h3 style="margin-top: 0; color: #506ee4;">Payment Details</h3>
             <p style="margin: 8px 0;"><strong>Number of Players:</strong> ${playerCount}</p>
             <p style="margin: 8px 0;"><strong>Fee per Player:</strong> $${perPlayerAmount}</p>
             <p style="margin: 8px 0;"><strong>Total Amount Paid:</strong> $${totalAmount}</p>
@@ -1503,6 +1593,8 @@ router.post('/process', authenticate, async (req, res) => {
       status: 'completed',
       processedAt: new Date(),
       receiptUrl: paymentResult.receiptUrl,
+      cardExpMonth: req.body.cardExpMonth || cardDetails?.exp_month || '0',
+      cardExpYear: req.body.cardExpYear || cardDetails?.exp_year || '0',
     });
 
     await payment.save({ session });
@@ -1518,7 +1610,7 @@ router.post('/process', authenticate, async (req, res) => {
               <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px; height: auto;">
             </div>
             
-            <div style="background: #1a56db; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+            <div style="background: #506ee4; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
               <h1 style="margin: 0;">🎉 Payment Confirmed!</h1>
             </div>
             
@@ -1527,8 +1619,8 @@ router.post('/process', authenticate, async (req, res) => {
               
               <p style="font-size: 16px;">Thank you for your payment! Your registration has been confirmed.</p>
               
-              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #1a56db;">
-                <h3 style="margin-top: 0; color: #1a56db;">Payment Details</h3>
+              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
+                <h3 style="margin-top: 0; color: #506ee4;">Payment Details</h3>
                 <p style="margin: 8px 0;"><strong>Number of Players:</strong> ${players.length}</p>
                 <p style="margin: 8px 0;"><strong>Total Amount Paid:</strong> $${amount / 100}</p>
                 <p style="margin: 8px 0;"><strong>Payment ID:</strong> ${paymentResult.id}</p>

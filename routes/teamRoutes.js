@@ -52,9 +52,6 @@ router.get(
       if (grade) {
         query.grade = grade;
       }
-      if (gender && gender !== 'Coed') {
-        query.gender = gender;
-      }
 
       console.log('Available players query:', query);
 
@@ -150,7 +147,7 @@ router.post(
       .withMessage('Valid year is required'),
     body('grade').notEmpty().withMessage('Grade is required'),
     body('gender')
-      .isIn(['Male', 'Female', 'Coed'])
+      .isIn(['Male', 'Female'])
       .withMessage('Valid gender is required'),
     body('tryoutSeason').notEmpty().withMessage('Tryout season is required'),
     body('tryoutYear')

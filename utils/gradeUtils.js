@@ -1,30 +1,54 @@
-// utils/gradeUtils.js
-const calculateGradeFromDOB = (dob, currentYear) => {
-  if (!dob) return '';
+// backend/utils/gradeUtils.js
+const calculateGradeFromDOB = (dob, registrationYear) => {
+  if (!dob || !registrationYear) return '';
 
-  const birthDate = new Date(dob);
-  const birthYear = birthDate.getUTCFullYear();
+  try {
+    const birthDate = new Date(dob);
+    const birthYear = birthDate.getUTCFullYear();
+    const birthMonth = birthDate.getUTCMonth() + 1; // Convert to 1-indexed (Jan = 1)
+    const birthDay = birthDate.getUTCDate();
 
-  // Washington state cutoff (August 31st)
-  const cutoffMonth = 7; // August (0-indexed)
-  const cutoffDay = 31;
+    console.log('🔍 Backend Grade Calculation:', {
+      dob,
+      registrationYear,
+      birthYear,
+      birthMonth,
+      birthDay,
+    });
 
-  // Determine academic year (current year if after cutoff, previous year if before)
-  const today = new Date();
-  const academicYear =
-    today.getMonth() > cutoffMonth ||
-    (today.getMonth() === cutoffMonth && today.getDate() >= cutoffDay)
-      ? currentYear
-      : currentYear - 1;
+    // Washington state cutoff: Students must be 5 by August 31st to start Kindergarten
+    const cutoffMonth = 8; // August (1-indexed)
+    const cutoffDay = 31;
 
-  let baseGrade = academicYear - birthYear - 5; // Adjust for typical K start age
+    // Determine if child was born before cutoff (on or before August 31)
+    const isBeforeCutoff =
+      birthMonth < cutoffMonth ||
+      (birthMonth === cutoffMonth && birthDay <= cutoffDay);
 
-  // Handle edge cases
-  if (baseGrade < 0) return 'PK'; // Pre-K
-  if (baseGrade === 0) return 'K'; // Kindergarten
-  if (baseGrade > 12) return '12'; // Max grade
+    // Kindergarten start year calculation
+    const kindergartenStartYear = isBeforeCutoff
+      ? birthYear + 5
+      : birthYear + 6;
 
-  return baseGrade.toString();
+    // Calculate grade level
+    const gradeLevel = registrationYear - kindergartenStartYear;
+
+    console.log('🔍 Backend Grade Result:', {
+      isBeforeCutoff,
+      kindergartenStartYear,
+      gradeLevel,
+    });
+
+    // Handle edge cases
+    if (gradeLevel < 0) return 'PK'; // Pre-Kindergarten
+    if (gradeLevel === 0) return 'K'; // Kindergarten
+    if (gradeLevel > 12) return '12'; // Maximum 12th grade
+
+    return gradeLevel.toString();
+  } catch (error) {
+    console.error('Error calculating grade from DOB:', error);
+    return '';
+  }
 };
 
 module.exports = { calculateGradeFromDOB };
