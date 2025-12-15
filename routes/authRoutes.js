@@ -167,7 +167,6 @@ const addressUtils = {
 const { parseAddress, ensureAddress } = addressUtils;
 
 // Register a new parent
-// Register a new parent - MODIFY THIS ENDPOINT
 router.post(
   '/register',
   [
@@ -275,7 +274,7 @@ router.post(
       const parent = new Parent(parentData);
       await parent.save();
 
-      // ✅ ADD THIS: Send welcome email for account creation
+      // ✅ Send welcome email for account creation
       try {
         // Import the email function
         const { sendEmail } = require('../utils/email');
