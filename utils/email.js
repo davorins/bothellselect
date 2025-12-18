@@ -1,3 +1,4 @@
+// utils/email.js
 const { Resend } = require('resend');
 const Parent = require('../models/Parent');
 const Player = require('../models/Player');
@@ -919,6 +920,667 @@ async function sendRegistrationPendingEmail(
   }
 }
 
+// ============ FORM PAYMENT RECEIPT EMAIL ============
+async function sendFormPaymentReceiptEmail(formData, submissionData) {
+  try {
+    const {
+      formTitle,
+      userName,
+      userEmail,
+      amount,
+      currency,
+      transactionId,
+      receiptUrl,
+      selectedPackage,
+      quantity = 1,
+      tournamentInfo,
+      venues,
+      formData: formDataFull,
+    } = formData;
+
+    const { submissionId, submittedAt, cardLast4, cardBrand, paymentStatus } =
+      submissionData;
+
+    // Format currency
+    const formattedAmount = new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: currency || 'USD',
+      minimumFractionDigits: 2,
+    }).format(amount);
+
+    // Format date
+    const formatDate = (date) => {
+      return new Date(date).toLocaleDateString('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    };
+
+    // Generate tournament details HTML
+    let tournamentDetailsHtml = '';
+    if (tournamentInfo) {
+      const formatTournamentDate = (dateStr) => {
+        try {
+          return new Date(dateStr).toLocaleDateString('en-US', {
+            month: 'long',
+            day: 'numeric',
+            year: 'numeric',
+          });
+        } catch (e) {
+          return dateStr;
+        }
+      };
+
+      const formatTime = (timeStr) => {
+        if (!timeStr) return '';
+        try {
+          const [hours, minutes] = timeStr.split(':');
+          const hour = parseInt(hours);
+          const suffix = hour >= 12 ? 'PM' : 'AM';
+          const displayHour = hour % 12 || 12;
+          return `${displayHour}:${minutes} ${suffix}`;
+        } catch (e) {
+          return timeStr;
+        }
+      };
+
+      tournamentDetailsHtml = `
+        <div style="background: #f0f9f0; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #28a745;">
+          <h3 style="margin-top: 0;">Tournament Information</h3>
+          <table style="width: 100%; border-collapse: collapse;">
+            <tr>
+              <td style="padding: 8px 0;"><strong>Event:</strong></td>
+              <td style="padding: 8px 0;">${formTitle}</td>
+            </tr>
+            ${
+              tournamentInfo.startDate
+                ? `
+            <tr>
+              <td style="padding: 8px 0;"><strong>Dates:</strong></td>
+              <td style="padding: 8px 0;">${formatTournamentDate(tournamentInfo.startDate)} - ${formatTournamentDate(tournamentInfo.endDate)}</td>
+            </tr>`
+                : ''
+            }
+            ${
+              tournamentInfo.startTime && tournamentInfo.endTime
+                ? `
+            <tr>
+              <td style="padding: 8px 0;"><strong>Time:</strong></td>
+              <td style="padding: 8px 0;">${formatTime(tournamentInfo.startTime)} - ${formatTime(tournamentInfo.endTime)}</td>
+            </tr>`
+                : ''
+            }
+            <tr>
+              <td style="padding: 8px 0;"><strong>Refund Policy:</strong></td>
+              <td style="padding: 8px 0;">${tournamentInfo.isRefundable ? tournamentInfo.refundPolicy || 'Refundable' : 'Non-refundable'}</td>
+            </tr>
+          </table>
+        </div>
+      `;
+
+      // Add venues if available
+      if (venues && venues.length > 0) {
+        const primaryVenue = venues.find((v) => v.isPrimary) || venues[0];
+        if (primaryVenue) {
+          tournamentDetailsHtml += `
+            <div style="background: #f0f4f8; padding: 15px; border-radius: 5px; margin: 15px 0;">
+              <h3 style="margin-top: 0;">Primary Venue</h3>
+              <p style="margin: 8px 0;"><strong>${primaryVenue.venueName}</strong></p>
+              <p style="margin: 8px 0;">${primaryVenue.fullAddress || `${primaryVenue.address}, ${primaryVenue.city}, ${primaryVenue.state} ${primaryVenue.zipCode}`}</p>
+              ${primaryVenue.additionalInfo ? `<p style="margin: 8px 0; font-style: italic;">${primaryVenue.additionalInfo}</p>` : ''}
+            </div>
+          `;
+        }
+      }
+    }
+
+    // Build the email HTML
+    const emailHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Payment Receipt - ${formTitle}</title>
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: #f9fafb;
+            margin: 0;
+            padding: 20px;
+          }
+          .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+          }
+          .header {
+            background: #506ee4;
+            color: white;
+            padding: 20px;
+            text-align: center;
+          }
+          .content {
+            padding: 20px;
+          }
+          .section {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 5px;
+          }
+          .success {
+            background: #d1e7dd;
+            border-left: 4px solid #0f5132;
+            color: #0f5132;
+          }
+          .info {
+            background: #cff4fc;
+            border-left: 4px solid #055160;
+            color: #055160;
+          }
+          table {
+            width: 100%;
+            border-collapse: collapse;
+          }
+          td {
+            padding: 8px 0;
+            border-bottom: 1px solid #eee;
+          }
+          .receipt-id {
+            font-size: 14px;
+            color: #666;
+            text-align: center;
+            padding: 10px;
+            background: #f8f9fa;
+          }
+          .button {
+            display: inline-block;
+            padding: 10px 20px;
+            background: #506ee4;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            margin: 10px 0;
+          }
+        </style>
+      </head>
+      <body>
+        
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; background: #f9fafb; padding: 20px;">
+        <div style="text-align: center; margin-bottom: 20px;">
+          <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px; height: auto;">
+        </div>
+        
+        <div style="background: #506ee4; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+          <h1 style="margin: 0;">${formTitle}</h1>
+          <span style="margin: 10px 0 0; opacity: 0.9;">Thank you for your purchase</span>
+        </div>
+        
+        <div style="background: white; padding: 20px; border-radius: 0 0 5px 5px;">
+          <div class="section">
+                <h3 style="margin-top: 0;">Payment Details</h3>
+                <table>
+                  <tr>
+                    <td><strong>Package Name:</strong></td>
+                    <td>${selectedPackage.name}</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Date:</strong></td>
+                    <td>${formatDate(submittedAt)}</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Quantity:</strong></td>
+                    <td>${quantity}</td>
+                  </tr>
+                  <tr>
+                    <td><strong>Total:</strong></td>
+                    <td><strong style="color: #506ee4;">${formattedAmount}</strong></td>
+                  </tr>
+                  <tr>
+                    <td><strong>Payment Method:</strong></td>
+                    <td>${cardBrand || 'Card'} ending in ${cardLast4 || '****'}</td>
+                  </tr>
+                </table>
+              </div>
+          </div>
+          ${tournamentDetailsHtml}
+          ${
+            receiptUrl
+              ? `
+          <div style="text-align: center; margin: 20px 0;">
+            <a href="${receiptUrl}" class="button" style="color: white; text-decoration: none;">📄 Download Receipt</a>
+          </div>
+          `
+              : ''
+          }
+          
+          <div class="section info">
+            <h3 style="margin-top: 0;">Need Help?</h3>
+            <p style="margin: 8px 0;">If you have any questions about your purchase, please contact us at:</p>
+            <p style="margin: 8px 0;">
+              <strong>Email:</strong> bothellselect@proton.me<br>
+              <strong>Reference:</strong> ${transactionId || submissionId}
+            </p>
+          </div>
+        </div>
+        
+        <div class="receipt-id">
+          Receipt ID: ${submissionId}<br>
+          Generated: ${formatDate(new Date())}
+        </div>
+      </div>
+      </body>
+      </html>
+    `;
+
+    // Send the email using Resend
+    const { data, error } = await resend.emails.send({
+      from: 'Bothell Select <info@bothellselect.com>',
+      to: userEmail,
+      subject: `Payment Receipt - ${formTitle}`,
+      html: emailHtml,
+    });
+
+    if (error) {
+      console.error('Error sending form payment receipt:', error);
+      throw error;
+    }
+
+    console.log('Form payment receipt email sent successfully:', {
+      to: userEmail,
+      formTitle,
+      amount: formattedAmount,
+      transactionId,
+      submissionId,
+    });
+
+    return data;
+  } catch (err) {
+    console.error('Error in sendFormPaymentReceiptEmail:', {
+      error: err.message,
+      formTitle: formData?.formTitle,
+      userEmail: formData?.userEmail,
+      timestamp: new Date().toISOString(),
+    });
+    throw err;
+  }
+}
+
+// ============ FORM SUBMISSION CONFIRMATION EMAIL ============
+async function sendFormSubmissionConfirmationEmail(formData, submissionData) {
+  try {
+    const {
+      formTitle,
+      userEmail,
+      userName,
+      submissionId,
+      submittedAt,
+      formData: formDataFull,
+    } = formData;
+
+    // Format date
+    const formatDate = (date) => {
+      return new Date(date).toLocaleDateString('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    };
+
+    // Build the email HTML
+    const emailHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Form Submission Confirmation - ${formTitle}</title>
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: #f9fafb;
+            margin: 0;
+            padding: 20px;
+          }
+          .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+          }
+          .header {
+            background: #506ee4;
+            color: white;
+            padding: 20px;
+            text-align: center;
+          }
+          .content {
+            padding: 20px;
+          }
+          .section {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 5px;
+            background: #f8f9fa;
+          }
+          table {
+            width: 100%;
+            border-collapse: collapse;
+          }
+          td {
+            padding: 8px 0;
+            border-bottom: 1px solid #eee;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1 style="margin: 0;">✅ Form Submitted!</h1>
+            <p style="margin: 10px 0 0; opacity: 0.9;">${formTitle}</p>
+          </div>
+          
+          <div class="content">
+            <p>Hello ${userName || 'Valued Customer'},</p>
+            
+            <p>Thank you for submitting the form. We have received your information.</p>
+            
+            <div class="section">
+              <h3 style="margin-top: 0; color: #506ee4;">Submission Details</h3>
+              <table>
+                <tr>
+                  <td><strong>Form:</strong></td>
+                  <td>${formTitle}</td>
+                </tr>
+                <tr>
+                  <td><strong>Submission ID:</strong></td>
+                  <td>${submissionId}</td>
+                </tr>
+                <tr>
+                  <td><strong>Submitted:</strong></td>
+                  <td>${formatDate(submittedAt)}</td>
+                </tr>
+              </table>
+            </div>
+            
+            ${
+              formDataFull
+                ? `
+            <div class="section">
+              <h3 style="margin-top: 0; color: #506ee4;">Your Submission</h3>
+              <table>
+                ${Object.entries(formDataFull)
+                  .map(
+                    ([key, value]) => `
+                    <tr>
+                      <td><strong>${key}:</strong></td>
+                      <td>${value}</td>
+                    </tr>
+                  `
+                  )
+                  .join('')}
+              </table>
+            </div>
+            `
+                : ''
+            }
+            
+            <p style="margin-top: 20px;">
+              <strong>Need to make changes?</strong><br>
+              If you need to update your submission or have any questions, please contact us at info@bothellselect.com
+            </p>
+            
+            <p>Thank you,<br>The Bothell Select Team</p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    // Send the email using Resend
+    const { data, error } = await resend.emails.send({
+      from: 'Bothell Select <info@bothellselect.com>',
+      to: userEmail,
+      subject: `Form Submission Confirmation - ${formTitle}`,
+      html: emailHtml,
+    });
+
+    if (error) {
+      console.error('Error sending form submission confirmation:', error);
+      throw error;
+    }
+
+    console.log('Form submission confirmation email sent successfully:', {
+      to: userEmail,
+      formTitle,
+      submissionId,
+    });
+
+    return data;
+  } catch (err) {
+    console.error('Error in sendFormSubmissionConfirmationEmail:', {
+      error: err.message,
+      formTitle: formData?.formTitle,
+      userEmail: formData?.userEmail,
+      timestamp: new Date().toISOString(),
+    });
+    throw err;
+  }
+}
+
+// ============ FORM OWNER NOTIFICATION EMAIL ============
+async function sendFormOwnerNotificationEmail({
+  to,
+  formTitle,
+  customerName,
+  customerEmail,
+  amount,
+  currency,
+  transactionId,
+  submissionId,
+  paymentDetails,
+  tournamentInfo,
+}) {
+  try {
+    const formattedAmount = new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: currency || 'USD',
+      minimumFractionDigits: 2,
+    }).format(amount);
+
+    const notificationHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>New Payment Notification - ${formTitle}</title>
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background-color: #f9fafb;
+            margin: 0;
+            padding: 20px;
+          }
+          .container {
+            max-width: 600px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+          }
+          .header {
+            background: #506ee4;
+            color: white;
+            padding: 20px;
+            text-align: center;
+          }
+          .content {
+            padding: 20px;
+          }
+          .section {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 5px;
+          }
+          .payment-info {
+            background: #f8f9fa;
+            border-left: 4px solid #506ee4;
+          }
+          .tournament-info {
+            background: #f0f9f0;
+            border-left: 4px solid #28a745;
+          }
+          table {
+            width: 100%;
+            border-collapse: collapse;
+          }
+          td {
+            padding: 8px 0;
+            border-bottom: 1px solid #eee;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="header">
+            <h1 style="margin: 0;">📋 New Form Payment Received</h1>
+            <p style="margin: 10px 0 0; opacity: 0.9;">${formTitle}</p>
+          </div>
+          
+          <div class="content">
+            <div class="section payment-info">
+              <h3 style="margin-top: 0; color: #506ee4;">Payment Details</h3>
+              <table>
+                <tr>
+                  <td><strong>Form:</strong></td>
+                  <td>${formTitle}</td>
+                </tr>
+                <tr>
+                  <td><strong>Customer Name:</strong></td>
+                  <td>${customerName || 'N/A'}</td>
+                </tr>
+                <tr>
+                  <td><strong>Customer Email:</strong></td>
+                  <td>${customerEmail}</td>
+                </tr>
+                <tr>
+                  <td><strong>Amount:</strong></td>
+                  <td><strong>${formattedAmount}</strong></td>
+                </tr>
+                ${
+                  paymentDetails
+                    ? `
+                <tr>
+                  <td><strong>Payment Details:</strong></td>
+                  <td>${paymentDetails}</td>
+                </tr>
+                `
+                    : ''
+                }
+                <tr>
+                  <td><strong>Transaction ID:</strong></td>
+                  <td>${transactionId}</td>
+                </tr>
+                <tr>
+                  <td><strong>Submission ID:</strong></td>
+                  <td>${submissionId}</td>
+                </tr>
+                <tr>
+                  <td><strong>Date:</strong></td>
+                  <td>${new Date().toLocaleString()}</td>
+                </tr>
+              </table>
+            </div>
+            
+            ${
+              tournamentInfo
+                ? `
+            <div class="section tournament-info">
+              <h4 style="margin-top: 0; color: #28a745;">Tournament Information</h4>
+              <table>
+                <tr>
+                  <td><strong>Event:</strong></td>
+                  <td>${formTitle}</td>
+                </tr>
+                ${
+                  tournamentInfo.startDate
+                    ? `
+                <tr>
+                  <td><strong>Dates:</strong></td>
+                  <td>${tournamentInfo.startDate} - ${tournamentInfo.endDate}</td>
+                </tr>
+                `
+                    : ''
+                }
+                <tr>
+                  <td><strong>Refundable:</strong></td>
+                  <td>${tournamentInfo.isRefundable ? 'Yes' : 'No'}</td>
+                </tr>
+              </table>
+            </div>
+            `
+                : ''
+            }
+            
+            <p style="color: #666; font-size: 14px; text-align: center;">
+              This is an automated notification from your form payment system.
+            </p>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    const { data, error } = await resend.emails.send({
+      from: 'Bothell Select <info@bothellselect.com>',
+      to,
+      subject: `New Payment: ${formTitle} - ${formattedAmount}`,
+      html: notificationHtml,
+    });
+
+    if (error) {
+      console.error('Error sending form owner notification:', error);
+      throw error;
+    }
+
+    console.log('Form owner notification email sent successfully:', {
+      to,
+      formTitle,
+      amount: formattedAmount,
+    });
+
+    return data;
+  } catch (err) {
+    console.error('Error in sendFormOwnerNotificationEmail:', {
+      error: err.message,
+      to,
+      formTitle,
+      timestamp: new Date().toISOString(),
+    });
+    throw err;
+  }
+}
+
 // ============ EXPORTS ============
 module.exports = {
   sendEmail,
@@ -930,4 +1592,7 @@ module.exports = {
   sendPaymentConfirmationEmail,
   sendRegistrationPendingEmail,
   sendTrainingRegistrationPendingEmail,
+  sendFormPaymentReceiptEmail,
+  sendFormSubmissionConfirmationEmail,
+  sendFormOwnerNotificationEmail,
 };

@@ -1,3 +1,4 @@
+// emailCampaignRoutes.js
 const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { authenticate } = require('../utils/auth');

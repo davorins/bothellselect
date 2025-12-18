@@ -23,13 +23,17 @@ const uploadRoutes = require('./routes/upload');
 const emailTemplateRoutes = require('./routes/emailTemplates');
 const emailCampaignRoutes = require('./routes/emailCampaignRoutes');
 const eventRoutes = require('./routes/eventRoutes');
-const formsRoutes = require('./routes/formRoutes');
 const faqRoutes = require('./routes/faqRoutes');
 const teamRoutes = require('./routes/teamRoutes');
 const adminDashboardRoutes = require('./routes/adminDashboard');
 const spotlightRoutes = require('./routes/spotlightRoutes');
 const schoolRoutes = require('./routes/schoolRoutes');
 const registrationRoutes = require('./routes/registrationRoutes');
+const formPublicRoutes = require('./routes/formPublic');
+const formBuilderRoutes = require('./routes/formBuilder');
+const formPaymentRoutes = require('./routes/form-payments');
+const formRoutes = require('./routes/formRoutes');
+const ticketRoutes = require('./routes/tickets');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -83,13 +87,21 @@ app.use('/api/upload', uploadRoutes);
 app.use('/api/email-templates', emailTemplateRoutes);
 app.use('/api/email', emailCampaignRoutes);
 app.use('/api/events', eventRoutes);
-app.use('/api/forms', formsRoutes);
 app.use('/api/faqs', faqRoutes);
 app.use('/api', teamRoutes);
 app.use('/api/admin', adminDashboardRoutes);
 app.use('/api/spotlight', spotlightRoutes);
 app.use('/api/schools', schoolRoutes);
 app.use('/api/admin', registrationRoutes);
+app.use('/api/forms', formPublicRoutes);
+app.use('/api/forms', formBuilderRoutes);
+app.use('/api/forms', formRoutes);
+app.use(
+  '/uploads/forms',
+  express.static(path.join(__dirname, 'uploads/forms'))
+);
+app.use('/api/forms/process-payment', formPaymentRoutes);
+app.use('/api/tickets', ticketRoutes);
 
 // Connect to MongoDB
 mongoose
