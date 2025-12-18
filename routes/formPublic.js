@@ -610,8 +610,8 @@ router.get('/embed/:id', async (req, res) => {
             
             if (paymentFields.length > 0) {
               // Square credentials (should come from server-side)
-              const SQUARE_APP_ID = '${process.env.SQUARE_APPLICATION_ID || 'sandbox-sq0idb-I4PAJ1f1XKYqYSwLovq0xQ'}';
-              const SQUARE_LOCATION_ID = '${process.env.SQUARE_LOCATION_ID || 'LCW4GM814GWXK'}';
+              const SQUARE_APP_ID = '${process.env.SQUARE_APPLICATION_ID || 'sq0idp-jUCxKnO_i8i7vccQjVj_0g'}';
+              const SQUARE_LOCATION_ID = '${process.env.SQUARE_LOCATION_ID || 'L26Q50FWRCQW5'}';
               
               paymentFields.forEach(field => {
                 initializeSquarePayment(
