@@ -31,6 +31,7 @@ const tournamentSettingsSchema = new mongoose.Schema({
   },
   customCheckMethod: String,
   venues: [venueSchema],
+  showScheduleTable: { type: Boolean, default: true },
 });
 
 const formFieldSchema = new mongoose.Schema({
