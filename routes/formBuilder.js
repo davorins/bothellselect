@@ -1,4 +1,4 @@
-//formBuilder.js
+// formBuilder.js
 const express = require('express');
 const router = express.Router();
 const Form = require('../models/Form');
@@ -9,7 +9,16 @@ const mongoose = require('mongoose');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
+
+// Simple UUID v4 generator (replaces the uuid package)
+function uuidv4() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
 
 // Form-specific admin check (doesn't affect other files)
 const requireFormAdmin = (req, res, next) => {
