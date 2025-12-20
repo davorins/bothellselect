@@ -35,6 +35,8 @@ const formPaymentRoutes = require('./routes/form-payments');
 const formRoutes = require('./routes/formRoutes');
 const ticketRoutes = require('./routes/tickets');
 const adminTicketRoutes = require('./routes/ticketRoutes');
+const tournamentRoutes = require('./routes/tournamentRoutes');
+const teamsRoutes = require('./routes/teams');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -104,6 +106,8 @@ app.use(
 app.use('/api/forms/process-payment', formPaymentRoutes);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/admin', adminTicketRoutes);
+app.use('/api/tournaments', tournamentRoutes);
+app.use('/api/teams', teamsRoutes);
 
 // Connect to MongoDB
 mongoose
