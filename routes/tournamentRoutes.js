@@ -739,4 +739,50 @@ router.get(
   tournamentController.getUnscheduledMatches
 );
 
+// Schedule reset routes
+router.get(
+  '/:tournamentId/schedule/can-reset',
+  requireAuth,
+  requireAdmin,
+  [param('tournamentId').isMongoId().withMessage('Invalid tournament ID')],
+  tournamentController.canResetSchedule
+);
+
+router.post(
+  '/:tournamentId/schedule/reset',
+  requireAuth,
+  requireAdmin,
+  [
+    param('tournamentId').isMongoId().withMessage('Invalid tournament ID'),
+    body('resetType')
+      .optional()
+      .isIn(['soft', 'hard', 'partial'])
+      .withMessage('Reset type must be soft, hard, or partial'),
+  ],
+  tournamentController.resetTournamentSchedule
+);
+
+router.post(
+  '/:tournamentId/bracket/recreate',
+  requireAuth,
+  requireAdmin,
+  [
+    param('tournamentId').isMongoId().withMessage('Invalid tournament ID'),
+    body('format')
+      .optional()
+      .isIn([
+        'single-elimination',
+        'double-elimination',
+        'round-robin',
+        'group-stage',
+      ])
+      .withMessage('Invalid tournament format'),
+    body('seeding')
+      .optional()
+      .isIn(['random', 'ranked', 'manual'])
+      .withMessage('Invalid seeding type'),
+  ],
+  tournamentController.recreateBracket
+);
+
 module.exports = router;

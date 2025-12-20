@@ -77,7 +77,6 @@ app.use(
 app.use(express.json());
 
 app.use((req, res, next) => {
-  // Block features that trigger local network access warnings
   res.setHeader(
     'Permissions-Policy',
     'geolocation=(), ' +
@@ -96,10 +95,9 @@ app.use((req, res, next) => {
       'web-share=(), ' +
       'gamepad=(), ' +
       'publickey-credentials-get=(), ' +
-      'local-network-access=()' // <-- THIS IS THE KEY FOR YOUR ISSUE
+      'local-network-access=()'
   );
 
-  // Also add CSP to be safe
   res.setHeader(
     'Content-Security-Policy',
     "default-src 'self'; " +

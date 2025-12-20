@@ -441,20 +441,46 @@ exports.generateBrackets = async (req, res) => {
 };
 
 // Helper function for single elimination bracket
-const generateSingleEliminationBracket = async (tournament) => {
-  const teams = tournament.registeredTeams;
-  const numTeams = teams.length;
+const generateSingleEliminationBracket = async (tournament, teams = null) => {
+  const bracketTeams = teams || tournament.registeredTeams;
+  const numTeams = bracketTeams.length;
+
+  if (numTeams < tournament.minTeams) {
+    throw new Error(
+      `Minimum ${tournament.minTeams} teams required, only ${numTeams} available`
+    );
+  }
+
   const nextPowerOfTwo = Math.pow(2, Math.ceil(Math.log2(numTeams)));
   const byes = nextPowerOfTwo - numTeams;
+
+  console.log(
+    `Creating single elimination bracket: ${numTeams} teams, ${byes} byes, next power of 2: ${nextPowerOfTwo}`
+  );
 
   const matches = [];
   let matchNumber = 1;
   let round = 1;
 
+  // Determine total number of rounds
+  const totalRounds = Math.ceil(Math.log2(nextPowerOfTwo)) + (byes > 0 ? 0 : 0);
+
+  console.log(`Total rounds: ${totalRounds}`);
+
+  // Create first round matches
   const firstRoundMatches = [];
+  const usedTeams = new Set();
+
   for (let i = 0; i < nextPowerOfTwo / 2; i++) {
-    const team1 = i * 2 < numTeams ? teams[i * 2]._id : null;
-    const team2 = i * 2 + 1 < numTeams ? teams[i * 2 + 1]._id : null;
+    const team1Index = i * 2;
+    const team2Index = i * 2 + 1;
+
+    const team1 = team1Index < numTeams ? bracketTeams[team1Index]._id : null;
+    const team2 = team2Index < numTeams ? bracketTeams[team2Index]._id : null;
+
+    // Track used teams
+    if (team1) usedTeams.add(team1.toString());
+    if (team2) usedTeams.add(team2.toString());
 
     const match = new Match({
       tournament: tournament._id,
@@ -463,18 +489,35 @@ const generateSingleEliminationBracket = async (tournament) => {
       team1,
       team2,
       status:
-        team1 && team2 ? 'scheduled' : team1 ? 'bye' : team2 ? 'bye' : null,
+        team1 && team2 ? 'scheduled' : team1 || team2 ? 'bye' : 'scheduled',
+      bracketType: 'winners',
+      bracketLocation: 'upper',
+      positions: {
+        team1Position: team1Index + 1,
+        team2Position: team2Index + 1,
+      },
     });
 
     await match.save();
     matches.push(match);
     firstRoundMatches.push(match);
+
+    console.log(
+      `Round ${round}, Match ${match.matchNumber}: ${team1 ? 'Team ' + team1 : 'BYE'} vs ${team2 ? 'Team ' + team2 : 'BYE'}`
+    );
   }
 
+  console.log(`Created ${firstRoundMatches.length} first round matches`);
+  console.log(`${byes} byes in first round`);
+
+  // Create subsequent rounds
   let currentRoundMatches = firstRoundMatches;
   while (currentRoundMatches.length > 1) {
     round++;
     const nextRoundMatches = [];
+    const matchesInRound = currentRoundMatches.length / 2;
+
+    console.log(`Creating round ${round} with ${matchesInRound} matches`);
 
     for (let i = 0; i < currentRoundMatches.length; i += 2) {
       const match1 = currentRoundMatches[i];
@@ -485,12 +528,15 @@ const generateSingleEliminationBracket = async (tournament) => {
         round,
         matchNumber: matchNumber++,
         status: 'scheduled',
+        bracketType: 'winners',
+        bracketLocation: 'upper',
       });
 
       await match.save();
       matches.push(match);
       nextRoundMatches.push(match);
 
+      // Link matches
       if (match1) {
         match1.nextMatch = match._id;
         await match1.save();
@@ -499,51 +545,84 @@ const generateSingleEliminationBracket = async (tournament) => {
         match2.nextMatch = match._id;
         await match2.save();
       }
+
+      console.log(
+        `Round ${round}, Match ${match.matchNumber}: Winner of Match ${match1?.matchNumber} vs Winner of Match ${match2?.matchNumber}`
+      );
     }
 
     currentRoundMatches = nextRoundMatches;
   }
 
+  // If there's only one match in the final round, it's the championship
+  if (matches.length > 0) {
+    const lastMatch = matches[matches.length - 1];
+    if (lastMatch.round === totalRounds) {
+      lastMatch.bracketType = 'final';
+      await lastMatch.save();
+      console.log(`Final match: Match ${lastMatch.matchNumber}`);
+    }
+  }
+
+  console.log(`Total matches created: ${matches.length}`);
   return matches;
 };
 
 // Helper function for round robin
-const generateRoundRobinSchedule = async (tournament) => {
-  const teams = tournament.registeredTeams;
+const generateRoundRobinSchedule = async (tournament, teams = null) => {
+  const bracketTeams = teams || tournament.registeredTeams;
   const matches = [];
   let matchNumber = 1;
 
-  for (let i = 0; i < teams.length; i++) {
-    for (let j = i + 1; j < teams.length; j++) {
+  console.log(
+    `Creating round robin schedule with ${bracketTeams.length} teams`
+  );
+
+  for (let i = 0; i < bracketTeams.length; i++) {
+    for (let j = i + 1; j < bracketTeams.length; j++) {
       const match = new Match({
         tournament: tournament._id,
         round: 1,
         matchNumber: matchNumber++,
-        team1: teams[i]._id,
-        team2: teams[j]._id,
+        team1: bracketTeams[i]._id,
+        team2: bracketTeams[j]._id,
         status: 'scheduled',
+        bracketType: 'winners',
+        group: tournament.groups?.[0]?.name || 'A',
       });
 
       await match.save();
       matches.push(match);
+      console.log(`Match ${match.matchNumber}: Team ${i + 1} vs Team ${j + 1}`);
     }
   }
 
+  console.log(`Created ${matches.length} round robin matches`);
   return matches;
 };
 
 // Helper function for group stage
-const generateGroupStage = async (tournament) => {
-  const teams = tournament.registeredTeams;
-  const numTeams = teams.length;
+const generateGroupStage = async (tournament, teams = null) => {
+  const bracketTeams = teams || tournament.registeredTeams;
+  const numTeams = bracketTeams.length;
   const groups = Math.ceil(numTeams / 4);
   const matches = [];
 
-  const shuffledTeams = [...teams].sort(() => Math.random() - 0.5);
+  console.log(
+    `Creating group stage with ${numTeams} teams in ${groups} groups`
+  );
+
+  // Shuffle teams if not already shuffled
+  const shuffledTeams = [...bracketTeams].sort(() => Math.random() - 0.5);
+
+  // Clear existing groups
+  tournament.groups = [];
 
   for (let g = 0; g < groups; g++) {
     const groupName = String.fromCharCode(65 + g);
     const groupTeams = shuffledTeams.slice(g * 4, (g + 1) * 4);
+
+    console.log(`Group ${groupName}: ${groupTeams.length} teams`);
 
     tournament.groups.push({
       name: groupName,
@@ -561,58 +640,125 @@ const generateGroupStage = async (tournament) => {
           team2: groupTeams[j]._id,
           group: groupName,
           status: 'scheduled',
+          bracketType: 'winners',
         });
 
         await match.save();
         matches.push(match);
+        console.log(
+          `Group ${groupName}, Match ${match.matchNumber}: Team ${i + 1} vs Team ${j + 1}`
+        );
       }
     }
   }
 
   await tournament.save();
+  console.log(`Created ${matches.length} group stage matches`);
   return matches;
 };
 
 // Helper function for double elimination (simplified)
-const generateDoubleEliminationBracket = async (tournament) => {
-  const teams = tournament.registeredTeams;
-  const numTeams = teams.length;
+const generateDoubleEliminationBracket = async (tournament, teams = null) => {
+  const bracketTeams = teams || tournament.registeredTeams;
+  const numTeams = bracketTeams.length;
   const matches = [];
   let matchNumber = 1;
 
-  // Create winners bracket
+  console.log(`Creating double elimination bracket with ${numTeams} teams`);
+
+  // Create winners bracket (upper bracket)
   const winnersMatches = [];
-  for (
-    let round = 1;
-    Math.ceil(numTeams / Math.pow(2, round - 1)) > 1;
-    round++
-  ) {
+  let round = 1;
+  let teamsInRound = numTeams;
+
+  while (Math.ceil(teamsInRound / 2) > 0) {
+    const matchesInRound = Math.ceil(teamsInRound / 2);
     const roundMatches = [];
-    const matchesInRound = Math.ceil(numTeams / Math.pow(2, round));
+
+    console.log(`Winners bracket round ${round}: ${matchesInRound} matches`);
 
     for (let i = 0; i < matchesInRound; i++) {
+      const team1Index = i * 2;
+      const team2Index = i * 2 + 1;
+
+      const team1 =
+        team1Index < teamsInRound
+          ? bracketTeams[team1Index % bracketTeams.length]?._id
+          : null;
+      const team2 =
+        team2Index < teamsInRound
+          ? bracketTeams[team2Index % bracketTeams.length]?._id
+          : null;
+
       const match = new Match({
         tournament: tournament._id,
-        round,
+        round: round,
         matchNumber: matchNumber++,
+        team1,
+        team2,
         bracketType: 'winners',
         bracketLocation: 'upper',
-        status: 'scheduled',
+        status:
+          team1 && team2 ? 'scheduled' : team1 || team2 ? 'bye' : 'scheduled',
       });
 
       await match.save();
       matches.push(match);
       roundMatches.push(match);
       winnersMatches.push(match);
+
+      console.log(
+        `Winners round ${round}, Match ${match.matchNumber}: ${team1 ? 'Team' : 'BYE'} vs ${team2 ? 'Team' : 'BYE'}`
+      );
     }
+
+    // Link matches for next round
+    if (roundMatches.length > 1) {
+      for (let i = 0; i < roundMatches.length; i += 2) {
+        const match1 = roundMatches[i];
+        const match2 = roundMatches[i + 1];
+
+        // Create next round match
+        const nextMatch = new Match({
+          tournament: tournament._id,
+          round: round + 1,
+          matchNumber: matchNumber++,
+          bracketType: 'winners',
+          bracketLocation: 'upper',
+          status: 'scheduled',
+        });
+
+        await nextMatch.save();
+        matches.push(nextMatch);
+
+        // Link current matches to next match
+        if (match1) {
+          match1.nextMatch = nextMatch._id;
+          await match1.save();
+        }
+        if (match2) {
+          match2.nextMatch = nextMatch._id;
+          await match2.save();
+        }
+      }
+    }
+
+    teamsInRound = Math.ceil(teamsInRound / 2);
+    round++;
   }
 
-  // Create losers bracket
-  const losersRound = winnersMatches.length;
-  for (let i = 0; i < Math.floor(winnersMatches.length / 2); i++) {
+  // Create losers bracket (lower bracket) - simplified version
+  const losersStartRound = Math.ceil(Math.log2(numTeams)) + 1;
+  const losersMatchCount = Math.floor(winnersMatches.length / 2);
+
+  console.log(
+    `Creating losers bracket starting at round ${losersStartRound}: ${losersMatchCount} matches`
+  );
+
+  for (let i = 0; i < losersMatchCount; i++) {
     const match = new Match({
       tournament: tournament._id,
-      round: losersRound + 1,
+      round: losersStartRound,
       matchNumber: matchNumber++,
       bracketType: 'losers',
       bracketLocation: 'lower',
@@ -622,8 +768,12 @@ const generateDoubleEliminationBracket = async (tournament) => {
 
     await match.save();
     matches.push(match);
+    console.log(
+      `Losers bracket, Match ${match.matchNumber}: Consolation match`
+    );
   }
 
+  console.log(`Created ${matches.length} double elimination matches total`);
   return matches;
 };
 
@@ -2880,6 +3030,346 @@ exports.getUnscheduledMatches = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch unscheduled matches',
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Reset tournament schedule - remove all scheduled times and courts
+ */
+exports.resetTournamentSchedule = async (req, res) => {
+  try {
+    const { tournamentId } = req.params;
+    const { resetType = 'soft' } = req.body; // 'soft' keeps matches, 'hard' removes all matches
+
+    console.log(
+      `🔄 Resetting schedule for tournament: ${tournamentId} (type: ${resetType})`
+    );
+
+    const tournament = await Tournament.findById(tournamentId);
+    if (!tournament) {
+      return res.status(404).json({
+        success: false,
+        message: 'Tournament not found',
+      });
+    }
+
+    let resetMatches;
+    let resetMessage;
+
+    if (resetType === 'soft') {
+      // Soft reset: Only clear schedule fields, keep matches
+      resetMatches = await Match.updateMany(
+        { tournament: tournamentId },
+        {
+          $set: {
+            scheduledTime: null,
+            court: null,
+            referee: null,
+            assistantReferee1: null,
+            assistantReferee2: null,
+            actualStartTime: null,
+            actualEndTime: null,
+            isRescheduled: false,
+            timeSlot: null,
+            duration: tournament.settings?.matchDuration || 40,
+          },
+          $unset: {
+            weatherConditions: 1,
+            venue: 1,
+            equipmentNotes: 1,
+            specialRequirements: 1,
+          },
+        }
+      );
+
+      resetMessage =
+        'Schedule cleared successfully. All matches are now unscheduled.';
+    } else if (resetType === 'hard') {
+      // Hard reset: Remove all matches and start fresh
+      resetMatches = await Match.deleteMany({ tournament: tournamentId });
+
+      // Reset tournament status if it was ongoing/completed
+      if (
+        tournament.status === 'ongoing' ||
+        tournament.status === 'completed'
+      ) {
+        tournament.status = 'open';
+        tournament.updatedBy = req.user.id;
+        await tournament.save();
+      }
+
+      resetMessage =
+        'All matches removed. Tournament is ready for new bracket generation.';
+    } else if (resetType === 'partial') {
+      // Partial reset: Only clear future matches
+      const now = new Date();
+      resetMatches = await Match.updateMany(
+        {
+          tournament: tournamentId,
+          scheduledTime: { $gt: now },
+          status: { $in: ['scheduled', 'in-progress'] },
+        },
+        {
+          $set: {
+            scheduledTime: null,
+            court: null,
+            referee: null,
+            status: 'scheduled',
+          },
+        }
+      );
+
+      resetMessage = `Cleared schedule for ${resetMatches.modifiedCount} future matches.`;
+    }
+
+    console.log(`✅ Schedule reset complete: ${resetMessage}`);
+
+    res.json({
+      success: true,
+      message: resetMessage,
+      resetType,
+      matchesAffected:
+        resetMatches?.modifiedCount || resetMatches?.deletedCount || 0,
+      tournamentStatus: tournament.status,
+    });
+  } catch (error) {
+    console.error('❌ Error resetting tournament schedule:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reset schedule',
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Check if schedule can be reset (validation)
+ */
+exports.canResetSchedule = async (req, res) => {
+  try {
+    const { tournamentId } = req.params;
+
+    const tournament = await Tournament.findById(tournamentId);
+    if (!tournament) {
+      return res.status(404).json({
+        success: false,
+        message: 'Tournament not found',
+      });
+    }
+
+    // Get match statistics
+    const matchStats = await Match.aggregate([
+      { $match: { tournament: new mongoose.Types.ObjectId(tournamentId) } },
+      {
+        $group: {
+          _id: null,
+          totalMatches: { $sum: 1 },
+          scheduledMatches: {
+            $sum: {
+              $cond: [{ $ne: ['$scheduledTime', null] }, 1, 0],
+            },
+          },
+          completedMatches: {
+            $sum: {
+              $cond: [{ $eq: ['$status', 'completed'] }, 1, 0],
+            },
+          },
+          inProgressMatches: {
+            $sum: {
+              $cond: [{ $eq: ['$status', 'in-progress'] }, 1, 0],
+            },
+          },
+        },
+      },
+    ]);
+
+    const stats = matchStats[0] || {
+      totalMatches: 0,
+      scheduledMatches: 0,
+      completedMatches: 0,
+      inProgressMatches: 0,
+    };
+
+    const now = new Date();
+    const upcomingMatches = await Match.countDocuments({
+      tournament: tournamentId,
+      scheduledTime: { $gt: now },
+      status: { $in: ['scheduled', 'in-progress'] },
+    });
+
+    const canReset = {
+      softReset: true, // Always allow soft reset
+      hardReset:
+        tournament.status !== 'completed' && stats.completedMatches === 0,
+      partialReset: upcomingMatches > 0,
+      warnings: [],
+    };
+
+    if (stats.completedMatches > 0) {
+      canReset.warnings.push(
+        `There are ${stats.completedMatches} completed matches that will be unaffected by soft reset.`
+      );
+    }
+
+    if (stats.inProgressMatches > 0) {
+      canReset.warnings.push(
+        `There are ${stats.inProgressMatches} matches in progress.`
+      );
+    }
+
+    res.json({
+      success: true,
+      canReset,
+      statistics: {
+        ...stats,
+        upcomingMatches,
+        tournamentStatus: tournament.status,
+      },
+    });
+  } catch (error) {
+    console.error('Error checking schedule reset:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check schedule reset',
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Recreate bracket after reset
+ */
+exports.recreateBracket = async (req, res) => {
+  try {
+    const { tournamentId } = req.params;
+    const { format, seeding = 'random', preserveSchedule = false } = req.body;
+
+    const tournament =
+      await Tournament.findById(tournamentId).populate('registeredTeams');
+    if (!tournament) {
+      return res.status(404).json({
+        success: false,
+        message: 'Tournament not found',
+      });
+    }
+
+    // Check if we have enough teams
+    if (tournament.registeredTeams.length < tournament.minTeams) {
+      return res.status(400).json({
+        success: false,
+        message: `Minimum ${tournament.minTeams} teams required, only ${tournament.registeredTeams.length} registered`,
+      });
+    }
+
+    // If preserveSchedule is true, only clear matches without schedule
+    let existingMatches = [];
+    if (preserveSchedule) {
+      // Get matches that are already scheduled
+      existingMatches = await Match.find({
+        tournament: tournamentId,
+        scheduledTime: { $ne: null },
+      });
+
+      if (existingMatches.length > 0) {
+        return res.status(400).json({
+          success: false,
+          message: `Cannot recreate bracket while ${existingMatches.length} matches are scheduled. Please reset schedule first.`,
+        });
+      }
+    }
+
+    // Clear all matches first
+    const deleteResult = await Match.deleteMany({ tournament: tournamentId });
+    console.log(`Cleared ${deleteResult.deletedCount} existing matches`);
+
+    let matches;
+    const tournamentFormat = format || tournament.format;
+
+    console.log(
+      `🎯 Recreating bracket with ${tournament.registeredTeams.length} teams (${tournamentFormat}, seeding: ${seeding})`
+    );
+
+    // Apply seeding if specified
+    let teams = [...tournament.registeredTeams];
+    if (seeding === 'random') {
+      teams = teams.sort(() => Math.random() - 0.5);
+      console.log('Applied random seeding');
+    } else if (seeding === 'ranked') {
+      // Sort by level (Gold first) and then by team name
+      teams = teams.sort((a, b) => {
+        const levelA = a.levelOfCompetition === 'Gold' ? 1 : 2;
+        const levelB = b.levelOfCompetition === 'Gold' ? 1 : 2;
+        if (levelA !== levelB) return levelA - levelB;
+        return a.name.localeCompare(b.name);
+      });
+      console.log('Applied ranked seeding');
+    } else if (seeding === 'manual' && req.body.seedOrder) {
+      // Manual seeding with provided order
+      const seedOrder = req.body.seedOrder; // Array of team IDs in desired order
+      teams = seedOrder
+        .map((id) => teams.find((t) => t._id.toString() === id))
+        .filter(Boolean);
+      console.log('Applied manual seeding');
+    }
+
+    console.log(
+      `Teams order: ${teams.map((t, i) => `${i + 1}. ${t.name}`).join(', ')}`
+    );
+
+    switch (tournamentFormat) {
+      case 'single-elimination':
+        matches = await generateSingleEliminationBracket(tournament, teams);
+        break;
+      case 'double-elimination':
+        matches = await generateDoubleEliminationBracket(tournament, teams);
+        break;
+      case 'round-robin':
+        matches = await generateRoundRobinSchedule(tournament, teams);
+        break;
+      case 'group-stage':
+        matches = await generateGroupStage(tournament, teams);
+        break;
+      default:
+        throw new Error('Invalid tournament format');
+    }
+
+    // Update tournament status
+    if (tournament.status === 'draft') {
+      tournament.status = 'open';
+    }
+    tournament.updatedBy = req.user.id;
+    await tournament.save();
+
+    console.log(`✅ Bracket recreated with ${matches.length} matches`);
+
+    // Get populated matches for response
+    const populatedMatches = await Match.find({ tournament: tournamentId })
+      .populate('team1 team2', 'name grade levelOfCompetition')
+      .sort({ round: 1, matchNumber: 1 });
+
+    res.json({
+      success: true,
+      message: 'Bracket recreated successfully',
+      matches: populatedMatches.length,
+      matchDetails: populatedMatches.map((m) => ({
+        id: m._id,
+        matchNumber: m.matchNumber,
+        round: m.round,
+        teams: `${m.team1?.name || 'TBD'} vs ${m.team2?.name || 'TBD'}`,
+        status: m.status,
+      })),
+      tournamentStatus: tournament.status,
+      format: tournamentFormat,
+      seeding,
+      teamCount: tournament.registeredTeams.length,
+    });
+  } catch (error) {
+    console.error('Error recreating bracket:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to recreate bracket',
       error: error.message,
     });
   }
