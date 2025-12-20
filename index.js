@@ -76,6 +76,45 @@ app.use(
 
 app.use(express.json());
 
+app.use((req, res, next) => {
+  // Block features that trigger local network access warnings
+  res.setHeader(
+    'Permissions-Policy',
+    'geolocation=(), ' +
+      'microphone=(), ' +
+      'camera=(), ' +
+      'usb=(), ' +
+      'serial=(), ' +
+      'bluetooth=(), ' +
+      'nfc=(), ' +
+      'gyroscope=(), ' +
+      'accelerometer=(), ' +
+      'magnetometer=(), ' +
+      'hid=(), ' +
+      'idle-detection=(), ' +
+      'screen-wake-lock=(), ' +
+      'web-share=(), ' +
+      'gamepad=(), ' +
+      'publickey-credentials-get=(), ' +
+      'local-network-access=()' // <-- THIS IS THE KEY FOR YOUR ISSUE
+  );
+
+  // Also add CSP to be safe
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; " +
+      "connect-src 'self' https://*.bothellselect.com https://api.bothellselect.com; " +
+      "script-src 'self' 'unsafe-inline'; " +
+      "style-src 'self' 'unsafe-inline'; " +
+      "img-src 'self' data: https:; " +
+      "font-src 'self' data:; " +
+      "frame-src 'none'; " +
+      "media-src 'self';"
+  );
+
+  next();
+});
+
 // Use routes
 app.use('/api', authRoutes);
 app.use('/api', notificationRoutes);
