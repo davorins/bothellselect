@@ -37,6 +37,7 @@ const ticketRoutes = require('./routes/tickets');
 const adminTicketRoutes = require('./routes/ticketRoutes');
 const tournamentRoutes = require('./routes/tournamentRoutes');
 const teamsRoutes = require('./routes/teams');
+const communicationPreferencesRouter = require('./routes/communicationPreferences');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -99,6 +100,7 @@ app.use('/api/admin', registrationRoutes);
 app.use('/api/forms', formPublicRoutes);
 app.use('/api/forms', formBuilderRoutes);
 app.use('/api/forms', formRoutes);
+app.use('/api/communication-preferences', communicationPreferencesRouter);
 app.use(
   '/uploads/forms',
   express.static(path.join(__dirname, 'uploads/forms'))

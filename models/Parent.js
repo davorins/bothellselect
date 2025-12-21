@@ -310,6 +310,36 @@ const parentSchema = new mongoose.Schema(
       type: [Number],
       default: [],
     },
+    communicationPreferences: {
+      emailNotifications: {
+        type: Boolean,
+        default: true,
+      },
+      newsUpdates: {
+        type: Boolean,
+        default: true,
+      },
+      offersPromotions: {
+        type: Boolean,
+        default: true,
+      },
+      marketingEmails: {
+        type: Boolean,
+        default: true,
+      },
+      transactionalEmails: {
+        type: Boolean,
+        default: true,
+      },
+      broadcastEmails: {
+        type: Boolean,
+        default: true,
+      },
+      lastUpdated: {
+        type: Date,
+        default: Date.now,
+      },
+    },
   },
   {
     timestamps: true,

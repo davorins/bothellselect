@@ -408,7 +408,7 @@ emailTemplateSchema.methods.getCompleteEmailHTML = function () {
             <tr>
               <td style="padding: 0 30px;">
                 <div style="text-align: center; font-size: 13px; color: #666; padding: 30px 0 20px; margin-top: 40px; border-top: 1px solid #eaeaea;">
-                  <p style="margin: 0 0 8px;">You're receiving this email because you're part of <strong style="color: #333;">Bothell Select</strong>.</p>
+                  <p style="margin: 0 0 8px;"> you're part of <strong style="color: #333;">Bothell Select</strong>.</p>
                   <p style="margin: 0;">
                     <a href="https://bothellselect.com/unsubscribe" style="color: #007bff; text-decoration: none; border-bottom: 1px solid #007bff; padding-bottom: 1px;">Unsubscribe</a> • 
                     <a href="https://bothellselect.com/contact" style="color: #007bff; text-decoration: none; border-bottom: 1px solid #007bff; padding-bottom: 1px;">Contact Us</a> • 

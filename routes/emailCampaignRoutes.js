@@ -4,7 +4,6 @@ const { authenticate } = require('../utils/auth');
 const EmailTemplate = require('../models/EmailTemplate');
 const Parent = require('../models/Parent');
 const Player = require('../models/Player');
-const { replaceTemplateVariables } = require('../utils/templateHelpers');
 const { sendEmail } = require('../utils/email');
 
 const router = express.Router();
@@ -73,7 +72,7 @@ const flattenVariables = (obj, prefix = '', res = {}) => {
   return res;
 };
 
-// Helper function to send bulk emails
+// Helper function to send bulk emails (for manual email sending)
 const sendBulkEmails = async ({
   template,
   subject,
@@ -109,12 +108,16 @@ const sendBulkEmails = async ({
           );
         }
 
+        // For manual emails, we may not have parentId
+        const parentId = recipient._id || null;
+
         await sendEmail({
           to: recipient.email,
           subject: subject,
           html: personalizedHtml,
-          // Also include text version for email clients
           text: htmlToText(personalizedHtml),
+          parentId: parentId,
+          emailType: 'marketing', // Manual emails are typically marketing
         });
 
         return { success: true, email: recipient.email };
@@ -141,6 +144,37 @@ const htmlToText = (html) => {
     .replace(/<[^>]*>/g, ' ') // Remove HTML tags
     .replace(/\s+/g, ' ') // Collapse multiple spaces
     .trim();
+};
+
+// Helper to check if user should receive email based on preferences
+const shouldSendEmail = async (parentId, emailType) => {
+  try {
+    if (!parentId) return true; // No parent ID, send email
+
+    const parent = await Parent.findById(parentId);
+    if (!parent) return true; // Parent not found, send email
+
+    const prefs = parent.communicationPreferences || {};
+
+    // Map email types to preference keys
+    const preferenceMap = {
+      campaign: 'marketingEmails',
+      broadcast: 'broadcastEmails',
+      news: 'newsUpdates',
+      offers: 'offersPromotions',
+      marketing: 'marketingEmails',
+      transactional: 'transactionalEmails',
+      notification: 'emailNotifications',
+    };
+
+    const preferenceKey = preferenceMap[emailType] || 'marketingEmails';
+
+    // Default to true if preference doesn't exist
+    return prefs[preferenceKey] !== false;
+  } catch (error) {
+    console.error('Error checking email preferences:', error);
+    return true; // On error, send the email
+  }
 };
 
 router.post(
@@ -197,6 +231,19 @@ router.post(
       const results = await Promise.allSettled(
         recipients.map(async (parent) => {
           try {
+            // Check if user should receive this email based on preferences
+            const shouldSend = await shouldSendEmail(parent._id, 'campaign');
+            if (!shouldSend) {
+              // Skip this recipient
+              return {
+                success: false,
+                parentId: parent._id,
+                email: parent.email,
+                error: 'User has opted out of marketing emails',
+                skipped: true,
+              };
+            }
+
             const player = await Player.findOne({ parentId: parent._id });
 
             // Get personalized HTML for this recipient
@@ -252,6 +299,8 @@ router.post(
               subject: template.subject,
               html: personalizedHtml,
               text: htmlToText(personalizedHtml),
+              parentId: parent._id,
+              emailType: 'campaign',
             });
 
             return {
@@ -274,11 +323,22 @@ router.post(
         r.status === 'fulfilled' ? r.value : { success: false, error: r.reason }
       );
 
+      // Count successful sends (excluding skipped ones)
+      const successfulSends = formattedResults.filter(
+        (r) => r.success && !r.skipped
+      ).length;
+
+      const skippedSends = formattedResults.filter((r) => r.skipped).length;
+      const failedSends = formattedResults.filter(
+        (r) => !r.success && !r.skipped
+      ).length;
+
       res.json({
         success: true,
         totalRecipients: recipients.length,
-        successfulSends: formattedResults.filter((r) => r.success).length,
-        failedSends: formattedResults.filter((r) => !r.success).length,
+        successfulSends,
+        skippedSends,
+        failedSends,
         results: formattedResults,
       });
     } catch (error) {
@@ -333,14 +393,32 @@ router.post(
         ...variables,
       });
 
-      // Create recipient objects for bulk sending
-      const recipients = emails.map((email) => ({ email }));
+      // For manual emails, we need to check if these emails exist in our database
+      // to get their preferences. If not, we'll send to them anyway.
+      const existingParents = await Parent.find({ email: { $in: emails } });
+
+      // Create a map for quick lookup
+      const parentMap = new Map();
+      existingParents.forEach((parent) => {
+        parentMap.set(parent.email, parent);
+      });
+
+      // Create recipient objects
+      const recipients = emails.map((email) => {
+        const parent = parentMap.get(email);
+        return {
+          email,
+          _id: parent?._id,
+          fullName: parent?.fullName,
+        };
+      });
 
       const { successCount, failedCount, results } = await sendBulkEmails({
         template: emailHtml,
         subject: template.subject,
         recipients: recipients,
         variables: variables,
+        emailType: 'marketing',
       });
 
       res.json({

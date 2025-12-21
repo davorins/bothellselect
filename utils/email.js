@@ -109,8 +109,18 @@ async function sendEmail({
   playerId,
   teamId,
   tournamentData,
+  emailType = 'transactional',
 }) {
   try {
+    const shouldSend = await shouldSendEmail(parentId, emailType);
+
+    if (!shouldSend) {
+      console.log(
+        `Email not sent to ${to} - user has opted out of ${emailType} emails`
+      );
+      return { skipped: true, reason: 'user_opt_out' };
+    }
+
     let finalHtml = html;
 
     // Only replace template variables if html contains template markers
@@ -1581,6 +1591,36 @@ async function sendFormOwnerNotificationEmail({
   }
 }
 
+// Check if user should receive email based on preferences
+async function shouldSendEmail(parentId, emailType) {
+  try {
+    if (!parentId) return true; // No parent ID, send email
+
+    const parent = await Parent.findById(parentId);
+    if (!parent) return true; // Parent not found, send email
+
+    const prefs = parent.communicationPreferences || {};
+
+    // Map email types to preference keys
+    const preferenceMap = {
+      campaign: 'marketingEmails',
+      broadcast: 'broadcastEmails',
+      news: 'newsUpdates',
+      offers: 'offersPromotions',
+      transactional: 'transactionalEmails',
+      notification: 'emailNotifications',
+    };
+
+    const preferenceKey = preferenceMap[emailType] || 'marketingEmails';
+
+    // Default to true if preference doesn't exist
+    return prefs[preferenceKey] !== false;
+  } catch (error) {
+    console.error('Error checking email preferences:', error);
+    return true; // On error, send the email
+  }
+}
+
 // ============ EXPORTS ============
 module.exports = {
   sendEmail,
@@ -1595,4 +1635,5 @@ module.exports = {
   sendFormPaymentReceiptEmail,
   sendFormSubmissionConfirmationEmail,
   sendFormOwnerNotificationEmail,
+  shouldSendEmail,
 };
