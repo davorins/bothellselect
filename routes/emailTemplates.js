@@ -31,10 +31,20 @@ router.post(
     }
 
     try {
-      const template = new EmailTemplate({
+      // If frontend sends completeContent, use it; otherwise it will be auto-generated
+      const templateData = {
         ...req.body,
         createdBy: req.user.id,
-      });
+        lastUpdatedBy: req.user.id,
+      };
+
+      // Make sure we don't have duplicate completeContent field if frontend sent it
+      // Let the model's pre-save middleware generate it
+      if (templateData.completeContent) {
+        delete templateData.completeContent;
+      }
+
+      const template = new EmailTemplate(templateData);
       await template.save();
 
       res.status(201).json({ success: true, data: template });
@@ -65,6 +75,12 @@ router.get('/:id', authenticate, async (req, res) => {
       return res
         .status(404)
         .json({ success: false, error: 'Template not found' });
+    }
+
+    // Ensure template has completeContent
+    if (!template.completeContent) {
+      template.completeContent = template.getCompleteEmailHTML();
+      await template.save();
     }
 
     res.json({ success: true, data: template });
@@ -127,6 +143,14 @@ router.put(
         });
       }
 
+      // Set lastUpdatedBy
+      req.body.lastUpdatedBy = req.user.id;
+
+      // Remove completeContent if frontend sent it - let model generate fresh one
+      if (req.body.completeContent) {
+        delete req.body.completeContent;
+      }
+
       // Only update allowed fields
       const updates = Object.keys(req.body);
       updates.forEach((update) => {
@@ -134,6 +158,12 @@ router.put(
       });
 
       await template.save();
+
+      // Ensure template has completeContent
+      if (!template.completeContent) {
+        template.completeContent = template.getCompleteEmailHTML();
+        await template.save();
+      }
 
       res.json({
         success: true,
@@ -162,6 +192,30 @@ router.delete('/:id', authenticate, authorizeAdmin, async (req, res) => {
     }
 
     res.json({ success: true, data: template });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ✅ Generate complete HTML for a template (for testing)
+router.get('/:id/generate-html', authenticate, async (req, res) => {
+  try {
+    const template = await EmailTemplate.findById(req.params.id);
+    if (!template) {
+      return res
+        .status(404)
+        .json({ success: false, error: 'Template not found' });
+    }
+
+    const completeHTML = template.getCompleteEmailHTML();
+
+    res.json({
+      success: true,
+      data: {
+        html: completeHTML,
+        hasCompleteContent: !!template.completeContent,
+      },
+    });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
