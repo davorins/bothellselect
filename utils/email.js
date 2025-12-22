@@ -237,6 +237,7 @@ async function sendWelcomeEmail(parentId, playerId) {
       html: populatedContent,
       parentId,
       playerId,
+      emailType: 'transactional',
     });
 
     console.log('Welcome email sent successfully for player registration:', {
