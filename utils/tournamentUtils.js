@@ -1,4 +1,4 @@
-// utils/tournamentUtils.js - FIXED version
+// utils/tournamentUtils.js
 const Team = require('../models/Team');
 
 exports.extractTournamentsFromTeams = async () => {
@@ -14,7 +14,7 @@ exports.extractTournamentsFromTeams = async () => {
       ],
     })
       .select(
-        'name grade sex levelOfCompetition tournament tournaments registrationYear'
+        'name grade sex levelOfCompetition tournament tournaments registrationYear paymentComplete paymentStatus'
       )
       .lean();
 
@@ -33,12 +33,14 @@ exports.extractTournamentsFromTeams = async () => {
             teams: [],
             levelOfCompetition: 'All',
             sex: 'Mixed',
-            levelCount: { Gold: 0, Silver: 0 }, // Track level counts
+            levelCount: { Gold: 0, Silver: 0 },
             sexCount: { Male: 0, Female: 0 },
           });
         }
 
         const tournament = tournamentMap.get(key);
+
+        // Include ALL team data including tournaments array
         tournament.teams.push({
           _id: team._id,
           name: team.name,
@@ -47,6 +49,9 @@ exports.extractTournamentsFromTeams = async () => {
           levelOfCompetition: team.levelOfCompetition,
           tournament: team.tournament,
           registrationYear: team.registrationYear || new Date().getFullYear(),
+          tournaments: team.tournaments || [],
+          paymentComplete: team.paymentComplete,
+          paymentStatus: team.paymentStatus,
         });
 
         // Track level counts
@@ -78,7 +83,7 @@ exports.extractTournamentsFromTeams = async () => {
           tournament.levelCount.Gold > 0 &&
           tournament.levelCount.Silver > 0
         ) {
-          tournament.levelOfCompetition = 'All'; // Changed from 'Gold' to 'All'
+          tournament.levelOfCompetition = 'All';
         }
 
         // Determine tournament sex based on counts
@@ -113,7 +118,7 @@ exports.extractTournamentsFromTeams = async () => {
                   team.registrationYear ||
                   new Date().getFullYear(),
                 teams: [],
-                levelOfCompetition: 'All', // Start with 'All' instead of tournamentReg.levelOfCompetition
+                levelOfCompetition: 'All',
                 sex: 'Mixed',
                 levelCount: { Gold: 0, Silver: 0 },
                 sexCount: { Male: 0, Female: 0 },
@@ -121,6 +126,8 @@ exports.extractTournamentsFromTeams = async () => {
             }
 
             const tournament = tournamentMap.get(key);
+
+            // Include ALL team data
             tournament.teams.push({
               _id: team._id,
               name: team.name,
@@ -132,6 +139,7 @@ exports.extractTournamentsFromTeams = async () => {
                 tournamentReg.year ||
                 team.registrationYear ||
                 new Date().getFullYear(),
+              tournaments: team.tournaments || [], // Include tournaments array
               paymentComplete: tournamentReg.paymentComplete,
               paymentStatus: tournamentReg.paymentStatus,
             });
@@ -165,7 +173,7 @@ exports.extractTournamentsFromTeams = async () => {
               tournament.levelCount.Gold > 0 &&
               tournament.levelCount.Silver > 0
             ) {
-              tournament.levelOfCompetition = 'All'; // Changed from 'Gold' to 'All'
+              tournament.levelOfCompetition = 'All';
             }
 
             // Determine tournament sex based on counts
@@ -222,6 +230,26 @@ exports.extractTournamentsFromTeams = async () => {
     console.log(
       `✅ Extracted ${tournaments.length} unique tournaments from teams`
     );
+
+    // Log sample data for debugging
+    if (tournaments.length > 0) {
+      const sampleTournament = tournaments[0];
+      console.log(
+        `🏆 Sample tournament: ${sampleTournament.name} ${sampleTournament.year}`
+      );
+      console.log(`   Teams: ${sampleTournament.teams.length}`);
+      if (sampleTournament.teams.length > 0) {
+        const sampleTeam = sampleTournament.teams[0];
+        console.log(`   Sample team: ${sampleTeam.name}`);
+        console.log(
+          `   Team has tournaments array: ${!!sampleTeam.tournaments}`
+        );
+        console.log(
+          `   Team tournaments count: ${sampleTeam.tournaments?.length || 0}`
+        );
+        console.log(`   Team tournaments data:`, sampleTeam.tournaments);
+      }
+    }
 
     return tournaments;
   } catch (error) {
@@ -306,14 +334,38 @@ exports.createOrUpdateTournamentFromTeams = async (
 
     console.log(`🔄 Creating/updating tournament: ${tournamentName} ${year}`);
 
-    // Get teams for this tournament
-    const teams = await exports.getTeamsForTournament(tournamentName, year);
+    // Get all teams for this tournament
+    const allTeams = await exports.getTeamsForTournament(tournamentName, year);
+
+    // Filter for PAID teams only
+    const teams = allTeams.filter((team) => {
+      // Check payment in tournament-specific registration
+      const tournamentReg = team.tournaments?.find(
+        (t) => t.tournament === tournamentName && t.year === parseInt(year)
+      );
+
+      const isPaid =
+        tournamentReg?.paymentComplete === true ||
+        tournamentReg?.paymentStatus === 'paid' ||
+        tournamentReg?.paymentStatus === 'completed' ||
+        (tournamentReg?.amountPaid && tournamentReg.amountPaid > 0);
+
+      console.log(
+        `💰 Team ${team.name}: paid=${isPaid}, paymentComplete=${tournamentReg?.paymentComplete}, paymentStatus=${tournamentReg?.paymentStatus}, amountPaid=${tournamentReg?.amountPaid}`
+      );
+
+      return isPaid;
+    });
 
     if (teams.length === 0) {
       throw new Error(
-        `No active teams found for tournament: ${tournamentName} ${year}`
+        `No PAID teams found for tournament: ${tournamentName} ${year}. Need at least 1 paid team.`
       );
     }
+
+    console.log(
+      `📊 Payment breakdown: ${teams.length} paid / ${allTeams.length} total`
+    );
 
     // Calculate level breakdown
     const goldCount = teams.filter(

@@ -86,10 +86,34 @@ router.get('/from-teams', requireAuth, async (req, res) => {
 
     const tournaments = await tournamentUtils.extractTournamentsFromTeams();
 
+    // TEMPORARY: Don't filter in backend, let frontend handle it
+    // This is because we need the tournaments array for payment checking
+    console.log(
+      `📊 Returning ${tournaments.length} tournaments with full team data`
+    );
+
+    // Debug log to see if tournaments array is included
+    if (tournaments.length > 0) {
+      const firstTournament = tournaments[0];
+      console.log(
+        `🏆 First tournament: ${firstTournament.name} ${firstTournament.year}`
+      );
+      console.log(`   Teams: ${firstTournament.teams?.length || 0}`);
+      if (firstTournament.teams && firstTournament.teams.length > 0) {
+        const firstTeam = firstTournament.teams[0];
+        console.log(`   First team: ${firstTeam.name}`);
+        console.log(
+          `   Team has tournaments array: ${!!firstTeam.tournaments}`
+        );
+        console.log(`   Team tournaments:`, firstTeam.tournaments);
+      }
+    }
+
     res.json({
       success: true,
-      tournaments,
+      tournaments: tournaments,
       count: tournaments.length,
+      message: `Found ${tournaments.length} tournaments from teams`,
     });
   } catch (error) {
     console.error('Error fetching tournaments from teams:', error);
@@ -344,7 +368,13 @@ router.delete(
 router.get(
   '/:tournamentId/registered-teams',
   requireAuth,
-  [param('tournamentId').isMongoId().withMessage('Invalid tournament ID')],
+  [
+    param('tournamentId').isMongoId().withMessage('Invalid tournament ID'),
+    query('paidOnly')
+      .optional()
+      .isBoolean()
+      .withMessage('paidOnly must be boolean'),
+  ],
   tournamentController.getRegisteredTeams
 );
 

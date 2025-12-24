@@ -1273,15 +1273,23 @@ exports.generateSchedule = async (req, res) => {
 exports.getRegisteredTeams = async (req, res) => {
   try {
     const { tournamentId } = req.params;
+    const { paidOnly = true } = req.query;
 
-    console.log(`🔄 Fetching registered teams for tournament: ${tournamentId}`);
+    console.log(
+      `🔄 Fetching registered teams for tournament: ${tournamentId}, paidOnly=${paidOnly}`
+    );
 
-    // First, get the tournament with populated registeredTeams
+    // FIRST: Get the tournament from database
     const tournament = await Tournament.findById(tournamentId)
-      .populate(
-        'registeredTeams',
-        'name grade sex levelOfCompetition coachIds isActive tournament tournaments'
-      )
+      .populate({
+        path: 'registeredTeams',
+        select:
+          'name grade sex levelOfCompetition coachIds isActive tournament tournaments paymentComplete paymentStatus',
+        populate: {
+          path: 'coachIds',
+          select: 'firstName lastName email',
+        },
+      })
       .lean();
 
     if (!tournament) {
@@ -1293,104 +1301,79 @@ exports.getRegisteredTeams = async (req, res) => {
 
     console.log(`✅ Tournament found: ${tournament.name}`);
     console.log(
-      `📊 Tournament has ${tournament.registeredTeams?.length || 0} registered teams in array`
+      `📊 Tournament has ${tournament.registeredTeams?.length || 0} TOTAL registered teams`
     );
 
-    // Method 1: Return teams from tournament's registeredTeams array (populated)
-    if (tournament.registeredTeams && tournament.registeredTeams.length > 0) {
-      console.log('✅ Returning teams from tournament.registeredTeams array');
-      return res.json({
-        success: true,
-        teams: tournament.registeredTeams,
-        source: 'tournament_registeredTeams',
+    // Get all teams
+    const allTeams = tournament.registeredTeams || [];
+
+    // Apply payment filter if needed
+    let filteredTeams = allTeams;
+    if (paidOnly) {
+      filteredTeams = allTeams.filter((team) => {
+        // Check if team has paid for THIS specific tournament
+        const tournamentReg = team.tournaments?.find(
+          (t) => t.tournament === tournament.name && t.year === tournament.year
+        );
+
+        const isPaid =
+          tournamentReg?.paymentComplete === true ||
+          tournamentReg?.paymentStatus === 'paid' ||
+          tournamentReg?.paymentStatus === 'completed' ||
+          (tournamentReg?.amountPaid && tournamentReg.amountPaid > 0);
+
+        return isPaid;
       });
     }
 
-    // Method 2: If no teams in array, search for teams that mention this tournament
     console.log(
-      '🔄 No teams in registeredTeams array, searching in Team collection...'
+      `💰 Filter result: ${filteredTeams.length} teams (paidOnly=${paidOnly}) for ${tournament.name}`
     );
 
-    // Get tournament details
-    const tournamentDetails = await Tournament.findById(tournamentId).lean();
-
-    // Search for teams in two ways:
-    const teamsByTournamentName = await Team.find({
-      $or: [
-        // Teams with main tournament field matching
-        { tournament: tournamentDetails.name },
-        // Teams with tournament in tournaments array
-        {
-          'tournaments.tournament': tournamentDetails.name,
-          'tournaments.year': tournamentDetails.year,
-        },
-      ],
-      isActive: true,
-    })
-      .select(
-        'name grade sex levelOfCompetition coachIds isActive tournament tournaments'
-      )
-      .populate('coachIds', 'firstName lastName email');
-
-    console.log(
-      `🔍 Found ${teamsByTournamentName.length} teams by tournament name search`
-    );
-
-    if (teamsByTournamentName.length > 0) {
-      // Update tournament's registeredTeams array with these team IDs
-      await Tournament.findByIdAndUpdate(tournamentId, {
-        $set: {
-          registeredTeams: teamsByTournamentName.map((team) => team._id),
-        },
-      });
-
-      console.log(
-        `✅ Updated tournament with ${teamsByTournamentName.length} team IDs`
-      );
-
-      return res.json({
-        success: true,
-        teams: teamsByTournamentName,
-        source: 'team_collection_search',
+    // Log payment status for debugging (only if paidOnly is true)
+    if (paidOnly) {
+      filteredTeams.forEach((team, index) => {
+        const tournamentReg = team.tournaments?.find(
+          (t) => t.tournament === tournament.name && t.year === tournament.year
+        );
+        console.log(
+          `   ${index + 1}. ${team.name}: paymentComplete=${tournamentReg?.paymentComplete}, paymentStatus=${tournamentReg?.paymentStatus}`
+        );
       });
     }
-
-    // Method 3: Get all active teams and filter by grade/level
-    console.log('🔄 No teams found by name, fetching all active teams...');
-    const allActiveTeams = await Team.find({ isActive: true })
-      .select(
-        'name grade sex levelOfCompetition coachIds isActive tournament tournaments'
-      )
-      .populate('coachIds', 'firstName lastName email');
-
-    // Filter teams that match tournament criteria
-    const eligibleTeams = allActiveTeams.filter((team) => {
-      // Check if team matches tournament criteria
-      const levelMatch =
-        tournamentDetails.levelOfCompetition === 'All' ||
-        team.levelOfCompetition === tournamentDetails.levelOfCompetition;
-
-      const sexMatch =
-        tournamentDetails.sex === 'Mixed' || team.sex === tournamentDetails.sex;
-
-      // Check if team is already registered (by name/year)
-      const alreadyRegistered = team.tournaments?.some(
-        (t) =>
-          t.tournament === tournamentDetails.name &&
-          t.year === tournamentDetails.year
-      );
-
-      return levelMatch && sexMatch && !alreadyRegistered;
-    });
-
-    console.log(
-      `🎯 Found ${eligibleTeams.length} eligible teams for ${tournamentDetails.name}`
-    );
 
     return res.json({
       success: true,
-      teams: eligibleTeams,
-      source: 'all_teams_filtered',
+      teams: filteredTeams,
+      paymentBreakdown: {
+        total: allTeams.length,
+        paid: allTeams.filter((team) => {
+          const tournamentReg = team.tournaments?.find(
+            (t) =>
+              t.tournament === tournament.name && t.year === tournament.year
+          );
+          return (
+            tournamentReg?.paymentComplete === true ||
+            tournamentReg?.paymentStatus === 'paid' ||
+            tournamentReg?.paymentStatus === 'completed' ||
+            (tournamentReg?.amountPaid && tournamentReg.amountPaid > 0)
+          );
+        }).length,
+        unpaid: allTeams.filter((team) => {
+          const tournamentReg = team.tournaments?.find(
+            (t) =>
+              t.tournament === tournament.name && t.year === tournament.year
+          );
+          return !(
+            tournamentReg?.paymentComplete === true ||
+            tournamentReg?.paymentStatus === 'paid' ||
+            tournamentReg?.paymentStatus === 'completed' ||
+            (tournamentReg?.amountPaid && tournamentReg.amountPaid > 0)
+          );
+        }).length,
+      },
+      filterApplied: paidOnly ? 'paidOnly' : 'all',
+      source: 'tournament_teams_filtered',
     });
   } catch (error) {
     console.error('❌ Error fetching registered teams:', error);
