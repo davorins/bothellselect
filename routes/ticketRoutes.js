@@ -19,9 +19,10 @@ router.get('/ticket-purchases', [authenticate, isAdmin], async (req, res) => {
       endDate,
       page = 1,
       limit = 20,
+      sort = 'dateDesc',
     } = req.query;
 
-    // Build query
+    // Build query (same as before)
     const query = {};
 
     // Status filter
@@ -49,123 +50,170 @@ router.get('/ticket-purchases', [authenticate, isAdmin], async (req, res) => {
       if (endDate) query.createdAt.$lte = new Date(endDate);
     }
 
+    // Season and year filters
+    if (season || year) {
+      const formQuery = {};
+      if (season) {
+        formQuery.name = { $regex: season, $options: 'i' };
+      }
+      if (year) {
+        formQuery.name = { $regex: year.toString(), $options: 'i' };
+      }
+
+      const forms = await Form.find(formQuery).select('_id');
+      const formIds = forms.map((form) => form._id);
+
+      if (formIds.length > 0) {
+        query.formId = { $in: formIds };
+      } else if (season || year) {
+        // If we're filtering by season/year but no forms match, return empty
+        return res.json({
+          tickets: [],
+          pagination: {
+            current: parseInt(page),
+            pageSize: parseInt(limit),
+            total: 0,
+            totalPages: 0,
+          },
+          stats: {
+            totalAmount: 0,
+            totalTickets: 0,
+            totalTransactions: 0,
+            averageTicketPrice: 0,
+          },
+        });
+      }
+    }
+
     // Calculate skip for pagination
-    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const pageNum = parseInt(page);
+    const limitNum = parseInt(limit);
+    const skip = (pageNum - 1) * limitNum;
 
-    // Get ticket purchases
-    const tickets = await TicketPurchase.find(query)
-      .sort({ createdAt: -1 })
-      .skip(skip)
-      .limit(parseInt(limit))
-      .lean();
+    // Sort handling
+    let sortOption = { createdAt: -1 };
+    if (sort === 'dateAsc') {
+      sortOption = { createdAt: 1 };
+    } else if (sort === 'amountDesc') {
+      sortOption = { amount: -1 };
+    } else if (sort === 'amountAsc') {
+      sortOption = { amount: 1 };
+    }
 
-    // Get form details for each ticket
-    const ticketsWithDetails = await Promise.all(
-      tickets.map(async (ticket) => {
-        try {
-          // Get form details
-          const form = await Form.findById(ticket.formId).lean();
-          const submission = await FormSubmission.findById(
-            ticket.submissionId
-          ).lean();
+    // ============================================
+    // CRITICAL: Get stats for ALL matching records
+    // ============================================
 
-          // Extract season and year from form name
-          let season = '';
-          let year = new Date(ticket.createdAt).getFullYear();
+    // Create query for completed purchases ONLY for stats
+    const statsQuery = { ...query, status: 'completed' };
 
-          if (form && form.name) {
-            const seasonMatch = form.name.match(
-              /(Spring|Summer|Fall|Winter|Autumn)\s*(\d{4})/i
-            );
-            if (seasonMatch) {
-              season = seasonMatch[1];
-              year = parseInt(seasonMatch[2]);
-            }
-          }
+    const statsPipeline = [
+      { $match: statsQuery },
+      {
+        $group: {
+          _id: null,
+          totalAmount: { $sum: '$amount' },
+          totalTickets: { $sum: '$quantity' },
+          totalTransactions: { $sum: 1 },
+        },
+      },
+    ];
 
-          return {
-            ...ticket,
-            formName: form?.name,
-            tournamentName: submission?.tournamentInfo?.tournamentName,
-            season,
-            year,
-          };
-        } catch (err) {
-          console.error('Error fetching ticket details:', err);
-          return ticket;
-        }
-      })
-    );
+    const statsResult = await TicketPurchase.aggregate(statsPipeline);
+    const stats = statsResult[0] || {
+      totalAmount: 0,
+      totalTickets: 0,
+      totalTransactions: 0,
+    };
 
-    // Get total count
+    // Calculate average ticket price
+    stats.averageTicketPrice =
+      stats.totalTickets > 0 ? stats.totalAmount / stats.totalTickets : 0;
+
+    // Get total count for pagination
     const total = await TicketPurchase.countDocuments(query);
+    const totalPages = Math.ceil(total / limitNum);
+
+    // Only fetch paginated data if there are results
+    let ticketsWithDetails = [];
+
+    if (total > 0 && skip < total) {
+      // Get paginated ticket purchases
+      const tickets = await TicketPurchase.find(query)
+        .sort(sortOption)
+        .skip(skip)
+        .limit(limitNum)
+        .lean();
+
+      // Get form details for each ticket
+      ticketsWithDetails = await Promise.all(
+        tickets.map(async (ticket) => {
+          try {
+            const form = await Form.findById(ticket.formId).lean();
+            const submission = await FormSubmission.findById(
+              ticket.submissionId
+            ).lean();
+
+            let season = '';
+            let year = new Date(ticket.createdAt).getFullYear();
+
+            if (form && form.name) {
+              const seasonMatch = form.name.match(
+                /(Spring|Summer|Fall|Winter|Autumn)\s*(\d{4})/i
+              );
+              if (seasonMatch) {
+                season = seasonMatch[1];
+                year = parseInt(seasonMatch[2]);
+              }
+            }
+
+            return {
+              ...ticket,
+              formName: form?.name,
+              tournamentName: submission?.tournamentInfo?.tournamentName,
+              season,
+              year,
+            };
+          } catch (err) {
+            console.error('Error fetching ticket details:', err);
+            return ticket;
+          }
+        })
+      );
+    }
+
+    // ============================================
+    // CRITICAL: Get unique customers for Active Customers stat
+    // ============================================
+    const uniqueCustomersPipeline = [
+      { $match: { ...query, status: 'completed' } },
+      { $group: { _id: '$customerEmail' } },
+      { $count: 'uniqueCustomers' },
+    ];
+
+    const uniqueCustomersResult = await TicketPurchase.aggregate(
+      uniqueCustomersPipeline
+    );
+    const uniqueCustomers = uniqueCustomersResult[0]?.uniqueCustomers || 0;
 
     res.json({
       tickets: ticketsWithDetails,
-      total,
-      page: parseInt(page),
-      pages: Math.ceil(total / parseInt(limit)),
+      pagination: {
+        current: pageNum,
+        pageSize: limitNum,
+        total: total,
+        totalPages: totalPages,
+      },
+      stats: {
+        ...stats,
+        uniqueCustomers: uniqueCustomers,
+      },
     });
   } catch (error) {
     console.error('Error fetching ticket purchases:', error);
     res.status(500).json({ error: 'Failed to fetch ticket purchases' });
   }
 });
-
-// Get ticket purchase metadata (seasons, years, packages)
-router.get(
-  '/ticket-purchases/metadata',
-  [authenticate, isAdmin],
-  async (req, res) => {
-    try {
-      // Get all forms to extract seasons and years
-      const forms = await Form.find({}).lean();
-
-      const seasons = new Set();
-      const years = new Set();
-
-      forms.forEach((form) => {
-        if (form.name) {
-          const seasonMatch = form.name.match(
-            /(Spring|Summer|Fall|Winter|Autumn)/i
-          );
-          if (seasonMatch) {
-            seasons.add(seasonMatch[1]);
-          }
-
-          const yearMatch = form.name.match(/\b(20\d{2})\b/);
-          if (yearMatch) {
-            years.add(parseInt(yearMatch[1]));
-          }
-        }
-      });
-
-      // Get unique packages
-      const packages = await TicketPurchase.distinct('packageName');
-
-      // Add current year if no years found
-      if (years.size === 0) {
-        years.add(new Date().getFullYear());
-      }
-
-      // Add default seasons if none found
-      if (seasons.size === 0) {
-        ['Spring', 'Summer', 'Fall', 'Winter'].forEach((season) =>
-          seasons.add(season)
-        );
-      }
-
-      res.json({
-        seasons: Array.from(seasons).sort(),
-        years: Array.from(years).sort((a, b) => b - a),
-        packages: packages.filter((p) => p).sort(),
-      });
-    } catch (error) {
-      console.error('Error fetching metadata:', error);
-      res.status(500).json({ error: 'Failed to fetch metadata' });
-    }
-  }
-);
 
 // Get ticket purchase statistics
 router.get(
@@ -290,6 +338,61 @@ router.get(
     } catch (error) {
       console.error('Error exporting tickets:', error);
       res.status(500).json({ error: 'Failed to export data' });
+    }
+  }
+);
+
+// Get ticket purchase metadata (seasons, years, packages)
+router.get(
+  '/ticket-purchases/metadata',
+  [authenticate, isAdmin],
+  async (req, res) => {
+    try {
+      // Get all forms to extract seasons and years
+      const forms = await Form.find({}).lean();
+
+      const seasons = new Set();
+      const years = new Set();
+
+      forms.forEach((form) => {
+        if (form.name) {
+          const seasonMatch = form.name.match(
+            /(Spring|Summer|Fall|Winter|Autumn)/i
+          );
+          if (seasonMatch) {
+            seasons.add(seasonMatch[1]);
+          }
+
+          const yearMatch = form.name.match(/\b(20\d{2})\b/);
+          if (yearMatch) {
+            years.add(parseInt(yearMatch[1]));
+          }
+        }
+      });
+
+      // Get unique packages
+      const packages = await TicketPurchase.distinct('packageName');
+
+      // Add current year if no years found
+      if (years.size === 0) {
+        years.add(new Date().getFullYear());
+      }
+
+      // Add default seasons if none found
+      if (seasons.size === 0) {
+        ['Spring', 'Summer', 'Fall', 'Winter'].forEach((season) =>
+          seasons.add(season)
+        );
+      }
+
+      res.json({
+        seasons: Array.from(seasons).sort(),
+        years: Array.from(years).sort((a, b) => b - a),
+        packages: packages.filter((p) => p).sort(),
+      });
+    } catch (error) {
+      console.error('Error fetching metadata:', error);
+      res.status(500).json({ error: 'Failed to fetch metadata' });
     }
   }
 );

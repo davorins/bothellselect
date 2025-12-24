@@ -6,6 +6,7 @@ const { body, param, query, validationResult } = require('express-validator');
 // Import models
 const Tournament = require('../models/Tournament');
 const Team = require('../models/Team');
+const Match = require('../models/Match');
 
 // Import controller
 const tournamentController = require('../controllers/tournamentController');
@@ -783,6 +784,212 @@ router.post(
       .withMessage('Invalid seeding type'),
   ],
   tournamentController.recreateBracket
+);
+
+// Bulk schedule matches
+router.post(
+  '/:tournamentId/schedule/bulk',
+  requireAuth,
+  requireAdmin,
+  [
+    param('tournamentId').isMongoId().withMessage('Invalid tournament ID'),
+    body('matches').isArray().withMessage('Matches must be an array'),
+  ],
+  async (req, res) => {
+    try {
+      const { tournamentId } = req.params;
+      const { matches } = req.body;
+
+      console.log(
+        `📅 Bulk scheduling ${matches.length} matches for tournament ${tournamentId}`
+      );
+
+      const results = [];
+
+      for (const matchData of matches) {
+        let match;
+
+        // Check if match already exists
+        if (matchData._id && !matchData._id.startsWith('temp-')) {
+          match = await Match.findById(matchData._id);
+        }
+
+        if (match) {
+          // Update existing match
+          match.scheduledTime = matchData.scheduledTime;
+          match.timeSlot = matchData.timeSlot;
+          match.court = matchData.court;
+          match.group = matchData.group;
+          match.pool = matchData.pool;
+          match.sequence = matchData.sequence;
+          match.status = 'scheduled';
+        } else {
+          // Create new match
+          match = new Match({
+            tournament: tournamentId,
+            round: matchData.round || 1,
+            matchNumber: matchData.matchNumber || 1,
+            team1: matchData.team1,
+            team2: matchData.team2,
+            scheduledTime: matchData.scheduledTime,
+            timeSlot: matchData.timeSlot,
+            court: matchData.court,
+            group: matchData.group,
+            pool: matchData.pool,
+            sequence: matchData.sequence,
+            status: 'scheduled',
+            bracketType: 'winners',
+          });
+        }
+
+        await match.save();
+        results.push(match);
+      }
+
+      res.json({
+        success: true,
+        message: `Successfully scheduled ${results.length} matches`,
+        matches: results,
+      });
+    } catch (error) {
+      console.error('Error bulk scheduling matches:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to bulk schedule matches',
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Get schedule for a specific day
+router.get(
+  '/:tournamentId/schedule/day/:date',
+  requireAuth,
+  [
+    param('tournamentId').isMongoId().withMessage('Invalid tournament ID'),
+    param('date').isISO8601().withMessage('Valid date required'),
+  ],
+  async (req, res) => {
+    try {
+      const { tournamentId, date } = req.params;
+
+      const startDate = new Date(date);
+      const endDate = new Date(date);
+      endDate.setHours(23, 59, 59, 999);
+
+      const matches = await Match.find({
+        tournament: tournamentId,
+        scheduledTime: {
+          $gte: startDate,
+          $lte: endDate,
+        },
+      })
+        .populate('team1', 'name grade sex levelOfCompetition')
+        .populate('team2', 'name grade sex levelOfCompetition')
+        .populate('winner', 'name')
+        .populate('loser', 'name')
+        .sort('scheduledTime court');
+
+      // Group by time slot for easier consumption
+      const scheduleByTimeSlot = {};
+      matches.forEach((match) => {
+        const timeSlot = match.timeSlot || 'Unscheduled';
+        if (!scheduleByTimeSlot[timeSlot]) {
+          scheduleByTimeSlot[timeSlot] = [];
+        }
+        scheduleByTimeSlot[timeSlot].push(match);
+      });
+
+      res.json({
+        success: true,
+        date: date,
+        totalMatches: matches.length,
+        schedule: scheduleByTimeSlot,
+        matches: matches,
+      });
+    } catch (error) {
+      console.error('Error getting schedule for day:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to get schedule for day',
+        error: error.message,
+      });
+    }
+  }
+);
+
+// Get team schedules
+router.get(
+  '/:tournamentId/schedule/teams',
+  requireAuth,
+  [param('tournamentId').isMongoId().withMessage('Invalid tournament ID')],
+  async (req, res) => {
+    try {
+      const { tournamentId } = req.params;
+
+      const matches = await Match.find({
+        tournament: tournamentId,
+        status: { $in: ['scheduled', 'in-progress', 'completed'] },
+      })
+        .populate('team1', 'name grade sex levelOfCompetition')
+        .populate('team2', 'name grade sex levelOfCompetition')
+        .sort('scheduledTime');
+
+      // Create team schedule map
+      const teamSchedules = {};
+
+      matches.forEach((match) => {
+        if (match.team1) {
+          const teamId = match.team1._id.toString();
+          if (!teamSchedules[teamId]) {
+            teamSchedules[teamId] = {
+              team: match.team1,
+              matches: [],
+            };
+          }
+          teamSchedules[teamId].matches.push({
+            matchId: match._id,
+            timeSlot: match.timeSlot,
+            court: match.court,
+            scheduledTime: match.scheduledTime,
+            opponent: match.team2?.name || 'TBD',
+            status: match.status,
+          });
+        }
+
+        if (match.team2) {
+          const teamId = match.team2._id.toString();
+          if (!teamSchedules[teamId]) {
+            teamSchedules[teamId] = {
+              team: match.team2,
+              matches: [],
+            };
+          }
+          teamSchedules[teamId].matches.push({
+            matchId: match._id,
+            timeSlot: match.timeSlot,
+            court: match.court,
+            scheduledTime: match.scheduledTime,
+            opponent: match.team1?.name || 'TBD',
+            status: match.status,
+          });
+        }
+      });
+
+      res.json({
+        success: true,
+        teamSchedules: Object.values(teamSchedules),
+      });
+    } catch (error) {
+      console.error('Error getting team schedules:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to get team schedules',
+        error: error.message,
+      });
+    }
+  }
 );
 
 module.exports = router;

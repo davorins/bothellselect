@@ -176,6 +176,22 @@ const matchSchema = new mongoose.Schema(
     cancellationReason: {
       type: String,
     },
+    timeSlot: {
+      type: String,
+      trim: true,
+    },
+    sequence: {
+      type: Number,
+      default: 0,
+    },
+    group: {
+      type: String,
+      trim: true,
+    },
+    pool: {
+      type: String,
+      trim: true,
+    },
   },
   {
     timestamps: true,
