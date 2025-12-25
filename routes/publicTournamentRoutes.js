@@ -125,6 +125,7 @@ router.get('/tournaments/:id/public', async (req, res) => {
 });
 
 // Get matches for public view
+// In your backend route for fetching matches
 router.get('/tournaments/:id/matches/public', async (req, res) => {
   try {
     const matches = await Match.find({
@@ -137,6 +138,17 @@ router.get('/tournaments/:id/matches/public', async (req, res) => {
       .populate('loser', 'name')
       .sort({ round: 1, matchNumber: 1, scheduledTime: 1 })
       .lean();
+
+    // DEBUG: Log what's being returned
+    console.log('=== DEBUG: RETURNING MATCHES ===');
+    matches.forEach((match, index) => {
+      console.log(`Match ${index + 1} (#${match.matchNumber}):`, {
+        scheduledTime: match.scheduledTime,
+        typeof: typeof match.scheduledTime,
+        isDate: match.scheduledTime instanceof Date,
+        stringValue: String(match.scheduledTime),
+      });
+    });
 
     // Format match data for public view
     const formattedMatches = matches.map((match) => ({
@@ -152,11 +164,6 @@ router.get('/tournaments/:id/matches/public', async (req, res) => {
       isLive: match.status === 'in-progress',
       isUpcoming: match.status === 'scheduled',
       isCompleted: match.status === 'completed',
-      timeRemaining: match.scheduledTime
-        ? new Date(match.scheduledTime).getTime() +
-          match.duration * 60000 -
-          Date.now()
-        : null,
     }));
 
     res.json(formattedMatches);
