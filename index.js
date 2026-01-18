@@ -41,6 +41,7 @@ const teamsRoutes = require('./routes/teams');
 const communicationPreferencesRouter = require('./routes/communicationPreferences');
 const app = express();
 const PORT = process.env.PORT || 5001;
+const healthCheck = require('./health');
 
 const corsOptions = {
   origin: function (origin, callback) {
@@ -99,7 +100,7 @@ app.options('*', cors(corsOptions));
 app.use(
   '/api/square/webhook',
   express.raw({ type: 'application/json' }),
-  squareWebhooksRouter
+  squareWebhooksRouter,
 );
 
 app.use(express.json());
@@ -130,7 +131,7 @@ app.use('/api/forms', formRoutes);
 app.use('/api/communication-preferences', communicationPreferencesRouter);
 app.use(
   '/uploads/forms',
-  express.static(path.join(__dirname, 'uploads/forms'))
+  express.static(path.join(__dirname, 'uploads/forms')),
 );
 app.use('/api/forms/process-payment', formPaymentRoutes);
 app.use('/api/tickets', ticketRoutes);
@@ -138,6 +139,7 @@ app.use('/api/admin', adminTicketRoutes);
 app.use('/api', tournamentPublicRoutes);
 app.use('/api/tournaments', tournamentRoutes);
 app.use('/api/teams', teamsRoutes);
+app.get('/api/health', healthCheck);
 
 // Connect to MongoDB
 mongoose
@@ -189,7 +191,7 @@ app.get(
       console.error('Error fetching registrations:', error);
       res.status(500).json({ error: 'Failed to fetch registrations' });
     }
-  }
+  },
 );
 
 // Create or update player
@@ -232,7 +234,7 @@ app.post('/api/players', authenticate, async (req, res) => {
     await Parent.findByIdAndUpdate(
       parentId,
       { $push: { players: newPlayer._id } },
-      { new: true }
+      { new: true },
     );
 
     res.status(201).json(newPlayer);
@@ -301,7 +303,7 @@ app.use((err, req, res, next) => {
 // Start the server
 const startServer = (port) => {
   const server = app.listen(port, () =>
-    console.log(`Server running on port ${port}`)
+    console.log(`Server running on port ${port}`),
   );
 
   server.on('error', (err) => {
