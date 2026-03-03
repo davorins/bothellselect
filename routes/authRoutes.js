@@ -5664,6 +5664,155 @@ router.post('/players/:playerId/add-season', authenticate, async (req, res) => {
   }
 });
 
+// Update player details
+router.put('/players/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      fullName,
+      gender,
+      dob,
+      schoolName,
+      grade,
+      healthConcerns,
+      aauNumber,
+      isGradeOverridden,
+    } = req.body;
+
+    console.log('📝 Updating player:', { id, fullName });
+
+    const player = await Player.findById(id);
+    if (!player) {
+      return res.status(404).json({ error: 'Player not found' });
+    }
+
+    // Check authorization
+    if (
+      req.user.role !== 'admin' &&
+      req.user.id !== player.parentId.toString()
+    ) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    // Update fields
+    player.fullName = fullName.trim();
+    player.gender = gender;
+    player.dob = dob;
+    player.schoolName = schoolName.trim();
+    player.grade = grade;
+    player.healthConcerns = healthConcerns || '';
+    player.aauNumber = aauNumber || '';
+    player.isGradeOverridden = isGradeOverridden || false;
+    player.updatedAt = new Date();
+
+    await player.save();
+
+    // Return complete player data
+    res.json({
+      success: true,
+      message: 'Player updated successfully',
+      player: {
+        _id: player._id,
+        fullName: player.fullName,
+        gender: player.gender,
+        dob: player.dob,
+        schoolName: player.schoolName,
+        grade: player.grade,
+        healthConcerns: player.healthConcerns,
+        aauNumber: player.aauNumber,
+        isGradeOverridden: player.isGradeOverridden,
+        avatar: player.avatar,
+        seasons: player.seasons || [],
+        registrationYear: player.registrationYear,
+        season: player.season,
+        paymentComplete: player.paymentComplete,
+        paymentStatus: player.paymentStatus,
+        parentId: player.parentId,
+        createdAt: player.createdAt,
+        updatedAt: player.updatedAt,
+      },
+    });
+  } catch (error) {
+    console.error('❌ Error updating player:', error);
+    res.status(500).json({ error: 'Failed to update player' });
+  }
+});
+
+// Delete a single player and remove from parent's players array
+router.delete('/players/:id', authenticate, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+
+    const player = await Player.findById(id).session(session);
+    if (!player) {
+      await session.abortTransaction();
+      return res.status(404).json({ error: 'Player not found' });
+    }
+
+    // Check authorization — must be the parent or an admin
+    if (
+      req.user.role !== 'admin' &&
+      req.user.id !== player.parentId.toString()
+    ) {
+      await session.abortTransaction();
+      return res
+        .status(403)
+        .json({ error: 'Not authorized to delete this player' });
+    }
+
+    // Delete player avatar from R2 if it exists and is not a default
+    if (
+      player.avatar &&
+      isR2Url(player.avatar) &&
+      !player.avatar.includes('girl.png') &&
+      !player.avatar.includes('boy.png')
+    ) {
+      try {
+        await deleteFromR2(player.avatar);
+        console.log(`Player avatar deleted from R2: ${player.avatar}`);
+      } catch (deleteError) {
+        console.error('Error deleting player avatar from R2:', deleteError);
+        // Continue even if avatar delete fails
+      }
+    }
+
+    // Remove player from parent's players array
+    await Parent.findByIdAndUpdate(
+      player.parentId,
+      { $pull: { players: player._id } },
+      { session },
+    );
+
+    // Delete all registrations for this player
+    await Registration.deleteMany({ player: id }).session(session);
+
+    // Delete the player
+    await Player.findByIdAndDelete(id).session(session);
+
+    await session.commitTransaction();
+
+    console.log(`✅ Player deleted: ${id} (${player.fullName})`);
+
+    res.json({
+      success: true,
+      message: 'Player removed successfully',
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Error deleting player:', error);
+    res.status(500).json({
+      error: 'Failed to delete player',
+      details:
+        process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
+  } finally {
+    session.endSession();
+  }
+});
+
 // Delete parent account and all associated data
 router.delete('/parent/:id', authenticate, async (req, res) => {
   const session = await mongoose.startSession();
@@ -5687,7 +5836,6 @@ router.delete('/parent/:id', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Parent not found' });
     }
 
-    // 🔥 FIX: Delete guardian avatars from R2
     if (parent.additionalGuardians && parent.additionalGuardians.length > 0) {
       for (const guardian of parent.additionalGuardians) {
         if (guardian.avatar && isR2Url(guardian.avatar)) {
@@ -5705,7 +5853,6 @@ router.delete('/parent/:id', authenticate, async (req, res) => {
       }
     }
 
-    // 🔥 FIX: Delete player avatars from R2
     if (parent.players && parent.players.length > 0) {
       // Get all players associated with this parent
       const players = await Player.find({
