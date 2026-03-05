@@ -481,65 +481,229 @@ router.post(
 );
 
 // Register a new player
-router.post(
-  '/players/register',
-  authenticate,
-  [
-    body('fullName').notEmpty().withMessage('Full name is required'),
-    body('gender').notEmpty().withMessage('Gender is required'),
-    body('dob').notEmpty().withMessage('Date of birth is required'),
-    body('schoolName').notEmpty().withMessage('School name is required'),
-    body('healthConcerns').optional(),
-    body('aauNumber').optional(),
-    body('registrationYear')
-      .isNumeric()
-      .withMessage('Registration year must be number'),
-    body('season').optional().isString(),
-    body('parentId').notEmpty().withMessage('Parent ID is required'),
-    body('grade').optional().isString(),
-    body('isGradeOverridden').optional().isBoolean(),
-    body('tryoutId').optional().isString(),
-    body('skipSeasonRegistration')
-      .optional()
-      .isBoolean()
-      .withMessage('skipSeasonRegistration must be boolean'),
-  ],
-  async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      console.log('Validation errors:', errors.array());
-      return res.status(400).json({ errors: errors.array() });
+router.post('/players/register', authenticate, async (req, res) => {
+  try {
+    const RegistrationFormConfig = require('../models/RegistrationFormConfig');
+    const formConfig = await RegistrationFormConfig.findOne({
+      isActive: true,
+      appliesTo: { $in: ['player'] },
+    }).lean();
+
+    console.log(
+      '📋 Found form config for player registration:',
+      formConfig?._id,
+    );
+
+    // Build dynamic validations based on config
+    const validations = [];
+
+    // Always required fields (system-level required)
+    validations.push(
+      body('parentId').notEmpty().withMessage('Parent ID is required'),
+      body('registrationYear')
+        .isNumeric()
+        .withMessage('Registration year must be number'),
+      body('skipSeasonRegistration').optional().isBoolean(),
+    );
+
+    // If we have a config, use it to determine which fields are required
+    if (formConfig && formConfig.fields) {
+      console.log(
+        '📋 Config fields:',
+        formConfig.fields.map((f) => ({
+          name: f.fieldName,
+          required: f.isRequired,
+          enabled: f.isEnabled,
+        })),
+      );
+
+      const enabledFields = formConfig.fields.filter(
+        (f) => f.isEnabled === true,
+      );
+
+      // Track which fields are in the config for logging
+      const configFieldNames = enabledFields.map((f) => f.fieldName);
+      console.log('✅ Enabled fields from config:', configFieldNames);
+
+      enabledFields.forEach((field) => {
+        switch (field.fieldName) {
+          case 'fullName':
+            if (field.isRequired) {
+              validations.push(
+                body('fullName')
+                  .notEmpty()
+                  .withMessage('Full name is required'),
+              );
+            } else {
+              validations.push(body('fullName').optional());
+            }
+            break;
+          case 'gender':
+            if (field.isRequired) {
+              validations.push(
+                body('gender')
+                  .notEmpty()
+                  .withMessage('Gender is required')
+                  .isIn(['Male', 'Female'])
+                  .withMessage('Gender must be Male or Female'),
+              );
+            } else {
+              validations.push(body('gender').optional());
+            }
+            break;
+          case 'dob':
+            if (field.isRequired) {
+              validations.push(
+                body('dob')
+                  .if((value, { req }) => !req.body.skipSeasonRegistration)
+                  .notEmpty()
+                  .withMessage('Date of birth is required')
+                  .isISO8601()
+                  .withMessage('Invalid date format'),
+              );
+            } else {
+              validations.push(body('dob').optional({ checkFalsy: true }));
+            }
+            break;
+          case 'schoolName':
+            if (field.isRequired) {
+              validations.push(
+                body('schoolName')
+                  .if((value, { req }) => !req.body.skipSeasonRegistration)
+                  .notEmpty()
+                  .withMessage('School name is required'),
+              );
+            } else {
+              validations.push(
+                body('schoolName').optional({ checkFalsy: true }),
+              );
+            }
+            break;
+          case 'grade':
+            if (field.isRequired) {
+              validations.push(
+                body('grade').notEmpty().withMessage('Grade is required'),
+              );
+            } else {
+              validations.push(body('grade').optional());
+            }
+            break;
+          case 'healthConcerns':
+            validations.push(body('healthConcerns').optional());
+            break;
+          case 'aauNumber':
+            validations.push(body('aauNumber').optional());
+            break;
+          case 'age':
+            // Age is calculated, not submitted
+            break;
+          default:
+            // For any other fields, make them optional
+            validations.push(body(field.fieldName).optional());
+        }
+      });
+    } else {
+      // Fallback to default validations if no config found
+      console.log('⚠️ No form config found, using default validations');
+      validations.push(
+        body('fullName').notEmpty().withMessage('Full name is required'),
+        body('gender').notEmpty().withMessage('Gender is required'),
+        body('dob').optional(),
+        body('schoolName').optional(),
+        body('grade').optional().isString(),
+        body('healthConcerns').optional(),
+        body('aauNumber').optional(),
+      );
     }
 
-    const {
-      fullName,
-      gender,
+    // Always add optional fields that might be present
+    validations.push(
+      body('season').optional().isString(),
+      body('isGradeOverridden').optional().isBoolean(),
+      body('tryoutId').optional().isString(),
+      body('immediatePaymentFlow').optional().isBoolean(),
+    );
+
+    // Run all validations
+    await Promise.all(validations.map((v) => v.run(req)));
+  } catch (configError) {
+    console.error('❌ Error loading form config:', configError);
+    await Promise.all([
+      body('fullName').notEmpty().withMessage('Full name is required').run(req),
+      body('gender').notEmpty().withMessage('Gender is required').run(req),
+      body('dob').optional({ checkFalsy: true }).run(req),
+      body('schoolName').optional({ checkFalsy: true }).run(req),
+      body('parentId').notEmpty().withMessage('Parent ID is required').run(req),
+      body('registrationYear')
+        .isNumeric()
+        .withMessage('Registration year must be number')
+        .run(req),
+    ]);
+  }
+
+  // Check for validation errors
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    console.log('❌ Validation errors:', errors.array());
+    return res.status(400).json({
+      error: 'Validation failed',
+      errors: errors.array(),
+    });
+  }
+
+  // Continue with the existing handler logic...
+  const {
+    fullName,
+    gender,
+    dob,
+    schoolName,
+    healthConcerns,
+    aauNumber,
+    registrationYear,
+    season,
+    parentId,
+    grade,
+    isGradeOverridden = false,
+    tryoutId,
+    skipSeasonRegistration = false,
+    immediatePaymentFlow = false,
+  } = req.body;
+
+  // Log what we received
+  console.log('📦 Received player data:', {
+    fullName,
+    gender,
+    dob: dob || 'NOT PROVIDED',
+    schoolName: schoolName || 'NOT PROVIDED',
+    grade,
+    aauNumber,
+    registrationYear,
+    parentId,
+    isGradeOverridden,
+  });
+
+  // Calculate grade if not overridden and dob is provided
+  let calculatedGrade = grade;
+  if (!isGradeOverridden && dob) {
+    calculatedGrade = calculateGradeFromDOB(
       dob,
-      schoolName,
-      healthConcerns,
-      aauNumber,
-      registrationYear,
-      season,
-      parentId,
-      grade,
-      isGradeOverridden = false,
-      tryoutId,
-      skipSeasonRegistration = false,
-      immediatePaymentFlow = false,
-    } = req.body;
+      parseInt(registrationYear, 10),
+    );
+    console.log('📊 Calculated grade from DOB:', calculatedGrade);
+  }
 
-    // Calculate grade if not overridden
-    const calculatedGrade = isGradeOverridden
-      ? grade
-      : calculateGradeFromDOB(dob, registrationYear);
+  const session = await mongoose.startSession();
 
-    const session = await mongoose.startSession();
+  try {
+    await session.startTransaction();
 
-    try {
-      await session.startTransaction();
+    // Declare existingPlayer outside the if block so it's available later
+    let existingPlayer = null;
 
-      // 🛡️ DUPLICATE CHECK - Check for player existence
-      const existingPlayer = await Player.findOne({
+    // 🛡️ DUPLICATE CHECK - Check for player existence
+    // Only check duplicate if we have the required fields
+    if (fullName && dob && gender) {
+      existingPlayer = await Player.findOne({
         parentId,
         fullName: { $regex: new RegExp(`^${fullName.trim()}$`, 'i') },
         dob: new Date(dob),
@@ -565,337 +729,231 @@ router.post(
           },
         });
       }
+    }
 
-      // Generate tryoutId if season is provided
-      const finalTryoutId =
-        tryoutId ||
-        (season ? await generateTryoutId(season, registrationYear) : null);
+    // Generate tryoutId if season is provided
+    const finalTryoutId =
+      tryoutId ||
+      (season ? await generateTryoutId(season, registrationYear) : null);
 
-      console.log('🔍 Generated tryoutId:', {
-        season,
-        year: registrationYear,
-        finalTryoutId,
-        providedTryoutId: tryoutId,
-      });
+    // ============ NORMALIZE SEASON NAMES ============
+    let normalizedSeason = season ? season.trim() : null;
 
-      // ============ CRITICAL FIX: NORMALIZE SEASON NAMES ============
-      let normalizedSeason = season ? season.trim() : null;
+    if (!skipSeasonRegistration && normalizedSeason) {
+      // Determine program type based on tryoutId or season name
+      const isTrainingEvent =
+        finalTryoutId?.includes('-camp-') ||
+        finalTryoutId?.includes('-training-') ||
+        normalizedSeason.toLowerCase().includes('camp') ||
+        normalizedSeason.toLowerCase().includes('training');
 
-      if (!skipSeasonRegistration && normalizedSeason) {
-        // Determine program type based on tryoutId or season name
-        const isTrainingEvent =
-          finalTryoutId?.includes('-camp-') ||
-          finalTryoutId?.includes('-training-') ||
-          normalizedSeason.toLowerCase().includes('camp') ||
-          normalizedSeason.toLowerCase().includes('training');
+      const isTryoutEvent =
+        finalTryoutId?.includes('-tryout-') ||
+        normalizedSeason.toLowerCase().includes('tryout');
 
-        const isTryoutEvent =
-          finalTryoutId?.includes('-tryout-') ||
-          normalizedSeason.toLowerCase().includes('tryout');
+      if (isTrainingEvent) {
+        console.log(`🎯 Training/Camp season: "${normalizedSeason}"`);
+      } else if (isTryoutEvent) {
+        const alreadyHasTryoutInName = normalizedSeason
+          .toLowerCase()
+          .includes('tryout');
+        const alreadyHasTryoutPrefix = normalizedSeason.startsWith('Tryout - ');
 
-        if (isTrainingEvent) {
-          // ✅ KEEP the original camp/training name (e.g., "Partizan Winter Break Camp")
-          console.log(`🎯 Training/Camp season: "${normalizedSeason}"`);
-          // DON'T change it to "Basketball Training"
-        } else if (isTryoutEvent) {
-          // For tryouts, check if we need to add prefix
-          const alreadyHasTryoutInName = normalizedSeason
-            .toLowerCase()
-            .includes('tryout');
-          const alreadyHasTryoutPrefix =
-            normalizedSeason.startsWith('Tryout - ');
-
-          if (!alreadyHasTryoutInName && !alreadyHasTryoutPrefix) {
-            // Name doesn't contain "tryout", add prefix
-            normalizedSeason = `Tryout - ${normalizedSeason}`;
-            console.log(
-              `🎯 Added tryout prefix: "${season}" -> "${normalizedSeason}"`,
-            );
-          } else if (alreadyHasTryoutInName && !alreadyHasTryoutPrefix) {
-            // Already has "tryout" in name but no prefix, keep as-is
-            console.log(
-              `ℹ️ Tryout season (already named): "${normalizedSeason}"`,
-            );
-          } else {
-            // Already has prefix, keep as-is
-            console.log(
-              `ℹ️ Tryout season (already prefixed): "${normalizedSeason}"`,
-            );
-          }
-        } else {
-          // For regular seasons, keep as-is
-          console.log(`ℹ️ Regular season: "${normalizedSeason}"`);
+        if (!alreadyHasTryoutInName && !alreadyHasTryoutPrefix) {
+          normalizedSeason = `Tryout - ${normalizedSeason}`;
+          console.log(
+            `🎯 Added tryout prefix: "${season}" -> "${normalizedSeason}"`,
+          );
         }
       }
-      // ============ END CRITICAL FIX ============
+    }
+    // ============ END NORMALIZE SEASON NAMES ============
 
-      // Verify parent exists
-      const parent = await Parent.findById(parentId).session(session);
-      if (!parent) {
-        await session.abortTransaction();
-        console.log('Parent not found:', { parentId });
-        return res.status(400).json({ error: 'Parent not found' });
-      }
+    // Verify parent exists
+    const parent = await Parent.findById(parentId).session(session);
+    if (!parent) {
+      await session.abortTransaction();
+      console.log('Parent not found:', { parentId });
+      return res.status(400).json({ error: 'Parent not found' });
+    }
 
-      // Create player data
-      const playerData = {
-        fullName: fullName.trim(),
-        gender,
-        dob: new Date(dob),
-        schoolName: schoolName.trim(),
-        healthConcerns: healthConcerns || '',
-        aauNumber: aauNumber || '',
-        registrationYear,
-        parentId,
-        grade: calculatedGrade,
-        isGradeOverridden,
+    // Create player data - only include fields that were provided
+    const playerData = {
+      parentId,
+      registrationYear,
+      paymentStatus: 'pending',
+      paymentComplete: false,
+      registrationComplete: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    // Only add fields that were provided in the request
+    if (fullName) playerData.fullName = fullName.trim();
+    if (gender) playerData.gender = gender;
+    if (dob) playerData.dob = new Date(dob);
+    if (schoolName) playerData.schoolName = schoolName.trim();
+    if (healthConcerns) playerData.healthConcerns = healthConcerns;
+    if (aauNumber) playerData.aauNumber = aauNumber;
+    if (calculatedGrade) playerData.grade = calculatedGrade;
+    playerData.isGradeOverridden = isGradeOverridden;
+
+    // Add season data if NOT skipping season registration
+    if (!skipSeasonRegistration && normalizedSeason) {
+      playerData.season = normalizedSeason;
+
+      // Create season entry
+      const seasonEntry = {
+        season: normalizedSeason,
+        year: registrationYear,
+        tryoutId: finalTryoutId,
+        registrationDate: new Date(),
         paymentStatus: 'pending',
         paymentComplete: false,
-        registrationComplete: true,
-        createdAt: new Date(),
-        updatedAt: new Date(),
       };
 
-      // Add season data if NOT skipping season registration
-      if (!skipSeasonRegistration && normalizedSeason) {
-        playerData.season = normalizedSeason;
+      // Check if we found an existing player (from duplicate check)
+      if (
+        existingPlayer &&
+        existingPlayer.seasons &&
+        existingPlayer.seasons.length > 0
+      ) {
+        const seasonExists = existingPlayer.seasons.some(
+          (s) =>
+            s.season === normalizedSeason &&
+            s.year === registrationYear &&
+            s.tryoutId === finalTryoutId,
+        );
 
-        // Check if player already exists and has seasons
-        const existingPlayerWithSeasons = await Player.findOne({
-          parentId,
-          fullName: { $regex: new RegExp(`^${fullName.trim()}$`, 'i') },
-          dob: new Date(dob),
-          gender: gender,
-        });
-
-        if (existingPlayerWithSeasons && existingPlayerWithSeasons.seasons) {
-          // Check if this exact season already exists with normalized name
-          const seasonExists = existingPlayerWithSeasons.seasons.some(
-            (s) =>
-              s.season === normalizedSeason &&
-              s.year === registrationYear &&
-              s.tryoutId === finalTryoutId,
-          );
-
-          if (!seasonExists) {
-            playerData.seasons = [
-              ...existingPlayerWithSeasons.seasons,
-              {
-                season: normalizedSeason,
-                year: registrationYear,
-                tryoutId: finalTryoutId,
-                registrationDate: new Date(),
-                paymentStatus: 'pending',
-                paymentComplete: false,
-              },
-            ];
-          } else {
-            playerData.seasons = existingPlayerWithSeasons.seasons;
-            console.log('ℹ️ Season already exists, using existing seasons');
-          }
+        if (!seasonExists) {
+          playerData.seasons = [...existingPlayer.seasons, seasonEntry];
         } else {
-          playerData.seasons = [
-            {
-              season: normalizedSeason,
-              year: registrationYear,
-              tryoutId: finalTryoutId,
-              registrationDate: new Date(),
-              paymentStatus: 'pending',
-              paymentComplete: false,
-            },
-          ];
+          playerData.seasons = existingPlayer.seasons;
         }
+      } else {
+        playerData.seasons = [seasonEntry];
       }
+    }
 
-      const player = new Player(playerData);
-      await player.save({ session });
+    const player = new Player(playerData);
+    await player.save({ session });
 
-      // Update parent's players array
-      await Parent.findByIdAndUpdate(
-        parentId,
-        { $push: { players: player._id } },
-        { session },
-      );
+    // Update parent's players array
+    await Parent.findByIdAndUpdate(
+      parentId,
+      { $push: { players: player._id } },
+      { session },
+    );
 
-      // ✅ Create registration with normalized season names
-      let registration = null;
+    // Create registration with normalized season names
+    let registration = null;
 
-      if (!skipSeasonRegistration && normalizedSeason) {
-        registration = await Registration.findOneAndUpdate(
-          {
+    if (!skipSeasonRegistration && normalizedSeason) {
+      registration = await Registration.findOneAndUpdate(
+        {
+          player: player._id,
+          parent: parentId,
+          season: normalizedSeason,
+          year: registrationYear,
+          tryoutId: finalTryoutId,
+        },
+        {
+          $setOnInsert: {
             player: player._id,
             parent: parentId,
             season: normalizedSeason,
             year: registrationYear,
             tryoutId: finalTryoutId,
+            registrationComplete: true,
+            createdAt: new Date(),
           },
-          {
-            $setOnInsert: {
-              player: player._id,
-              parent: parentId,
-              season: normalizedSeason,
-              year: registrationYear,
-              tryoutId: finalTryoutId,
-              registrationComplete: true,
-              createdAt: new Date(),
-            },
-            $set: {
-              paymentStatus: 'pending',
-              paymentComplete: false,
-              updatedAt: new Date(),
-            },
+          $set: {
+            paymentStatus: 'pending',
+            paymentComplete: false,
+            updatedAt: new Date(),
           },
-          {
-            upsert: true,
-            new: true,
-            session,
-            runValidators: true,
-          },
-        );
-
-        console.log('✅ Registration created/updated:', {
-          registrationId: registration._id,
-          playerId: player._id,
-          playerName: player.fullName,
-          originalSeason: season,
-          normalizedSeason: normalizedSeason,
-          year: registrationYear,
-          tryoutId: finalTryoutId,
-          paymentStatus: registration.paymentStatus,
-          isNew:
-            !registration.createdAt ||
-            registration.createdAt === registration.updatedAt,
-        });
-      }
-
-      await session.commitTransaction();
-
-      // Send emails based on the registration type
-      if (!skipSeasonRegistration && normalizedSeason) {
-        const isTraining = normalizedSeason === 'Basketball Training';
-        const isTryout = normalizedSeason.startsWith('Tryout - ');
-
-        if (isTryout) {
-          try {
-            await sendTryoutEmail(
-              parent.email,
-              player.fullName,
-              normalizedSeason,
-              registrationYear,
-            );
-            console.log('Tryout confirmation email sent successfully');
-          } catch (emailError) {
-            console.error('Tryout email failed:', emailError);
-          }
-        } else if (isTraining) {
-          try {
-            await sendTrainingRegistrationPendingEmail(
-              parentId,
-              [player._id],
-              normalizedSeason,
-              registrationYear,
-              req.body.packageInfo || null,
-            );
-            console.log('Training registration email sent successfully');
-          } catch (emailError) {
-            console.error('Training email failed:', emailError);
-          }
-        }
-
-        if (!immediatePaymentFlow && !isTraining) {
-          try {
-            await sendRegistrationPendingEmail(
-              parentId,
-              [player._id],
-              normalizedSeason,
-              registrationYear,
-              req.body.packageInfo || null,
-            );
-            console.log('Pending payment email sent for new registration');
-          } catch (emailError) {
-            console.error('Failed to send pending payment email:', emailError);
-          }
-        }
-      }
-
-      await session.endSession();
-
-      console.log('Registered player successfully:', {
-        playerId: player._id,
-        fullName: player.fullName,
-        parentId,
-        originalSeason: season,
-        normalizedSeason: player.season,
-        year: registrationYear,
-        hasSeasonRegistration: !skipSeasonRegistration && normalizedSeason,
-        paymentStatus: player.paymentStatus,
-        registrationId: registration ? registration._id : null,
-      });
-
-      // Build response object
-      const responseData = {
-        message:
-          skipSeasonRegistration || !normalizedSeason
-            ? 'Player registered successfully'
-            : 'Player registered successfully for season',
-        player: {
-          _id: player._id,
-          fullName: player.fullName,
-          gender: player.gender,
-          dob: player.dob,
-          schoolName: player.schoolName,
-          grade: player.grade,
-          registrationYear: player.registrationYear,
-          season: player.season,
-          parentId: player.parentId,
-          paymentStatus: player.paymentStatus,
-          paymentComplete: player.paymentComplete,
-          registrationComplete: player.registrationComplete,
-          seasons: player.seasons || [],
         },
+        {
+          upsert: true,
+          new: true,
+          session,
+          runValidators: true,
+        },
+      );
+    }
+
+    await session.commitTransaction();
+
+    console.log('✅ Registered player successfully:', {
+      playerId: player._id,
+      fullName: player.fullName,
+      parentId,
+    });
+
+    // Build response object
+    const responseData = {
+      message: 'Player registered successfully',
+      player: {
+        _id: player._id,
+        fullName: player.fullName,
+        gender: player.gender,
+        dob: player.dob,
+        schoolName: player.schoolName,
+        grade: player.grade,
+        registrationYear: player.registrationYear,
+        season: player.season,
+        parentId: player.parentId,
+        paymentStatus: player.paymentStatus,
+        paymentComplete: player.paymentComplete,
+        registrationComplete: player.registrationComplete,
+        seasons: player.seasons || [],
+      },
+    };
+
+    // Add registration data if it exists
+    if (registration) {
+      responseData.registration = {
+        id: registration._id,
+        playerId: player._id,
+        parentId,
+        season: registration.season,
+        year: registration.year,
+        tryoutId: registration.tryoutId,
+        paymentStatus: registration.paymentStatus,
+        paymentComplete: registration.paymentComplete,
+        registrationComplete: registration.registrationComplete,
       };
+    }
 
-      // Add registration data if it exists
-      if (registration) {
-        responseData.registration = {
-          id: registration._id,
-          playerId: player._id,
-          parentId,
-          season: registration.season,
-          year: registration.year,
-          tryoutId: registration.tryoutId,
-          paymentStatus: registration.paymentStatus,
-          paymentComplete: registration.paymentComplete,
-          registrationComplete: registration.registrationComplete,
-        };
-      }
+    res.status(201).json(responseData);
+  } catch (error) {
+    if (session.inTransaction()) {
+      await session.abortTransaction();
+    }
+    await session.endSession();
 
-      res.status(201).json(responseData);
-    } catch (error) {
-      if (session.inTransaction()) {
-        await session.abortTransaction();
-      }
-      await session.endSession();
+    console.error('❌ Error registering player:', error.message, error.stack);
 
-      console.error('Error registering player:', error.message, error.stack);
-
-      if (error.code === 11000) {
-        return res.status(400).json({
-          error: 'Duplicate registration detected',
-          details: 'This player is already registered for this season/tryout',
-        });
-      }
-
-      res.status(500).json({
-        error: 'Failed to register player',
-        details:
-          process.env.NODE_ENV === 'development'
-            ? error.message
-            : 'Internal server error',
+    if (error.code === 11000) {
+      return res.status(400).json({
+        error: 'Duplicate registration detected',
+        details: 'This player is already registered for this season/tryout',
       });
     }
-  },
-);
+
+    res.status(500).json({
+      error: 'Failed to register player',
+      details:
+        process.env.NODE_ENV === 'development'
+          ? error.message
+          : 'Internal server error',
+    });
+  } finally {
+    if (session) {
+      await session.endSession();
+    }
+  }
+});
 
 // Register for basketball camp
 router.post(

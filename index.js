@@ -44,6 +44,7 @@ const communicationPreferencesRouter = require('./routes/communicationPreference
 const pageBuilder = require('./routes/pageBuilderRoutes');
 const initCalendarEvents = require('./scripts/initCalendarEvents');
 const healthCheck = require('./health');
+const formFieldRoutes = require('./routes/formFieldRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -148,6 +149,7 @@ app.use('/api/tournaments', tournamentRoutes);
 app.use('/api/teams', teamsRoutes);
 app.use('/api/page-builder', pageBuilder);
 app.get('/api/health', healthCheck);
+app.use('/api/form-fields', formFieldRoutes);
 
 // Backend route for fetching player data
 app.get('/api/player/:playerId', async (req, res) => {

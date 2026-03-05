@@ -91,11 +91,11 @@ const playerSchema = new mongoose.Schema(
     },
     dob: {
       type: Date,
-      required: true,
+      required: false,
     },
     schoolName: {
       type: String,
-      required: true,
+      required: false,
       trim: true,
     },
     grade: {
