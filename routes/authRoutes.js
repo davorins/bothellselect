@@ -1711,6 +1711,17 @@ router.put(
         return res.status(404).json({ error: 'Parent not found' });
       }
 
+      // Ensure address includes street2
+      if (updatedGuardian.address) {
+        updatedGuardian.address = {
+          street: updatedGuardian.address.street?.trim() || '',
+          street2: updatedGuardian.address.street2?.trim() || '',
+          city: updatedGuardian.address.city?.trim() || '',
+          state: updatedGuardian.address.state?.trim()?.toUpperCase() || '',
+          zip: updatedGuardian.address.zip?.trim() || '',
+        };
+      }
+
       parent.additionalGuardians[guardianIndex] = updatedGuardian;
       await parent.save();
 
@@ -1739,10 +1750,17 @@ router.put('/parent/:parentId/guardians', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Parent not found' });
     }
 
+    // Ensure each guardian's address includes street2
     parent.additionalGuardians = additionalGuardians.map((guardian) => ({
       ...guardian,
       phone: guardian.phone.replace(/\D/g, ''),
-      address: ensureAddress(guardian.address),
+      address: {
+        street: guardian.address?.street?.trim() || '',
+        street2: guardian.address?.street2?.trim() || '',
+        city: guardian.address?.city?.trim() || '',
+        state: guardian.address?.state?.trim()?.toUpperCase() || '',
+        zip: guardian.address?.zip?.trim() || '',
+      },
       isCoach: !!guardian.aauNumber?.trim(),
       aauNumber: (guardian.aauNumber || '').trim(),
     }));
