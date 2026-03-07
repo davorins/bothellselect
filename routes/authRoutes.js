@@ -1572,6 +1572,28 @@ router.get('/parent/:id', async (req, res) => {
     parent.playersSeason = parent.playersSeason || [];
     parent.playersYear = parent.playersYear || [];
 
+    // Ensure address is returned as an object with street2 field
+    if (parent.address && typeof parent.address === 'object') {
+      // Make sure street2 exists
+      parent.address = {
+        street: parent.address.street || '',
+        street2: parent.address.street2 || '',
+        city: parent.address.city || '',
+        state: parent.address.state || '',
+        zip: parent.address.zip || '',
+      };
+    } else if (parent.address && typeof parent.address === 'string') {
+      // If it's somehow still a string, parse it
+      const parsed = parseAddress(parent.address);
+      parent.address = {
+        street: parsed.street,
+        street2: parsed.street2,
+        city: parsed.city,
+        state: parsed.state,
+        zip: parsed.zip,
+      };
+    }
+
     res.json(parent);
   } catch (error) {
     console.error('Error fetching parent:', error);
@@ -1591,15 +1613,48 @@ router.put('/parent/:id', authenticate, async (req, res) => {
       isCoach,
       aauNumber,
     } = req.body;
+
+    console.log('📝 Updating parent with address:', address);
+
+    // Ensure address includes all fields, especially street2
+    const formattedAddress = {
+      street: address?.street?.trim() || '',
+      street2: address?.street2?.trim() || '',
+      city: address?.city?.trim() || '',
+      state: address?.state?.trim()?.toUpperCase() || '',
+      zip: address?.zip?.trim() || '',
+    };
+
+    console.log('📦 Formatted address for DB:', formattedAddress);
+
     const parent = await Parent.findByIdAndUpdate(
       req.params.id,
-      { fullName, phone, address, relationship, email, isCoach, aauNumber },
-      { new: true },
+      {
+        fullName: fullName?.trim(),
+        phone: phone?.replace(/\D/g, ''),
+        address: formattedAddress, // Save as object
+        relationship: relationship?.trim(),
+        email: email?.toLowerCase().trim(),
+        isCoach: isCoach || false,
+        aauNumber: aauNumber?.trim() || '',
+      },
+      { new: true, runValidators: true },
     );
+
     if (!parent) {
       return res.status(404).json({ error: 'Parent not found' });
     }
-    res.json({ message: 'Parent updated successfully', parent });
+
+    console.log('✅ Parent updated successfully:', {
+      id: parent._id,
+      address: parent.address,
+    });
+
+    res.json({
+      success: true,
+      message: 'Parent updated successfully',
+      parent,
+    });
   } catch (error) {
     console.error('Error updating parent data:', error.message, error.stack);
     res
