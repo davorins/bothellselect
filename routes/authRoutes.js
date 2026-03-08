@@ -268,12 +268,27 @@ router.post(
       if (typeof value === 'string') return parseAddress(value);
       return value;
     }),
-    body('address.street').notEmpty().withMessage('Street address is required'),
-    body('address.city').notEmpty().withMessage('City is required'),
+    // Make address fields optional for adminCreate
+    body('address.street')
+      .if((value, { req }) => req.body.registerType !== 'adminCreate')
+      .optional({ checkFalsy: true })
+      .notEmpty()
+      .withMessage('Street address is required'),
+    body('address.city')
+      .if((value, { req }) => req.body.registerType !== 'adminCreate')
+      .optional({ checkFalsy: true })
+      .notEmpty()
+      .withMessage('City is required'),
     body('address.state')
+      .if((value, { req }) => req.body.registerType !== 'adminCreate')
+      .optional({ checkFalsy: true })
       .isLength({ min: 2, max: 2 })
       .withMessage('State must be 2 letters'),
-    body('address.zip').isPostalCode('US').withMessage('Invalid ZIP code'),
+    body('address.zip')
+      .if((value, { req }) => req.body.registerType !== 'adminCreate')
+      .optional({ checkFalsy: true })
+      .isPostalCode('US')
+      .withMessage('Invalid ZIP code'),
     body('relationship').notEmpty().withMessage('Relationship is required'),
     body('isCoach').isBoolean().withMessage('isCoach must be boolean'),
     body('registerType').optional().isIn(['self', 'adminCreate']),
@@ -287,6 +302,7 @@ router.post(
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.log('❌ Validation errors:', errors.array());
       return res.status(400).json({ errors: errors.array() });
     }
 
@@ -296,10 +312,10 @@ router.post(
         password,
         fullName,
         phone,
-        address,
+        address = {},
         relationship,
-        isCoach,
-        aauNumber,
+        isCoach = false,
+        aauNumber = '',
         registerType = 'self',
         additionalGuardians = [],
         agreeToTerms,
@@ -316,7 +332,11 @@ router.post(
       const plainPassword =
         registerType === 'adminCreate'
           ? (tempPassword = generateRandomPassword()).trim()
-          : password.trim();
+          : password?.trim();
+
+      if (!plainPassword && registerType === 'self') {
+        return res.status(400).json({ error: 'Password is required' });
+      }
 
       if (isCoach && (!aauNumber || aauNumber.trim() === '')) {
         return res
@@ -324,46 +344,60 @@ router.post(
           .json({ error: 'AAU number required for coaches' });
       }
 
+      // Safely format address with defaults
+      const formattedAddress = {
+        street: address.street?.trim() || '',
+        street2: address.street2?.trim() || '',
+        city: address.city?.trim() || '',
+        state: address.state?.trim()?.toUpperCase() || '',
+        zip: address.zip?.trim() || '',
+      };
+
+      // Safely format additional guardians
+      const formattedGuardians = (additionalGuardians || []).map((g) => ({
+        fullName: g.fullName?.trim() || '',
+        email: g.email?.toLowerCase().trim() || '',
+        phone: g.phone?.replace(/\D/g, '') || '',
+        relationship: g.relationship?.trim() || '',
+        aauNumber: g.aauNumber?.trim() || '',
+        isCoach: g.isCoach || false,
+        address: {
+          street: g.address?.street?.trim() || '',
+          street2: g.address?.street2?.trim() || '',
+          city: g.address?.city?.trim() || '',
+          state: g.address?.state?.trim()?.toUpperCase() || '',
+          zip: g.address?.zip?.trim() || '',
+        },
+      }));
+
       const parentData = {
         email: normalizedEmail,
         password: plainPassword,
         fullName: fullName.trim(),
         phone: phone.replace(/\D/g, ''),
-        address: {
-          street: address.street.trim(),
-          ...(address.street2 && { street2: address.street2.trim() }),
-          city: address.city.trim(),
-          state: address.state.trim().toUpperCase(),
-          zip: address.zip.trim(),
-        },
+        address: formattedAddress,
         relationship: relationship.trim(),
         isCoach: isCoach || false,
-        aauNumber: isCoach ? aauNumber?.trim() : undefined,
-        additionalGuardians: additionalGuardians.map((g) => ({
-          ...g,
-          phone: g.phone.replace(/\D/g, ''),
-          address: {
-            street: g.address.street.trim(),
-            ...(g.address.street2 && { street2: g.address.street2.trim() }),
-            city: g.address.city.trim(),
-            state: g.address.state.trim().toUpperCase(),
-            zip: g.address.zip.trim(),
-          },
-        })),
+        aauNumber: isCoach ? aauNumber?.trim() : '',
+        additionalGuardians: formattedGuardians,
         registerMethod: registerType,
         agreeToTerms: registerType === 'adminCreate' ? true : agreeToTerms,
         role: isCoach ? 'coach' : 'user',
+        emailVerified: registerType === 'adminCreate', // Auto-verify admin-created accounts
       };
+
+      console.log('📝 Creating parent with data:', {
+        ...parentData,
+        password: '[REDACTED]',
+      });
 
       const parent = new Parent(parentData);
       await parent.save();
 
-      // ✅ Send welcome email for account creation
+      // Send welcome email (don't await - let it run in background)
       try {
-        // Import the email function
         const { sendEmail } = require('../utils/email');
 
-        // Create welcome email content
         const welcomeEmailHtml = `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px;">
             <div style="text-align: center; margin-bottom: 20px;">
@@ -423,18 +457,13 @@ router.post(
           </div>
         `;
 
-        await sendEmail({
+        sendEmail({
           to: parent.email,
           subject: 'Welcome to Partizan Basketball!',
           html: welcomeEmailHtml,
-        });
-
-        console.log('✅ Welcome email sent to:', parent.email);
+        }).catch((err) => console.error('Welcome email failed:', err));
       } catch (emailError) {
-        console.error(
-          '⚠️ Welcome email failed (but registration succeeded):',
-          emailError,
-        );
+        console.error('⚠️ Welcome email setup failed:', emailError);
         // Don't fail the registration if email fails
       }
 
@@ -470,7 +499,28 @@ router.post(
         },
       });
     } catch (error) {
-      console.error('Registration error:', error);
+      console.error('❌ Registration error:', error);
+
+      // Handle duplicate key errors
+      if (error.code === 11000) {
+        return res.status(400).json({
+          error: 'Duplicate entry detected',
+          details: error.message,
+        });
+      }
+
+      // Handle validation errors
+      if (error.name === 'ValidationError') {
+        const validationErrors = Object.values(error.errors).map((err) => ({
+          field: err.path,
+          message: err.message,
+        }));
+        return res.status(400).json({
+          error: 'Validation failed',
+          details: validationErrors,
+        });
+      }
+
       res.status(500).json({
         error: 'Registration failed',
         details:
@@ -2428,6 +2478,8 @@ router.put('/parent-full/:id', authenticate, async (req, res) => {
       password,
     } = req.body;
 
+    console.log('Received guardian data:', additionalGuardians);
+
     const updateData = {
       fullName,
       phone,
@@ -2436,7 +2488,24 @@ router.put('/parent-full/:id', authenticate, async (req, res) => {
       email,
       isCoach,
       aauNumber,
-      additionalGuardians: additionalGuardians || [],
+      additionalGuardians: (additionalGuardians || []).map((g) => ({
+        fullName: g.fullName,
+        email: g.email,
+        phone: g.phone,
+        relationship: g.relationship,
+        aauNumber: g.aauNumber || '',
+        isCoach: g.isCoach || false,
+        address: g.address || {
+          street: '',
+          street2: '',
+          city: '',
+          state: '',
+          zip: '',
+          avatar: g.avatar || null,
+          ...(g._id && !g._id.toString().startsWith('temp_') && { _id: g._id }),
+        },
+        ...(g._id && !g._id.toString().startsWith('temp_') && { _id: g._id }),
+      })),
       avatar: avatarUrl,
     };
 
@@ -2444,14 +2513,17 @@ router.put('/parent-full/:id', authenticate, async (req, res) => {
       updateData.password = await bcrypt.hash(password.trim(), 12);
     }
 
-    const parent = await Parent.findByIdAndUpdate(id, updateData, {
-      new: true,
-      runValidators: true,
-    });
+    const parent = await Parent.findByIdAndUpdate(
+      id,
+      { $set: updateData },
+      { new: true, runValidators: false },
+    );
 
     if (!parent) {
       return res.status(404).json({ error: 'Parent not found' });
     }
+
+    console.log('Parent updated with guardians:', parent.additionalGuardians);
 
     res.json({
       message: 'Parent and guardians updated successfully',
@@ -6061,6 +6133,61 @@ router.delete('/parent/:id', authenticate, async (req, res) => {
     session.endSession();
   }
 });
+
+// Delete a specific guardian from a parent
+router.delete(
+  '/parent/:parentId/guardian/:guardianId',
+  authenticate,
+  async (req, res) => {
+    try {
+      const { parentId, guardianId } = req.params;
+
+      const parent = await Parent.findById(parentId);
+      if (!parent) {
+        return res.status(404).json({ error: 'Parent not found' });
+      }
+
+      const guardianIndex = parent.additionalGuardians.findIndex(
+        (g) => g._id.toString() === guardianId,
+      );
+
+      if (guardianIndex === -1) {
+        return res.status(404).json({ error: 'Guardian not found' });
+      }
+
+      const guardian = parent.additionalGuardians[guardianIndex];
+
+      // Delete guardian avatar from R2 if it exists
+      if (guardian.avatar && isR2Url(guardian.avatar)) {
+        try {
+          await deleteFromR2(guardian.avatar);
+          console.log(`Guardian avatar deleted from R2: ${guardian.avatar}`);
+        } catch (deleteError) {
+          console.error('Error deleting guardian avatar from R2:', deleteError);
+          // Continue even if avatar delete fails
+        }
+      }
+
+      parent.additionalGuardians.splice(guardianIndex, 1);
+      parent.markModified('additionalGuardians');
+      await parent.save();
+
+      console.log(`✅ Guardian deleted: ${guardianId} from parent ${parentId}`);
+
+      res.json({
+        success: true,
+        message: 'Guardian removed successfully',
+      });
+    } catch (error) {
+      console.error('Error deleting guardian:', error);
+      res.status(500).json({
+        error: 'Failed to delete guardian',
+        details:
+          process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    }
+  },
+);
 
 // Get paginated players with filters (NEW ROUTE)
 router.get(

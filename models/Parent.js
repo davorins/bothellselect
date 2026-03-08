@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+
 const parentSchema = new mongoose.Schema(
   {
     email: {
@@ -10,7 +11,6 @@ const parentSchema = new mongoose.Schema(
       trim: true,
       validate: {
         validator: function (v) {
-          // Simple email regex that allows dots
           return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
         },
         message: 'Please enter a valid email',
@@ -57,159 +57,64 @@ const parentSchema = new mongoose.Schema(
     address: {
       street: {
         type: String,
-        required: [true, 'Street address is required'],
-        minlength: [5, 'Street address must be at least 5 characters'],
+        required: function () {
+          // For new documents, check registerMethod
+          if (this.isNew) {
+            return this.registerMethod !== 'adminCreate';
+          }
+          // For existing documents, never require (since it already exists)
+          return false;
+        },
+        validate: {
+          validator: function (v) {
+            // If the field is empty and it's an existing document, skip validation
+            if (!v && !this.isNew) return true;
+
+            // For new adminCreate documents, allow empty
+            if (this.isNew && this.registerMethod === 'adminCreate' && !v)
+              return true;
+
+            // Otherwise, validate minimum length
+            return !v || v.length >= 5;
+          },
+          message: 'Street address must be at least 5 characters',
+        },
       },
       street2: { type: String, default: '' },
       city: {
         type: String,
-        required: [true, 'City is required'],
+        required: function () {
+          if (this.isNew) {
+            return this.registerMethod !== 'adminCreate';
+          }
+          return false;
+        },
+        validate: {
+          validator: function (v) {
+            if (!v && !this.isNew) return true;
+            if (this.isNew && this.registerMethod === 'adminCreate' && !v)
+              return true;
+            return !v || v.length > 0;
+          },
+          message: 'City is required',
+        },
       },
       state: {
         type: String,
-        required: [true, 'State is required'],
+        required: function () {
+          if (this.isNew) {
+            return this.registerMethod !== 'adminCreate';
+          }
+          return false;
+        },
         uppercase: true,
-        minlength: 2,
-        maxlength: 2,
-        enum: [
-          'AL',
-          'AK',
-          'AZ',
-          'AR',
-          'CA',
-          'CO',
-          'CT',
-          'DE',
-          'FL',
-          'GA',
-          'HI',
-          'ID',
-          'IL',
-          'IN',
-          'IA',
-          'KS',
-          'KY',
-          'LA',
-          'ME',
-          'MD',
-          'MA',
-          'MI',
-          'MN',
-          'MS',
-          'MO',
-          'MT',
-          'NE',
-          'NV',
-          'NH',
-          'NJ',
-          'NM',
-          'NY',
-          'NC',
-          'ND',
-          'OH',
-          'OK',
-          'OR',
-          'PA',
-          'RI',
-          'SC',
-          'SD',
-          'TN',
-          'TX',
-          'UT',
-          'VT',
-          'VA',
-          'WA',
-          'WV',
-          'WI',
-          'WY',
-        ],
-      },
-      zip: {
-        type: String,
-        required: [true, 'ZIP code is required'],
         validate: {
           validator: function (v) {
-            return /^\d{5}(-\d{4})?$/.test(v);
-          },
-          message: 'Please enter a valid ZIP code',
-        },
-      },
-    },
-    relationship: {
-      type: String,
-      required: [true, 'Relationship to player is required'],
-    },
-    isCoach: { type: Boolean, default: false },
-    aauNumber: { type: String },
-    agreeToTerms: {
-      type: Boolean,
-      required: function () {
-        return this.registerMethod === 'self';
-      },
-      default: function () {
-        return this.registerMethod === 'adminCreate';
-      },
-      validate: {
-        validator: function (v) {
-          return this.registerMethod !== 'self' || v === true;
-        },
-        message: 'You must agree to the terms and conditions',
-      },
-    },
-    registerMethod: {
-      type: String,
-      required: true,
-      enum: ['self', 'adminCreate'],
-      default: 'self',
-    },
-    role: {
-      type: String,
-      default: 'user',
-      enum: ['user', 'admin', 'coach'],
-    },
-    registrationComplete: { type: Boolean, default: false },
-    paymentComplete: { type: Boolean, default: false },
-    avatar: {
-      type: String,
-      default: null,
-    },
-    players: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Player' }],
-    additionalGuardians: [
-      {
-        _id: { type: mongoose.Schema.Types.ObjectId, auto: true },
-        fullName: { type: String, required: true, trim: true },
-        relationship: { type: String, required: true, trim: true },
-        phone: {
-          type: String,
-          required: true,
-          validate: {
-            validator: function (v) {
-              return /^\d{10}$/.test(v.replace(/\D/g, ''));
-            },
-            message: 'Please enter a valid 10-digit phone number',
-          },
-        },
-        email: {
-          type: String,
-          required: true,
-          lowercase: true,
-          trim: true,
-          validate: {
-            validator: function (v) {
-              return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
-            },
-            message: 'Please enter a valid email',
-          },
-        },
-        address: {
-          street: { type: String, required: true, trim: true },
-          street2: { type: String, default: '', trim: true },
-          city: { type: String, required: true, trim: true },
-          state: {
-            type: String,
-            required: true,
-            uppercase: true,
-            enum: [
+            if (!v && !this.isNew) return true;
+            if (this.isNew && this.registerMethod === 'adminCreate' && !v)
+              return true;
+
+            const validStates = [
               'AL',
               'AK',
               'AZ',
@@ -260,14 +165,272 @@ const parentSchema = new mongoose.Schema(
               'WV',
               'WI',
               'WY',
-            ],
+            ];
+
+            return !v || (v.length === 2 && validStates.includes(v));
+          },
+          message: 'Please enter a valid 2-letter state code',
+        },
+      },
+      zip: {
+        type: String,
+        required: function () {
+          if (this.isNew) {
+            return this.registerMethod !== 'adminCreate';
+          }
+          return false;
+        },
+        validate: {
+          validator: function (v) {
+            if (!v && !this.isNew) return true;
+            if (this.isNew && this.registerMethod === 'adminCreate' && !v)
+              return true;
+            return !v || /^\d{5}(-\d{4})?$/.test(v);
+          },
+          message: 'Please enter a valid ZIP code',
+        },
+      },
+    },
+    relationship: {
+      type: String,
+      required: [true, 'Relationship to player is required'],
+    },
+    isCoach: { type: Boolean, default: false },
+    aauNumber: { type: String },
+    agreeToTerms: {
+      type: Boolean,
+      required: function () {
+        return this.isNew && this.registerMethod === 'self';
+      },
+      default: function () {
+        return this.isNew && this.registerMethod === 'adminCreate'
+          ? true
+          : undefined;
+      },
+      validate: {
+        validator: function (v) {
+          if (this.isNew && this.registerMethod === 'self') {
+            return v === true;
+          }
+          return true;
+        },
+        message: 'You must agree to the terms and conditions',
+      },
+    },
+    registerMethod: {
+      type: String,
+      required: function () {
+        return this.isNew;
+      },
+      enum: ['self', 'adminCreate'],
+      default: 'self',
+    },
+    role: {
+      type: String,
+      default: 'user',
+      enum: ['user', 'admin', 'coach'],
+    },
+    registrationComplete: { type: Boolean, default: false },
+    paymentComplete: { type: Boolean, default: false },
+    avatar: {
+      type: String,
+      default: null,
+    },
+    players: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Player' }],
+    additionalGuardians: [
+      {
+        _id: { type: mongoose.Schema.Types.ObjectId, auto: true },
+        fullName: { type: String, required: true, trim: true },
+        relationship: { type: String, required: true, trim: true },
+        phone: {
+          type: String,
+          required: true,
+          validate: {
+            validator: function (v) {
+              return /^\d{10}$/.test(v.replace(/\D/g, ''));
+            },
+            message: 'Please enter a valid 10-digit phone number',
+          },
+        },
+        email: {
+          type: String,
+          required: true,
+          lowercase: true,
+          trim: true,
+          validate: {
+            validator: function (v) {
+              return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+            },
+            message: 'Please enter a valid email',
+          },
+        },
+        address: {
+          street: {
+            type: String,
+            required: function () {
+              // For new subdocuments, check parent's registerMethod
+              if (this.isNew) {
+                const parent = this.parent();
+                return parent ? parent.registerMethod !== 'adminCreate' : true;
+              }
+              return false;
+            },
+            validate: {
+              validator: function (v) {
+                const parent = this.parent();
+
+                // Skip validation for existing subdocuments if field is empty
+                if (!v && !this.isNew) return true;
+
+                // Allow empty for new adminCreate guardians
+                if (
+                  this.isNew &&
+                  parent &&
+                  parent.registerMethod === 'adminCreate' &&
+                  !v
+                )
+                  return true;
+
+                // Otherwise validate
+                return !v || v.length >= 5;
+              },
+              message: 'Street address must be at least 5 characters',
+            },
+            trim: true,
+          },
+          street2: { type: String, default: '', trim: true },
+          city: {
+            type: String,
+            required: function () {
+              if (this.isNew) {
+                const parent = this.parent();
+                return parent ? parent.registerMethod !== 'adminCreate' : true;
+              }
+              return false;
+            },
+            validate: {
+              validator: function (v) {
+                const parent = this.parent();
+
+                if (!v && !this.isNew) return true;
+                if (
+                  this.isNew &&
+                  parent &&
+                  parent.registerMethod === 'adminCreate' &&
+                  !v
+                )
+                  return true;
+
+                return !v || v.length > 0;
+              },
+              message: 'City is required',
+            },
+            trim: true,
+          },
+          state: {
+            type: String,
+            required: function () {
+              if (this.isNew) {
+                const parent = this.parent();
+                return parent ? parent.registerMethod !== 'adminCreate' : true;
+              }
+              return false;
+            },
+            uppercase: true,
+            validate: {
+              validator: function (v) {
+                const parent = this.parent();
+
+                if (!v && !this.isNew) return true;
+                if (
+                  this.isNew &&
+                  parent &&
+                  parent.registerMethod === 'adminCreate' &&
+                  !v
+                )
+                  return true;
+
+                const validStates = [
+                  'AL',
+                  'AK',
+                  'AZ',
+                  'AR',
+                  'CA',
+                  'CO',
+                  'CT',
+                  'DE',
+                  'FL',
+                  'GA',
+                  'HI',
+                  'ID',
+                  'IL',
+                  'IN',
+                  'IA',
+                  'KS',
+                  'KY',
+                  'LA',
+                  'ME',
+                  'MD',
+                  'MA',
+                  'MI',
+                  'MN',
+                  'MS',
+                  'MO',
+                  'MT',
+                  'NE',
+                  'NV',
+                  'NH',
+                  'NJ',
+                  'NM',
+                  'NY',
+                  'NC',
+                  'ND',
+                  'OH',
+                  'OK',
+                  'OR',
+                  'PA',
+                  'RI',
+                  'SC',
+                  'SD',
+                  'TN',
+                  'TX',
+                  'UT',
+                  'VT',
+                  'VA',
+                  'WA',
+                  'WV',
+                  'WI',
+                  'WY',
+                ];
+
+                return !v || (v.length === 2 && validStates.includes(v));
+              },
+              message: 'Please enter a valid 2-letter state code',
+            },
           },
           zip: {
             type: String,
-            required: true,
+            required: function () {
+              if (this.isNew) {
+                const parent = this.parent();
+                return parent ? parent.registerMethod !== 'adminCreate' : true;
+              }
+              return false;
+            },
             validate: {
               validator: function (v) {
-                return /^\d{5}(-\d{4})?$/.test(v);
+                const parent = this.parent();
+
+                if (!v && !this.isNew) return true;
+                if (
+                  this.isNew &&
+                  parent &&
+                  parent.registerMethod === 'adminCreate' &&
+                  !v
+                )
+                  return true;
+
+                return !v || /^\d{5}(-\d{4})?$/.test(v);
               },
               message: 'Please enter a valid ZIP code',
             },
@@ -351,7 +514,7 @@ const parentSchema = new mongoose.Schema(
         return ret;
       },
     },
-  }
+  },
 );
 
 parentSchema.index({ notifications: 1 });
@@ -398,7 +561,7 @@ parentSchema.pre('save', async function (next) {
 
         // Extract all unique seasons and years from players' seasons
         const allSeasons = players.flatMap((p) =>
-          p.seasons.map((s) => s.season)
+          p.seasons.map((s) => s.season),
         );
         const allYears = players.flatMap((p) => p.seasons.map((s) => s.year));
 
@@ -454,7 +617,7 @@ parentSchema.statics.updateAllSeasonsAndYears = async function () {
         .model('Player')
         .find(
           { _id: { $in: parent.players } },
-          { season: 1, registrationYear: 1 }
+          { season: 1, registrationYear: 1 },
         );
 
       const seasons = [...new Set(players.map((p) => p.season))];
