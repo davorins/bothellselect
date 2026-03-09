@@ -2076,8 +2076,8 @@ async function sendAcceptanceEmail({
             <img src="${R2_LOGO_URL}" alt="Partizan Basketball"
                  style="max-width:160px;height:auto;margin-bottom:16px;"
                  onerror="this.onerror=null;this.src='https://partizanhoops.com/assets/img/logo.png';" />
-            <h1 style="margin:0;color:#fff;font-size:24px;">Congratulations!</h1>
-            <p style="margin:8px 0 0;color:rgba(255,255,255,0.85);font-size:15px;">
+            <h1 style="margin:0;color:#000;font-size:24px;">Congratulations!</h1>
+            <p style="margin:8px 0 0;color:rgba(0,0,0,0.85);font-size:15px;">
               Your child has been accepted to join the Partizan Family!
             </p>
           </div>
@@ -2087,7 +2087,7 @@ async function sendAcceptanceEmail({
             <p style="font-size:16px;color:#333;margin-top:0;">Dear ${parentName || 'Parent/Guardian'},</p>
 
             <p style="font-size:15px;color:#444;line-height:1.7;">
-              We are happy to inform you that <strong>${playerName}</strong> has been selected to join the <strong>${team.grade}/${team.sex}</strong> team! We look forward to a successful season and your child improving their basketball skills, basketball IQ, and improving their leadership skills as well.
+              We are happy to inform you that <strong>${playerName}</strong> has been selected to join the team! We look forward to a successful season and your child improving their basketball skills, basketball IQ, and improving their leadership skills as well.
             </p>
 
             <!-- Payment deadline warning -->
