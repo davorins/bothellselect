@@ -2072,7 +2072,7 @@ async function sendAcceptanceEmail({
         <div style="max-width:600px;margin:30px auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,0.08);">
 
           <!-- Header -->
-          <div style="background:#594230;padding:30px 20px;text-align:center;">
+          <div style="background:#f3f4f6;padding:30px 20px;text-align:center;">
             <img src="${R2_LOGO_URL}" alt="Partizan Basketball"
                  style="max-width:160px;height:auto;margin-bottom:16px;"
                  onerror="this.onerror=null;this.src='https://partizanhoops.com/assets/img/logo.png';" />
