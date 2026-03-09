@@ -368,4 +368,43 @@ router.post(
   },
 );
 
+router.patch(
+  '/internal-teams/:id/payment-received',
+  authenticate,
+  async (req, res) => {
+    try {
+      if (req.user.role !== 'admin') {
+        return res.status(403).json({ error: 'Admin access required' });
+      }
+
+      const team = await InternalTeam.findById(req.params.id);
+      if (!team) {
+        return res.status(404).json({ error: 'Team not found' });
+      }
+
+      // Toggle the value (or accept explicit value from body)
+      const newValue =
+        req.body.paymentReceived !== undefined
+          ? Boolean(req.body.paymentReceived)
+          : !team.paymentReceived;
+
+      team.paymentReceived = newValue;
+      await team.save();
+
+      res.json({
+        success: true,
+        paymentReceived: team.paymentReceived,
+        teamId: team._id,
+      });
+    } catch (error) {
+      console.error('Error toggling paymentReceived:', error);
+      res.status(500).json({
+        error: 'Failed to update payment status',
+        details:
+          process.env.NODE_ENV === 'development' ? error.message : undefined,
+      });
+    }
+  },
+);
+
 module.exports = router;

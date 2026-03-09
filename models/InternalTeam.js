@@ -38,6 +38,10 @@ const internalTeamSchema = new mongoose.Schema(
       enum: ['active', 'inactive'],
       default: 'active',
     },
+    paymentReceived: {
+      type: Boolean,
+      default: false,
+    },
     tryoutSeason: {
       type: String,
       required: true,
@@ -54,7 +58,7 @@ const internalTeamSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  }
+  },
 );
 
 // Updated index (removed season)
