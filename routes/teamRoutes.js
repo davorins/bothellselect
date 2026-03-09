@@ -368,43 +368,59 @@ router.post(
   },
 );
 
-router.patch(
-  '/internal-teams/:id/payment-received',
-  authenticate,
-  async (req, res) => {
-    try {
-      if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Admin access required' });
-      }
-
-      const team = await InternalTeam.findById(req.params.id);
-      if (!team) {
-        return res.status(404).json({ error: 'Team not found' });
-      }
-
-      // Toggle the value (or accept explicit value from body)
-      const newValue =
-        req.body.paymentReceived !== undefined
-          ? Boolean(req.body.paymentReceived)
-          : !team.paymentReceived;
-
-      team.paymentReceived = newValue;
-      await team.save();
-
-      res.json({
-        success: true,
-        paymentReceived: team.paymentReceived,
-        teamId: team._id,
-      });
-    } catch (error) {
-      console.error('Error toggling paymentReceived:', error);
-      res.status(500).json({
-        error: 'Failed to update payment status',
-        details:
-          process.env.NODE_ENV === 'development' ? error.message : undefined,
-      });
+// PATCH /internal-teams/:id/status  — toggle team active/inactive (admin only)
+router.patch('/internal-teams/:id/status', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
     }
-  },
-);
+    const { status } = req.body;
+    if (!['active', 'inactive'].includes(status)) {
+      return res
+        .status(400)
+        .json({ error: 'Status must be "active" or "inactive"' });
+    }
+    const team = await InternalTeam.findByIdAndUpdate(
+      req.params.id,
+      { status },
+      { new: true },
+    );
+    if (!team) return res.status(404).json({ error: 'Team not found' });
+    res.json({ success: true, status: team.status, teamId: team._id });
+  } catch (error) {
+    console.error('Error updating team status:', error);
+    res.status(500).json({ error: 'Failed to update team status' });
+  }
+});
+
+// PATCH /players/:id/payment-status  — set player paid/unpaid (admin only)
+router.patch('/players/:id/payment-status', authenticate, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    const { paymentStatus, paymentComplete } = req.body;
+    if (!['paid', 'pending'].includes(paymentStatus)) {
+      return res
+        .status(400)
+        .json({ error: 'paymentStatus must be "paid" or "pending"' });
+    }
+    const player = await Player.findByIdAndUpdate(
+      req.params.id,
+      { paymentStatus, paymentComplete: !!paymentComplete },
+      { new: true },
+    );
+    if (!player) return res.status(404).json({ error: 'Player not found' });
+    res.json({
+      success: true,
+      paymentStatus: player.paymentStatus,
+      paymentComplete: player.paymentComplete,
+      playerId: player._id,
+    });
+  } catch (error) {
+    console.error('Error updating player payment:', error);
+    res.status(500).json({ error: 'Failed to update player payment' });
+  }
+});
 
 module.exports = router;
