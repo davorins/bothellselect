@@ -92,7 +92,7 @@ const formFieldConfigSchema = new mongoose.Schema({
   },
   appliesTo: {
     type: [String],
-    enum: ['parent', 'player', 'guardian'],
+    enum: ['parent', 'player', 'guardian', 'team'],
     default: ['player'],
   },
   allowOverride: { type: Boolean, default: false },

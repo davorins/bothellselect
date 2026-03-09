@@ -5,6 +5,7 @@ const InternalTeam = require('../models/InternalTeam');
 const Player = require('../models/Player');
 const Parent = require('../models/Parent');
 const { authenticate } = require('../utils/auth');
+const { sendAcceptanceEmail } = require('../utils/email');
 
 const router = express.Router();
 
@@ -272,5 +273,99 @@ router.delete('/internal-teams/:id', authenticate, async (req, res) => {
     });
   }
 });
+
+// Send acceptance emails to parents of all players on a team
+router.post(
+  '/internal-teams/:id/send-acceptance-email',
+  authenticate,
+  async (req, res) => {
+    try {
+      const {
+        recipients, // [{ email, playerName, parentName }]
+        paymentType, // 'square' | 'zelle' | 'both'
+        squareLink,
+        zelleInfo,
+        paymentDeadlineHours,
+        additionalInfo,
+      } = req.body;
+
+      // Basic validation
+      if (
+        !recipients ||
+        !Array.isArray(recipients) ||
+        recipients.length === 0
+      ) {
+        return res.status(400).json({ error: 'recipients array is required' });
+      }
+      if (!paymentType || !['square', 'zelle', 'both'].includes(paymentType)) {
+        return res
+          .status(400)
+          .json({ error: 'paymentType must be square, zelle, or both' });
+      }
+      if ((paymentType === 'square' || paymentType === 'both') && !squareLink) {
+        return res
+          .status(400)
+          .json({ error: 'squareLink is required for Square payments' });
+      }
+      if ((paymentType === 'zelle' || paymentType === 'both') && !zelleInfo) {
+        return res
+          .status(400)
+          .json({ error: 'zelleInfo is required for Zelle payments' });
+      }
+
+      // Fetch team for the name
+      const team = await InternalTeam.findById(req.params.id);
+      if (!team) {
+        return res.status(404).json({ error: 'Team not found' });
+      }
+
+      // Send emails concurrently, collect results
+      const results = await Promise.allSettled(
+        recipients.map(({ email, playerName, parentName }) =>
+          sendAcceptanceEmail({
+            to: email,
+            playerName,
+            parentName,
+            teamName: team.name,
+            paymentDeadlineHours: paymentDeadlineHours || 24,
+            paymentType,
+            squareLink,
+            zelleInfo,
+            additionalInfo,
+          }),
+        ),
+      );
+
+      const successCount = results.filter(
+        (r) => r.status === 'fulfilled',
+      ).length;
+      const failures = results
+        .map((r, i) => ({ ...recipients[i], result: r }))
+        .filter((r) => r.result.status === 'rejected')
+        .map((r) => ({
+          email: r.email,
+          error: r.result.reason?.message || 'Unknown error',
+        }));
+
+      console.log(
+        `Acceptance emails: ${successCount}/${recipients.length} sent for team ${team.name}`,
+      );
+
+      res.json({
+        success: true,
+        totalRecipients: recipients.length,
+        successCount,
+        failedCount: failures.length,
+        failures,
+      });
+    } catch (error) {
+      console.error('Error sending acceptance emails:', error);
+      res.status(500).json({
+        error: 'Failed to send acceptance emails',
+        details: error.message,
+      });
+    }
+  },
+);
 
 module.exports = router;

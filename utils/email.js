@@ -2019,6 +2019,141 @@ async function shouldSendEmail(parentId, emailType) {
   }
 }
 
+// ============ TEAM ACCEPTANCE EMAIL ============
+async function sendAcceptanceEmail({
+  to,
+  playerName,
+  parentName,
+  teamName,
+  paymentDeadlineHours,
+  paymentType, // 'square' | 'zelle' | 'both'
+  squareLink,
+  zelleInfo,
+  additionalInfo,
+}) {
+  try {
+    let paymentRowsHtml = '';
+
+    if (paymentType === 'square' || paymentType === 'both') {
+      paymentRowsHtml += `
+        <tr>
+          <td style="padding: 10px 0; border-bottom: 1px solid #eee;">
+            <strong>Square</strong><br/>
+            <a href="${squareLink}" style="color: #594230; word-break: break-all;">${squareLink}</a>
+          </td>
+        </tr>`;
+    }
+
+    if (paymentType === 'zelle' || paymentType === 'both') {
+      paymentRowsHtml += `
+        <tr>
+          <td style="padding: 10px 0; border-bottom: 1px solid #eee;">
+            <strong>Zelle</strong><br/>
+            <span style="color: #333;">${zelleInfo}</span>
+          </td>
+        </tr>`;
+    }
+
+    const additionalInfoHtml = additionalInfo
+      ? `<div style="background:#f0f4f8;padding:15px;border-radius:5px;margin:20px 0;border-left:4px solid #594230;">
+           <h3 style="margin-top:0;color:#594230;">Additional Information</h3>
+           <p style="margin:0;white-space:pre-line;color:#333;">${additionalInfo}</p>
+         </div>`
+      : '';
+
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      </head>
+      <body style="margin:0;padding:0;background:#f9fafb;font-family:Arial,sans-serif;">
+        <div style="max-width:600px;margin:30px auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 4px 12px rgba(0,0,0,0.08);">
+
+          <!-- Header -->
+          <div style="background:#594230;padding:30px 20px;text-align:center;">
+            <img src="${R2_LOGO_URL}" alt="Partizan Basketball"
+                 style="max-width:160px;height:auto;margin-bottom:16px;"
+                 onerror="this.onerror=null;this.src='https://partizanhoops.com/assets/img/logo.png';" />
+            <h1 style="margin:0;color:#fff;font-size:24px;">🎉 Congratulations!</h1>
+            <p style="margin:8px 0 0;color:rgba(255,255,255,0.85);font-size:15px;">
+              Your child has been accepted to ${teamName}
+            </p>
+          </div>
+
+          <!-- Body -->
+          <div style="padding:30px 24px;">
+            <p style="font-size:16px;color:#333;margin-top:0;">Dear ${parentName || 'Parent/Guardian'},</p>
+
+            <p style="font-size:15px;color:#444;line-height:1.7;">
+              We are thrilled to inform you that <strong>${playerName}</strong> has been officially
+              selected to join the <strong>${teamName}</strong> team! After careful evaluation of all
+              tryout participants, your player demonstrated the skill, dedication, and character that
+              makes them a perfect fit for our program.
+            </p>
+
+            <p style="font-size:15px;color:#444;">Please take a moment to celebrate — this is well deserved! 🏀</p>
+
+            <!-- Payment deadline warning -->
+            <div style="background:#fff8e1;border-left:4px solid #f59e0b;padding:16px;border-radius:4px;margin:24px 0;">
+              <h3 style="margin:0 0 8px;color:#92400e;font-size:16px;">⚠️ Action Required — Payment Deadline</h3>
+              <p style="margin:0;color:#78350f;font-size:14px;line-height:1.6;">
+                To secure <strong>${playerName}'s</strong> spot on the team, payment must be completed
+                within <strong>${paymentDeadlineHours} hour${paymentDeadlineHours !== 1 ? 's' : ''}</strong>
+                of receiving this email. Failure to pay within this window may result in the spot being
+                offered to the next player on the waitlist.
+              </p>
+            </div>
+
+            <!-- Payment options -->
+            <h3 style="color:#594230;font-size:16px;margin-bottom:8px;">Payment Options</h3>
+            <table style="width:100%;border-collapse:collapse;border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;">
+              <tbody>${paymentRowsHtml}</tbody>
+            </table>
+
+            ${additionalInfoHtml}
+
+            <p style="font-size:14px;color:#555;margin-top:24px;">
+              If you have any questions please reach out at
+              <a href="mailto:partizanhoops@proton.me" style="color:#594230;">partizanhoops@proton.me</a>.
+            </p>
+
+            <p style="font-size:15px;font-weight:bold;color:#333;">We look forward to a great season ahead!</p>
+
+            <p style="font-size:14px;color:#555;margin-bottom:0;">
+              Best regards,<br/>
+              <strong>${teamName} Coaching Staff</strong><br/>
+              Partizan Basketball
+            </p>
+          </div>
+
+          <!-- Footer -->
+          <div style="background:#f3f4f6;padding:16px 24px;text-align:center;font-size:12px;color:#6b7280;">
+            <p style="margin:0;">Partizan Basketball &nbsp;|&nbsp; partizanhoops@proton.me</p>
+          </div>
+        </div>
+      </body>
+      </html>`;
+
+    return await sendEmail({
+      to,
+      subject: `🎉 ${playerName} Has Been Accepted to ${teamName}`,
+      html,
+      emailType: 'transactional',
+    });
+  } catch (err) {
+    console.error('Error in sendAcceptanceEmail:', {
+      error: err.message,
+      to,
+      playerName,
+      teamName,
+      timestamp: new Date().toISOString(),
+    });
+    throw err;
+  }
+}
+
 // ============ EXPORTS ============
 module.exports = {
   sendEmail,
@@ -2037,4 +2172,5 @@ module.exports = {
   sendTemplateEmail,
   uploadAttachmentToR2,
   getR2AttachmentUrl,
+  sendAcceptanceEmail,
 };
