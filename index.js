@@ -1,7 +1,7 @@
 // index.js
 const dotenv = require('dotenv');
 dotenv.config({ path: './.env' });
-
+const axios = require('axios');
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -17,7 +17,7 @@ const refundRoutes = require('./routes/refundRoutes');
 const unpaidRoutes = require('./routes/unpaidRoutes');
 const paymentProcessRoutes = require('./routes/paymentProcessRoutes');
 const paymentConfiguration = require('./routes/payment-configuration');
-const cloverPaymentRoutes = require('./routes/clover-payment-routes');
+const cloverTokenRoutes = require('./routes/cloverTokenRoutes');
 const squareWebhooksRouter = require('./routes/squareWebhooks');
 const { authenticate, isAdmin, isCoach, isUser } = require('./utils/auth');
 const path = require('path');
@@ -33,7 +33,6 @@ const schoolRoutes = require('./routes/schoolRoutes');
 const registrationRoutes = require('./routes/registrationRoutes');
 const formPublicRoutes = require('./routes/formPublic');
 const formBuilderRoutes = require('./routes/formBuilder');
-const formPaymentRoutes = require('./routes/form-payments');
 const formRoutes = require('./routes/formRoutes');
 const ticketRoutes = require('./routes/tickets');
 const adminTicketRoutes = require('./routes/ticketRoutes');
@@ -119,8 +118,8 @@ app.use('/api/payment', paymentRoutes);
 app.use('/api/payments', paymentRoutes);
 app.use('/api/payments', unpaidRoutes);
 app.use('/api/payments', paymentProcessRoutes);
-app.use('/api/clover', cloverPaymentRoutes);
 app.use('/api/payment-configuration', paymentConfiguration);
+app.use('/api/clover', cloverTokenRoutes);
 app.use('/api/refunds', refundRoutes);
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/api/upload', uploadRoutes);
@@ -141,7 +140,6 @@ app.use(
   '/uploads/forms',
   express.static(path.join(__dirname, 'uploads/forms')),
 );
-app.use('/api/forms/process-payment', formPaymentRoutes);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/admin', adminTicketRoutes);
 app.use('/api', tournamentPublicRoutes);
@@ -330,6 +328,45 @@ app.get('/api/coach-dashboard', authenticate, isCoach, (req, res) => {
 
 app.get('/api/user-dashboard', authenticate, isUser, (req, res) => {
   res.json({ message: 'Welcome to the User Dashboard' });
+});
+
+// Clover OAuth callback
+app.get('/callback', async (req, res) => {
+  const { code, merchant_id } = req.query;
+  console.log('🔑 Clover OAuth callback:', { code, merchant_id });
+
+  try {
+    const tokenResponse = await axios.post(
+      'https://sandbox.dev.clover.com/oauth/token',
+      new URLSearchParams({
+        client_id: 'KX9ZYB1VTHGNE',
+        client_secret: process.env.CLOVER_SANDBOX_SECRET,
+        code: code,
+        grant_type: 'authorization_code',
+        redirect_uri: 'http://localhost:5001/callback',
+      }),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
+    );
+
+    const accessToken = tokenResponse.data.access_token;
+    console.log('✅ New Clover sandbox access token:', accessToken);
+
+    // Save token to DB
+    const PaymentConfiguration = require('./models/PaymentConfiguration');
+    await PaymentConfiguration.findOneAndUpdate(
+      { paymentSystem: 'clover', isActive: true },
+      { 'cloverConfig.accessToken': accessToken },
+      { new: true },
+    );
+
+    res.json({ success: true, accessToken });
+  } catch (err) {
+    console.error(
+      '❌ Clover token exchange failed:',
+      err.response?.data || err.message,
+    );
+    res.status(500).json({ error: err.response?.data || err.message });
+  }
 });
 
 app.use((req, res) => {

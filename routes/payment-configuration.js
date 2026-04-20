@@ -36,6 +36,7 @@ router.get('/frontend/config', async (req, res) => {
         ? {
             merchantId: config.cloverConfig.merchantId,
             environment: config.cloverConfig.environment,
+            accessToken: config.cloverConfig.accessToken,
           }
         : null,
       settings: {

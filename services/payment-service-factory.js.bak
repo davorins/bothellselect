@@ -12,6 +12,7 @@ class PaymentServiceFactory {
 
     console.log('PaymentServiceFactory.getService called for:', paymentSystem);
 
+    // Find active payment configuration
     const query = {
       isActive: true,
       paymentSystem: paymentSystem || { $exists: true },
@@ -27,7 +28,10 @@ class PaymentServiceFactory {
       .select(
         '+squareConfig.accessToken +squareConfig.webhookSignatureKey +cloverConfig.accessToken +stripeConfig.secretKey +stripeConfig.webhookSecret +paypalConfig.clientSecret',
       )
-      .sort({ isDefault: -1, updatedAt: -1 });
+      .sort({
+        isDefault: -1,
+        updatedAt: -1,
+      });
 
     console.log('Found config:', {
       found: !!config,
@@ -36,6 +40,7 @@ class PaymentServiceFactory {
       hasSquareConfig: !!config?.squareConfig,
       hasAccessToken: !!config?.squareConfig?.accessToken,
       hasLocationId: !!config?.squareConfig?.locationId,
+      // Check Clover specifically
       cloverAccessToken:
         config?.cloverConfig?.accessToken?.substring(0, 10) + '...',
     });
@@ -45,7 +50,7 @@ class PaymentServiceFactory {
         `No active ${paymentSystem || ''} payment configuration found. Please configure payment settings in admin panel.`,
       );
     }
-
+    // Create service instance
     let service;
     switch (config.paymentSystem) {
       case 'square':
@@ -64,8 +69,11 @@ class PaymentServiceFactory {
         throw new Error(`Unsupported payment system: ${config.paymentSystem}`);
     }
 
+    // Add configuration ID to service
     service.configurationId = config._id;
     service.configuration = config;
+
+    // Cache the service
     this.services.set(cacheKey, service);
 
     return service;
@@ -96,39 +104,43 @@ class PaymentServiceFactory {
       configuration: config,
       configurationId: config._id,
 
-      async processPayment(paymentData) {
-        console.log('Square processPayment called with config:', {
-          locationId: this.config.locationId,
-          hasAccessToken: !!this.config.accessToken,
-        });
+            async processPayment(paymentData) {
+        const axios = require('axios');
+        const ecomBase = this.config.environment === 'production'
+          ? 'https://scl.clover.com'
+          : 'https://scl-sandbox.dev.clover.com';
 
-        const { paymentsApi } = this.client;
-        const paymentRequest = {
-          idempotencyKey: `payment_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          sourceId: paymentData.sourceId,
-          amountMoney: {
+        console.log('Processing Clover ecommerce charge:', { amount: paymentData.amount, ecomBase });
+
+        const chargeResponse = await axios.post(
+          `${ecomBase}/v1/charges`,
+          {
             amount: paymentData.amount,
-            currency: this.settings.currency || 'USD',
+            currency: (this.settings?.currency || 'USD').toLowerCase(),
+            source: paymentData.sourceId,
           },
-          locationId: this.config.locationId,
-          autocomplete: true,
-          referenceId: paymentData.referenceId,
-          note: paymentData.note || this.settings.defaultPaymentDescription,
-          buyerEmailAddress: paymentData.email,
+          {
+            headers: {
+              Authorization: `Bearer ${this.config.accessToken}`,
+              'Content-Type': 'application/json',
+            },
+          }
+        );
+
+        const result = chargeResponse.data;
+        console.log('Clover charge result:', { id: result.id, paid: result.paid });
+
+        return {
+          id: result.id,
+          status: result.paid ? 'PAID' : (result.status || 'UNKNOWN'),
+          orderId: result.order?.id || result.id,
+          receiptUrl: `https://www.clover.com/receipt/${result.id}`,
         };
-
-        console.log('Square payment request:', {
-          amount: paymentRequest.amountMoney.amount,
-          locationId: paymentRequest.locationId,
-          hasLocationId: !!paymentRequest.locationId,
-        });
-
-        const { result } = await paymentsApi.createPayment(paymentRequest);
-        return result.payment;
       },
 
       async refundPayment(paymentId, amount, reason) {
         const { refundsApi } = this.client;
+
         const refundRequest = {
           idempotencyKey: `refund_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           paymentId,
@@ -138,6 +150,7 @@ class PaymentServiceFactory {
           },
           reason,
         };
+
         const { result } = await refundsApi.refundPayment(refundRequest);
         return result.refund;
       },
@@ -157,8 +170,10 @@ class PaymentServiceFactory {
       accessTokenFirst10:
         config.cloverConfig?.accessToken?.substring(0, 10) + '...',
       environment: config.cloverConfig?.environment,
+      apiBaseUrl: config.cloverConfig?.apiBaseUrl,
     });
 
+    // Validate configuration
     if (!config.cloverConfig?.accessToken) {
       throw new Error(
         'Clover access token not configured. Please add real Clover credentials in Admin > Payment Configuration.',
@@ -172,116 +187,82 @@ class PaymentServiceFactory {
     }
 
     const axios = require('axios');
-    const ecomBase =
-      config.cloverConfig.environment === 'production'
-        ? 'https://scl.clover.com'
-        : 'https://scl-sandbox.dev.clover.com';
 
-    console.log('✅ Using Clover Ecommerce API at:', ecomBase);
+    const baseURL =
+      config.cloverConfig.environment === 'production'
+        ? 'https://api.clover.com'
+        : 'https://apisandbox.dev.clover.com';
+
+    console.log('✅ Using Clover E-commerce API at:', baseURL);
+
+    const axiosInstance = axios.create({
+      baseURL,
+      headers: {
+        Authorization: `Bearer ${config.cloverConfig.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 30000,
+    });
 
     return {
       type: 'clover',
+      client: axiosInstance,
       config: config.cloverConfig,
       settings: config.settings,
       configuration: config,
       configurationId: config._id,
-      ecomBase,
 
       async processPayment(paymentData) {
-        console.log('💰 Processing Clover charge:', {
+        const merchantId = this.config.merchantId;
+        console.log('Processing Clover payment:', {
+          merchantId,
           amount: paymentData.amount,
-          ecomBase: this.ecomBase,
         });
 
-        // Validate required fields
-        if (!paymentData.sourceId) {
-          throw new Error('Payment source ID (token) is required');
-        }
-
-        if (!paymentData.amount || paymentData.amount <= 0) {
-          throw new Error('Valid payment amount is required');
-        }
-
-        const response = await axios.post(
-          `${this.ecomBase}/v1/payments`,
+        const orderResponse = await this.client.post(
+          `/v3/merchants/${merchantId}/orders`,
           {
-            amount: paymentData.amount,
-            currency: (this.settings?.currency || 'USD').toLowerCase(),
-            source: paymentData.sourceId,
-            // Add optional fields if provided
-            ...(paymentData.email && { email: paymentData.email }),
-            ...(paymentData.note && { description: paymentData.note }),
+            state: 'open',
+            currency: this.settings?.currency || 'USD',
+            note: paymentData.note || 'Payment',
           },
+        );
+        const orderId = orderResponse.data.id;
+        console.log('Order created:', orderId);
+
+        const chargeResponse = await this.client.post(
+          `/v3/merchants/${merchantId}/payments`,
           {
-            headers: {
-              Authorization: `Bearer ${this.config.accessToken}`,
-              'Content-Type': 'application/json',
-            },
+            orderId,
+            amount: paymentData.amount,
+            currency: this.settings?.currency || 'USD',
+            source: paymentData.sourceId,
+            email: paymentData.email,
           },
         );
 
-        const result = response.data;
-
-        console.log('✅ Clover payment result:', {
-          id: result.id,
-          paid: result.paid,
-          status: result.status,
-        });
-
-        // Return standardized payment object
+        const result = chargeResponse.data;
         return {
           id: result.id,
-          status: result.paid ? 'PAID' : result.status || 'UNKNOWN',
-          amount: result.amount,
-          currency: result.currency,
-          orderId: result.order?.id || result.id,
-          receiptUrl:
-            result.receipt_url || `https://www.clover.com/receipt/${result.id}`,
-          cardDetails: result.source?.card
-            ? {
-                last4: result.source.card.last4,
-                brand: result.source.card.brand,
-                expMonth: result.source.card.exp_month,
-                expYear: result.source.card.exp_year,
-              }
-            : null,
+          status: result.result || 'SUCCESS',
+          orderId,
+          receiptUrl: `https://www.clover.com/receipt/${result.id}`,
         };
       },
 
       async refundPayment(paymentId, amount, reason) {
-        console.log('🔄 Processing Clover refund:', { paymentId, amount });
-
-        const response = await axios.post(
-          `${this.ecomBase}/v1/refunds`,
-          {
-            charge: paymentId,
-            amount: amount,
-            reason: reason || 'requested_by_customer',
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${this.config.accessToken}`,
-              'Content-Type': 'application/json',
-            },
-          },
-        );
-
-        return response.data;
+        const refundResponse = await this.client.post('/refunds', {
+          paymentId,
+          amount,
+          reason: reason || 'Customer request',
+          merchantId: this.config.merchantId,
+        });
+        return refundResponse.data;
       },
 
       async getPaymentDetails(paymentId) {
         console.log('🔍 Getting Clover payment details:', paymentId);
-
-        const response = await axios.get(
-          `${this.ecomBase}/v1/payments/${paymentId}`,
-          {
-            headers: {
-              Authorization: `Bearer ${this.config.accessToken}`,
-              'Content-Type': 'application/json',
-            },
-          },
-        );
-
+        const response = await this.client.get(`/charges/${paymentId}`);
         return response.data;
       },
     };
@@ -297,18 +278,47 @@ class PaymentServiceFactory {
       settings: config.settings,
 
       async processPayment(paymentData) {
-        const paymentIntent = await stripe.paymentIntents.create({
+        const merchantId = this.config.merchantId;
+
+        console.log('💰 Processing Clover payment:', {
+          merchantId,
           amount: paymentData.amount,
-          currency: this.settings.currency || 'USD',
-          payment_method: paymentData.sourceId,
-          confirmation_method: 'automatic',
-          confirm: true,
-          description:
-            paymentData.note || this.settings.defaultPaymentDescription,
-          metadata: { referenceId: paymentData.referenceId },
-          receipt_email: paymentData.email,
         });
-        return paymentIntent;
+
+        const orderResponse = await this.client.post(
+          `/v3/merchants/${merchantId}/orders`,
+          {
+            state: 'open',
+            currency: this.settings?.currency || 'USD',
+            note: paymentData.note || 'Payment',
+          },
+        );
+        const orderId = orderResponse.data.id;
+        console.log('✅ Order created:', orderId);
+
+        const chargeResponse = await this.client.post(
+          `/v3/merchants/${merchantId}/payments`,
+          {
+            order: { id: orderId },
+            amount: paymentData.amount,
+            currency: this.settings?.currency || 'USD',
+            source: paymentData.sourceId,
+            email: paymentData.email,
+          },
+        );
+
+        const result = chargeResponse.data;
+        console.log('✅ Charge result:', {
+          id: result.id,
+          status: result.result,
+        });
+
+        return {
+          id: result.id,
+          status: result.result || 'SUCCESS',
+          orderId,
+          receiptUrl: `https://www.clover.com/receipt/${result.id}`,
+        };
       },
 
       async refundPayment(paymentId, amount, reason) {
@@ -317,6 +327,7 @@ class PaymentServiceFactory {
           amount,
           reason,
         });
+
         return refund;
       },
 
@@ -325,6 +336,13 @@ class PaymentServiceFactory {
         return paymentIntent;
       },
     };
+  }
+  catch(err) {
+    console.error(
+      '❌ Clover API error:',
+      JSON.stringify(err.response?.data, null, 2),
+    );
+    throw err;
   }
 
   createPaypalService(config) {
@@ -376,10 +394,13 @@ class PaymentServiceFactory {
         });
 
         const response = await client.execute(request);
+
+        // Capture the payment
         const captureRequest = new paypal.orders.OrdersCaptureRequest(
           response.result.id,
         );
         const captureResponse = await client.execute(captureRequest);
+
         return captureResponse.result;
       },
 
@@ -392,6 +413,7 @@ class PaymentServiceFactory {
           },
           note_to_payer: reason,
         });
+
         const response = await client.execute(request);
         return response.result;
       },
@@ -404,6 +426,7 @@ class PaymentServiceFactory {
     };
   }
 
+  // Clear cache
   clearCache(paymentSystem = null) {
     if (paymentSystem) {
       this.services.delete(paymentSystem);
@@ -412,15 +435,18 @@ class PaymentServiceFactory {
     }
   }
 
+  // Switch payment system easily
   async switchPaymentSystem(paymentSystem) {
     this.clearCache(paymentSystem);
     return this.getService(paymentSystem);
   }
 
+  // Get current active payment system
   async getCurrentPaymentSystem() {
     const service = await this.getService();
     return service.type;
   }
 }
 
+// Export singleton instance
 module.exports = new PaymentServiceFactory();

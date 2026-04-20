@@ -33,7 +33,6 @@ const paymentConfigurationSchema = new mongoose.Schema({
     merchantId: String,
     accessToken: {
       type: String,
-      select: false,
     },
     environment: {
       type: String,
