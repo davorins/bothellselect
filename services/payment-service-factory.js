@@ -176,7 +176,7 @@ class PaymentServiceFactory {
 
     // Check if using Ecommerce API key (starts with sk_) vs OAuth token
     const accessToken = config.cloverConfig?.accessToken;
-    const isEcommerceKey = accessToken && accessToken.startsWith('sk_');
+    const isEcommerceKey = accessToken && !config.cloverConfig?.refreshToken;
 
     if (isEcommerceKey) {
       console.log(
