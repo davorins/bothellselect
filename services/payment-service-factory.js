@@ -205,7 +205,6 @@ class PaymentServiceFactory {
             throw new Error('Valid payment amount is required');
           }
 
-          // Use Ecommerce Private Key directly (no refresh needed)
           const privateKey = this.config.accessToken;
 
           const response = await axios.post(
@@ -227,17 +226,19 @@ class PaymentServiceFactory {
 
           const result = response.data;
 
-          console.log('✅ Clover payment result:', {
-            id: result.id,
-            status: result.status,
-          });
+          // Log full response so we can see exact shape
+          console.log(
+            '🔍 Clover raw charge response:',
+            JSON.stringify(result, null, 2),
+          );
+
+          // Clover /v1/charges returns { paid: true, id: "..." }
+          // NOT { status: "succeeded" } — that's Stripe's shape
+          const isPaid = result.paid === true || result.status === 'succeeded';
 
           return {
             id: result.id,
-            status:
-              result.status === 'succeeded'
-                ? 'PAID'
-                : result.status || 'UNKNOWN',
+            status: isPaid ? 'PAID' : 'UNKNOWN',
             amount: result.amount,
             currency: result.currency,
             receiptUrl:
