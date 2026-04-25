@@ -676,4 +676,30 @@ async function testPaymentConfiguration(paymentSystem, config) {
   }
 }
 
+// Manual refresh endpoint (for testing/emergency)
+router.post(
+  '/:configId/refresh-clover-token',
+  authenticate,
+  isAdmin,
+  async (req, res) => {
+    try {
+      const { configId } = req.params;
+      const cloverTokenManager = require('../services/cloverTokenManager');
+
+      const newToken = await cloverTokenManager.refreshToken(configId);
+
+      res.json({
+        success: true,
+        message: 'Clover token refreshed successfully',
+      });
+    } catch (error) {
+      console.error('Error refreshing Clover token:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  },
+);
+
 module.exports = router;

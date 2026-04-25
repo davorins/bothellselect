@@ -34,6 +34,13 @@ const paymentConfigurationSchema = new mongoose.Schema({
     accessToken: {
       type: String,
     },
+    refreshToken: {
+      type: String,
+      select: false,
+    },
+    tokenExpiresAt: {
+      type: Date,
+    },
     environment: {
       type: String,
       enum: ['sandbox', 'production'],
@@ -123,6 +130,7 @@ paymentConfigurationSchema.methods.toJSON = function () {
   delete obj.squareConfig?.accessToken;
   delete obj.squareConfig?.webhookSignatureKey;
   delete obj.cloverConfig?.accessToken;
+  delete obj.cloverConfig?.refreshToken;
   delete obj.stripeConfig?.secretKey;
   delete obj.stripeConfig?.webhookSecret;
   delete obj.paypalConfig?.clientSecret;

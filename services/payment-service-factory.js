@@ -1,5 +1,6 @@
 // services/payment-service-factory.js
 const PaymentConfiguration = require('../models/PaymentConfiguration');
+const cloverTokenManager = require('./cloverTokenManager');
 
 class PaymentServiceFactory {
   constructor() {
@@ -154,16 +155,10 @@ class PaymentServiceFactory {
     console.log('🔧 Creating Clover service with config:', {
       merchantId: config.cloverConfig?.merchantId,
       hasAccessToken: !!config.cloverConfig?.accessToken,
-      accessTokenFirst10:
-        config.cloverConfig?.accessToken?.substring(0, 10) + '...',
+      hasRefreshToken: !!config.cloverConfig?.refreshToken,
+      tokenExpiresAt: config.cloverConfig?.tokenExpiresAt,
       environment: config.cloverConfig?.environment,
     });
-
-    if (!config.cloverConfig?.accessToken) {
-      throw new Error(
-        'Clover access token not configured. Please add real Clover credentials in Admin > Payment Configuration.',
-      );
-    }
 
     if (!config.cloverConfig?.merchantId) {
       throw new Error(
@@ -202,6 +197,23 @@ class PaymentServiceFactory {
           throw new Error('Valid payment amount is required');
         }
 
+        // ✅ Get valid token (auto-refreshes if expired)
+        let validToken;
+        try {
+          validToken = await cloverTokenManager.getValidAccessToken(
+            this.configurationId,
+          );
+          console.log('✅ Got valid Clover token');
+        } catch (tokenError) {
+          console.error(
+            '❌ Failed to get valid Clover token:',
+            tokenError.message,
+          );
+          throw new Error(
+            'Clover authentication failed. Please check configuration.',
+          );
+        }
+
         const response = await axios.post(
           `${this.ecomBase}/v1/payments`,
           {
@@ -214,7 +226,7 @@ class PaymentServiceFactory {
           },
           {
             headers: {
-              Authorization: `Bearer ${this.config.accessToken}`,
+              Authorization: `Bearer ${validToken}`,
               'Content-Type': 'application/json',
             },
           },
@@ -251,6 +263,22 @@ class PaymentServiceFactory {
       async refundPayment(paymentId, amount, reason) {
         console.log('🔄 Processing Clover refund:', { paymentId, amount });
 
+        // ✅ Get valid token for refund as well
+        let validToken;
+        try {
+          validToken = await cloverTokenManager.getValidAccessToken(
+            this.configurationId,
+          );
+        } catch (tokenError) {
+          console.error(
+            '❌ Failed to get valid Clover token for refund:',
+            tokenError.message,
+          );
+          throw new Error(
+            'Clover authentication failed. Please check configuration.',
+          );
+        }
+
         const response = await axios.post(
           `${this.ecomBase}/v1/refunds`,
           {
@@ -260,7 +288,7 @@ class PaymentServiceFactory {
           },
           {
             headers: {
-              Authorization: `Bearer ${this.config.accessToken}`,
+              Authorization: `Bearer ${validToken}`,
               'Content-Type': 'application/json',
             },
           },
@@ -272,11 +300,27 @@ class PaymentServiceFactory {
       async getPaymentDetails(paymentId) {
         console.log('🔍 Getting Clover payment details:', paymentId);
 
+        // ✅ Get valid token for payment details
+        let validToken;
+        try {
+          validToken = await cloverTokenManager.getValidAccessToken(
+            this.configurationId,
+          );
+        } catch (tokenError) {
+          console.error(
+            '❌ Failed to get valid Clover token for details:',
+            tokenError.message,
+          );
+          throw new Error(
+            'Clover authentication failed. Please check configuration.',
+          );
+        }
+
         const response = await axios.get(
           `${this.ecomBase}/v1/payments/${paymentId}`,
           {
             headers: {
-              Authorization: `Bearer ${this.config.accessToken}`,
+              Authorization: `Bearer ${validToken}`,
               'Content-Type': 'application/json',
             },
           },

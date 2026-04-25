@@ -1,59 +1,80 @@
 const express = require('express');
 const router = express.Router();
-const PaymentConfiguration = require('../models/PaymentConfiguration');
 const axios = require('axios');
+const { authenticate } = require('../utils/auth');
 
-router.post('/create-token', async (req, res) => {
+router.post('/create-token', authenticate, async (req, res) => {
   try {
     const { cardNumber, cardExpiry, cardCvv, cardPostal } = req.body;
 
-    // Get active Clover config
-    const config = await PaymentConfiguration.findOne({
-      isActive: true,
-      paymentSystem: 'clover',
-    }).select('+cloverConfig.accessToken');
+    // Use the Ecommerce Public Key from environment variables
+    const ecommercePublicKey = process.env.CLOVER_ECOMMERCE_PUBLIC_KEY;
 
-    if (!config?.cloverConfig?.accessToken) {
-      return res.status(400).json({ error: 'Clover not configured' });
+    if (!ecommercePublicKey) {
+      console.error('❌ CLOVER_ECOMMERCE_PUBLIC_KEY not set in environment');
+      return res.status(500).json({
+        error:
+          'Payment system configuration error. Please contact administrator.',
+      });
     }
 
-    const { accessToken, merchantId, environment } = config.cloverConfig;
-    const baseUrl =
-      environment === 'production'
-        ? 'https://token.clover.com'
-        : 'https://token-sandbox.dev.clover.com';
-
+    // Parse expiry date (MM/YY format)
     const [expMonth, expYear] = cardExpiry.split('/');
 
-    const pakmsKey = 'ac9732ecee370a3c9aead677f4c26db5';
+    // Use Production tokenization URL
+    const tokenizationUrl = 'https://token.clover.com/v1/tokens';
+
+    console.log('🔄 Creating Clover payment token...');
 
     const response = await axios.post(
-      `${baseUrl}/v1/tokens`,
+      tokenizationUrl,
       {
         card: {
-          number: cardNumber,
-          exp_month: expMonth,
-          exp_year: `20${expYear}`,
+          number: cardNumber.replace(/\s/g, ''), // Remove spaces
+          exp_month: parseInt(expMonth),
+          exp_year: parseInt(`20${expYear}`),
           cvv: cardCvv,
-          last4: cardNumber.slice(-4),
+          ...(cardPostal && { postal_code: cardPostal }),
         },
       },
       {
         headers: {
-          apikey: pakmsKey,
+          apikey: ecommercePublicKey, // Use Public Key as apikey
           'Content-Type': 'application/json',
         },
+        timeout: 10000,
       },
     );
 
-    res.json({ token: response.data.id });
-  } catch (err) {
-    console.error(
-      'Clover tokenization error:',
-      err.response?.data || err.message,
-    );
-    res.status(400).json({
-      error: err.response?.data?.message || 'Failed to create payment token',
+    console.log('✅ Clover token created successfully:', response.data.id);
+
+    // Return the token ID to the frontend
+    res.json({
+      token: response.data.id,
+      cardType: response.data.card_type || 'unknown',
+    });
+  } catch (error) {
+    console.error('❌ Clover tokenization error:', {
+      message: error.message,
+      status: error.response?.status,
+      data: error.response?.data,
+    });
+
+    // Provide user-friendly error messages
+    let errorMessage = 'Failed to create payment token';
+    if (error.response?.status === 401) {
+      errorMessage =
+        'Clover API authentication failed. Please check your Ecommerce Public Key.';
+    } else if (error.response?.status === 400) {
+      errorMessage =
+        error.response.data?.message ||
+        'Invalid card information. Please check your card details.';
+    } else if (error.code === 'ECONNABORTED') {
+      errorMessage = 'Request timed out. Please try again.';
+    }
+
+    res.status(error.response?.status || 400).json({
+      error: errorMessage,
     });
   }
 });
