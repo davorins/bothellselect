@@ -330,45 +330,6 @@ app.get('/api/user-dashboard', authenticate, isUser, (req, res) => {
   res.json({ message: 'Welcome to the User Dashboard' });
 });
 
-// Clover OAuth callback
-app.get('/callback', async (req, res) => {
-  const { code, merchant_id } = req.query;
-  console.log('🔑 Clover OAuth callback:', { code, merchant_id });
-
-  try {
-    const tokenResponse = await axios.post(
-      'https://sandbox.dev.clover.com/oauth/token',
-      new URLSearchParams({
-        client_id: 'KX9ZYB1VTHGNE',
-        client_secret: process.env.CLOVER_SANDBOX_SECRET,
-        code: code,
-        grant_type: 'authorization_code',
-        redirect_uri: 'http://localhost:5001/callback',
-      }),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } },
-    );
-
-    const accessToken = tokenResponse.data.access_token;
-    console.log('✅ New Clover sandbox access token:', accessToken);
-
-    // Save token to DB
-    const PaymentConfiguration = require('./models/PaymentConfiguration');
-    await PaymentConfiguration.findOneAndUpdate(
-      { paymentSystem: 'clover', isActive: true },
-      { 'cloverConfig.accessToken': accessToken },
-      { new: true },
-    );
-
-    res.json({ success: true, accessToken });
-  } catch (err) {
-    console.error(
-      '❌ Clover token exchange failed:',
-      err.response?.data || err.message,
-    );
-    res.status(500).json({ error: err.response?.data || err.message });
-  }
-});
-
 app.use((req, res) => {
   res.status(404).json({
     status: 'error',
