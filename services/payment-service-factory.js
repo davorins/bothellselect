@@ -169,7 +169,7 @@ class PaymentServiceFactory {
     const axios = require('axios');
     const ecomBase =
       config.cloverConfig.environment === 'production'
-        ? 'https://api.clover.com'
+        ? 'https://scl.clover.com'
         : 'https://scl-sandbox.dev.clover.com';
 
     console.log('✅ Using Clover Ecommerce API at:', ecomBase);
