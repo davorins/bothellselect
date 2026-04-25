@@ -174,6 +174,132 @@ class PaymentServiceFactory {
 
     console.log('✅ Using Clover Ecommerce API at:', ecomBase);
 
+    // Check if using Ecommerce API key (starts with sk_) vs OAuth token
+    const accessToken = config.cloverConfig?.accessToken;
+    const isEcommerceKey = accessToken && accessToken.startsWith('sk_');
+
+    if (isEcommerceKey) {
+      console.log(
+        '✅ Detected Ecommerce API key (sk_) - using direct authentication',
+      );
+
+      return {
+        type: 'clover',
+        config: config.cloverConfig,
+        settings: config.settings,
+        configuration: config,
+        configurationId: config._id,
+        ecomBase,
+
+        async processPayment(paymentData) {
+          console.log('💰 Processing Clover charge with Ecommerce API key:', {
+            amount: paymentData.amount,
+            ecomBase: this.ecomBase,
+          });
+
+          if (!paymentData.sourceId) {
+            throw new Error('Payment source ID (token) is required');
+          }
+
+          if (!paymentData.amount || paymentData.amount <= 0) {
+            throw new Error('Valid payment amount is required');
+          }
+
+          // Use Ecommerce Private Key directly (no refresh needed)
+          const privateKey = this.config.accessToken;
+
+          const response = await axios.post(
+            `${this.ecomBase}/v1/charges`,
+            {
+              amount: paymentData.amount,
+              currency: (this.settings?.currency || 'USD').toLowerCase(),
+              source: paymentData.sourceId,
+              ...(paymentData.email && { email: paymentData.email }),
+              ...(paymentData.note && { description: paymentData.note }),
+            },
+            {
+              headers: {
+                Authorization: `Bearer ${privateKey}`,
+                'Content-Type': 'application/json',
+              },
+            },
+          );
+
+          const result = response.data;
+
+          console.log('✅ Clover payment result:', {
+            id: result.id,
+            status: result.status,
+          });
+
+          return {
+            id: result.id,
+            status:
+              result.status === 'succeeded'
+                ? 'PAID'
+                : result.status || 'UNKNOWN',
+            amount: result.amount,
+            currency: result.currency,
+            receiptUrl:
+              result.receipt_url ||
+              `https://www.clover.com/receipt/${result.id}`,
+            cardDetails: result.source?.card
+              ? {
+                  last4: result.source.card.last4,
+                  brand: result.source.card.brand,
+                  expMonth: result.source.card.exp_month,
+                  expYear: result.source.card.exp_year,
+                }
+              : null,
+          };
+        },
+
+        async refundPayment(paymentId, amount, reason) {
+          console.log('🔄 Processing Clover refund:', { paymentId, amount });
+
+          const privateKey = this.config.accessToken;
+
+          const response = await axios.post(
+            `${this.ecomBase}/v1/refunds`,
+            {
+              charge: paymentId,
+              amount: amount,
+              reason: reason || 'requested_by_customer',
+            },
+            {
+              headers: {
+                Authorization: `Bearer ${privateKey}`,
+                'Content-Type': 'application/json',
+              },
+            },
+          );
+
+          return response.data;
+        },
+
+        async getPaymentDetails(paymentId) {
+          console.log('🔍 Getting Clover payment details:', paymentId);
+
+          const privateKey = this.config.accessToken;
+
+          const response = await axios.get(
+            `${this.ecomBase}/v1/payments/${paymentId}`,
+            {
+              headers: {
+                Authorization: `Bearer ${privateKey}`,
+                'Content-Type': 'application/json',
+              },
+            },
+          );
+
+          return response.data;
+        },
+      };
+    }
+
+    // Original OAuth flow for non-Ecommerce keys (keep as fallback)
+    console.log('Using OAuth token flow (non-Ecommerce key)');
+
     return {
       type: 'clover',
       config: config.cloverConfig,
@@ -188,7 +314,6 @@ class PaymentServiceFactory {
           ecomBase: this.ecomBase,
         });
 
-        // Validate required fields
         if (!paymentData.sourceId) {
           throw new Error('Payment source ID (token) is required');
         }
@@ -197,7 +322,6 @@ class PaymentServiceFactory {
           throw new Error('Valid payment amount is required');
         }
 
-        // ✅ Get valid token (auto-refreshes if expired)
         let validToken;
         try {
           validToken = await cloverTokenManager.getValidAccessToken(
@@ -220,7 +344,6 @@ class PaymentServiceFactory {
             amount: paymentData.amount,
             currency: (this.settings?.currency || 'USD').toLowerCase(),
             source: paymentData.sourceId,
-            // Add optional fields if provided
             ...(paymentData.email && { email: paymentData.email }),
             ...(paymentData.note && { description: paymentData.note }),
           },
@@ -240,7 +363,6 @@ class PaymentServiceFactory {
           status: result.status,
         });
 
-        // Return standardized payment object
         return {
           id: result.id,
           status: result.paid ? 'PAID' : result.status || 'UNKNOWN',
@@ -263,7 +385,6 @@ class PaymentServiceFactory {
       async refundPayment(paymentId, amount, reason) {
         console.log('🔄 Processing Clover refund:', { paymentId, amount });
 
-        // ✅ Get valid token for refund as well
         let validToken;
         try {
           validToken = await cloverTokenManager.getValidAccessToken(
@@ -300,7 +421,6 @@ class PaymentServiceFactory {
       async getPaymentDetails(paymentId) {
         console.log('🔍 Getting Clover payment details:', paymentId);
 
-        // ✅ Get valid token for payment details
         let validToken;
         try {
           validToken = await cloverTokenManager.getValidAccessToken(
