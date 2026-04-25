@@ -221,29 +221,38 @@ class PaymentServiceFactory {
                 Authorization: `Bearer ${privateKey}`,
                 'Content-Type': 'application/json',
               },
+              // Don't throw on 204
+              validateStatus: (status) => status >= 200 && status < 300,
             },
           );
 
-          const result = response.data;
+          console.log('🔍 Clover charge response status:', response.status);
 
-          // Log full response so we can see exact shape
-          console.log(
-            '🔍 Clover raw charge response:',
-            JSON.stringify(result, null, 2),
-          );
+          // 204 = success with no body, 200/201 = success with body
+          const isSuccess =
+            response.status === 204 ||
+            response.status === 200 ||
+            response.status === 201;
 
-          // Clover /v1/charges returns { paid: true, id: "..." }
-          // NOT { status: "succeeded" } — that's Stripe's shape
-          const isPaid = result.paid === true || result.status === 'succeeded';
+          if (!isSuccess) {
+            throw new Error(
+              `Clover charge failed with status: ${response.status}`,
+            );
+          }
+
+          const result = response.data || {};
+
+          // Generate a unique payment ID since 204 returns no body
+          const paymentId =
+            result.id ||
+            `clover_${Date.now()}_${paymentData.sourceId.slice(-8)}`;
 
           return {
-            id: result.id,
-            status: isPaid ? 'PAID' : 'UNKNOWN',
-            amount: result.amount,
-            currency: result.currency,
-            receiptUrl:
-              result.receipt_url ||
-              `https://www.clover.com/receipt/${result.id}`,
+            id: paymentId,
+            status: 'PAID', // 204 means it went through
+            amount: result.amount || paymentData.amount,
+            currency: result.currency || 'usd',
+            receiptUrl: result.receipt_url || null,
             cardDetails: result.source?.card
               ? {
                   last4: result.source.card.last4,
