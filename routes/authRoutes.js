@@ -5880,9 +5880,23 @@ router.put('/players/:id', authenticate, async (req, res) => {
       healthConcerns,
       aauNumber,
       isGradeOverridden,
+      registrationYear,
+      season,
+      avatar,
     } = req.body;
 
-    console.log('📝 Updating player:', { id, fullName });
+    console.log('📝 Updating player:', {
+      id,
+      fullName,
+      registrationYear,
+      season,
+      avatar,
+    });
+
+    // Validate ObjectId
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      return res.status(400).json({ error: 'Invalid player ID format' });
+    }
 
     const player = await Player.findById(id);
     if (!player) {
@@ -5897,47 +5911,84 @@ router.put('/players/:id', authenticate, async (req, res) => {
       return res.status(403).json({ error: 'Not authorized' });
     }
 
-    // Update fields
-    player.fullName = fullName.trim();
-    player.gender = gender;
-    player.dob = dob;
-    player.schoolName = schoolName.trim();
-    player.grade = grade;
-    player.healthConcerns = healthConcerns || '';
-    player.aauNumber = aauNumber || '';
-    player.isGradeOverridden = isGradeOverridden || false;
-    player.updatedAt = new Date();
+    // Build update object with only provided fields
+    const updateFields = {};
 
-    await player.save();
+    if (fullName !== undefined) updateFields.fullName = fullName.trim();
+    if (gender !== undefined) updateFields.gender = gender;
+    if (dob !== undefined) updateFields.dob = dob;
+    if (schoolName !== undefined) updateFields.schoolName = schoolName.trim();
+    if (grade !== undefined) updateFields.grade = grade;
+    if (healthConcerns !== undefined)
+      updateFields.healthConcerns = healthConcerns || '';
+    if (aauNumber !== undefined) updateFields.aauNumber = aauNumber || '';
+    if (isGradeOverridden !== undefined)
+      updateFields.isGradeOverridden = isGradeOverridden || false;
+    if (registrationYear !== undefined)
+      updateFields.registrationYear = registrationYear;
+    if (season !== undefined) updateFields.season = season;
+    if (avatar !== undefined) updateFields.avatar = avatar;
+
+    updateFields.updatedAt = new Date();
+
+    // Update the player
+    const updatedPlayer = await Player.findByIdAndUpdate(
+      id,
+      { $set: updateFields },
+      { new: true, runValidators: true },
+    );
+
+    if (!updatedPlayer) {
+      return res.status(404).json({ error: 'Player not found after update' });
+    }
+
+    console.log('✅ Player updated successfully:', updatedPlayer._id);
 
     // Return complete player data
     res.json({
       success: true,
       message: 'Player updated successfully',
       player: {
-        _id: player._id,
-        fullName: player.fullName,
-        gender: player.gender,
-        dob: player.dob,
-        schoolName: player.schoolName,
-        grade: player.grade,
-        healthConcerns: player.healthConcerns,
-        aauNumber: player.aauNumber,
-        isGradeOverridden: player.isGradeOverridden,
-        avatar: player.avatar,
-        seasons: player.seasons || [],
-        registrationYear: player.registrationYear,
-        season: player.season,
-        paymentComplete: player.paymentComplete,
-        paymentStatus: player.paymentStatus,
-        parentId: player.parentId,
-        createdAt: player.createdAt,
-        updatedAt: player.updatedAt,
+        _id: updatedPlayer._id,
+        fullName: updatedPlayer.fullName,
+        gender: updatedPlayer.gender,
+        dob: updatedPlayer.dob,
+        schoolName: updatedPlayer.schoolName,
+        grade: updatedPlayer.grade,
+        healthConcerns: updatedPlayer.healthConcerns,
+        aauNumber: updatedPlayer.aauNumber,
+        isGradeOverridden: updatedPlayer.isGradeOverridden,
+        avatar: updatedPlayer.avatar,
+        registrationYear: updatedPlayer.registrationYear,
+        season: updatedPlayer.season,
+        seasons: updatedPlayer.seasons || [],
+        paymentComplete: updatedPlayer.paymentComplete,
+        paymentStatus: updatedPlayer.paymentStatus,
+        parentId: updatedPlayer.parentId,
+        createdAt: updatedPlayer.createdAt,
+        updatedAt: updatedPlayer.updatedAt,
       },
     });
   } catch (error) {
     console.error('❌ Error updating player:', error);
-    res.status(500).json({ error: 'Failed to update player' });
+
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const validationErrors = Object.values(error.errors).map((err) => ({
+        field: err.path,
+        message: err.message,
+      }));
+      return res.status(400).json({
+        error: 'Validation failed',
+        details: validationErrors,
+      });
+    }
+
+    res.status(500).json({
+      error: 'Failed to update player',
+      details:
+        process.env.NODE_ENV === 'development' ? error.message : undefined,
+    });
   }
 });
 
