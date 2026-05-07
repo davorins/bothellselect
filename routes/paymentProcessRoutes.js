@@ -294,8 +294,11 @@ router.post('/tournament-team', authenticate, async (req, res) => {
 
       paymentResult = await paymentService.processPayment(paymentData);
 
-      if (paymentResult.receiptUrl && !paymentResult.receipt_url) {
-        paymentResult.receipt_url = paymentResult.receiptUrl;
+      if (!paymentResult.receiptUrl && paymentResult.receipt_url) {
+        paymentResult.receiptUrl = paymentResult.receipt_url;
+      }
+      if (!paymentResult.receiptUrl && paymentResult.id) {
+        paymentResult.receiptUrl = `https://www.clover.com/receipt/${paymentResult.id}`;
       }
     }
 
@@ -573,6 +576,13 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
       };
 
       paymentResult = await paymentService.processPayment(paymentData);
+
+      if (!paymentResult.receiptUrl && paymentResult.receipt_url) {
+        paymentResult.receiptUrl = paymentResult.receipt_url;
+      }
+      if (!paymentResult.receiptUrl && paymentResult.id) {
+        paymentResult.receiptUrl = `https://www.clover.com/receipt/${paymentResult.id}`;
+      }
     }
 
     if (
@@ -887,6 +897,13 @@ router.post(
         };
 
         paymentResult = await paymentService.processPayment(paymentData);
+
+        if (!paymentResult.receiptUrl && paymentResult.receipt_url) {
+          paymentResult.receiptUrl = paymentResult.receipt_url;
+        }
+        if (!paymentResult.receiptUrl && paymentResult.id) {
+          paymentResult.receiptUrl = `https://www.clover.com/receipt/${paymentResult.id}`;
+        }
       }
 
       if (
@@ -1310,6 +1327,13 @@ router.post(
 
         console.log('Clover payment request:', paymentData);
         paymentResult = await paymentService.processPayment(paymentData);
+
+        if (!paymentResult.receiptUrl && paymentResult.receipt_url) {
+          paymentResult.receiptUrl = paymentResult.receipt_url;
+        }
+        if (!paymentResult.receiptUrl && paymentResult.id) {
+          paymentResult.receiptUrl = `https://www.clover.com/receipt/${paymentResult.id}`;
+        }
       }
 
       if (
@@ -1670,6 +1694,13 @@ router.post('/process', authenticate, async (req, res) => {
       };
 
       paymentResult = await paymentService.processPayment(paymentData);
+
+      if (!paymentResult.receiptUrl && paymentResult.receipt_url) {
+        paymentResult.receiptUrl = paymentResult.receipt_url;
+      }
+      if (!paymentResult.receiptUrl && paymentResult.id) {
+        paymentResult.receiptUrl = `https://www.clover.com/receipt/${paymentResult.id}`;
+      }
     }
 
     if (
