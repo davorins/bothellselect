@@ -247,15 +247,12 @@ class PaymentServiceFactory {
             result.id ||
             `clover_${Date.now()}_${paymentData.sourceId.slice(-8)}`;
 
-          const receiptUrl =
-            result.receipt_url || `https://www.clover.com/receipt/${paymentId}`;
-
           return {
             id: paymentId,
             status: 'PAID', // 204 means it went through
             amount: result.amount || paymentData.amount,
             currency: result.currency || 'usd',
-            receiptUrl: receiptUrl,
+            receiptUrl: result.receipt_url || null,
             cardDetails: result.source?.card
               ? {
                   last4: result.source.card.last4,
@@ -376,16 +373,14 @@ class PaymentServiceFactory {
           status: result.status,
         });
 
-        const receiptUrl =
-          result.receipt_url || `https://www.clover.com/receipt/${result.id}`;
-
         return {
           id: result.id,
           status: result.paid ? 'PAID' : result.status || 'UNKNOWN',
           amount: result.amount,
           currency: result.currency,
           orderId: result.order?.id || result.id,
-          receiptUrl: receiptUrl,
+          receiptUrl:
+            result.receipt_url || `https://www.clover.com/receipt/${result.id}`,
           cardDetails: result.source?.card
             ? {
                 last4: result.source.card.last4,

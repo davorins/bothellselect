@@ -293,13 +293,6 @@ router.post('/tournament-team', authenticate, async (req, res) => {
       };
 
       paymentResult = await paymentService.processPayment(paymentData);
-
-      if (!paymentResult.receiptUrl && paymentResult.receipt_url) {
-        paymentResult.receiptUrl = paymentResult.receipt_url;
-      }
-      if (!paymentResult.receiptUrl && paymentResult.id) {
-        paymentResult.receiptUrl = `https://www.clover.com/receipt/${paymentResult.id}`;
-      }
     }
 
     if (!paymentResult) {
@@ -576,13 +569,6 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
       };
 
       paymentResult = await paymentService.processPayment(paymentData);
-
-      if (!paymentResult.receiptUrl && paymentResult.receipt_url) {
-        paymentResult.receiptUrl = paymentResult.receipt_url;
-      }
-      if (!paymentResult.receiptUrl && paymentResult.id) {
-        paymentResult.receiptUrl = `https://www.clover.com/receipt/${paymentResult.id}`;
-      }
     }
 
     if (
@@ -897,13 +883,6 @@ router.post(
         };
 
         paymentResult = await paymentService.processPayment(paymentData);
-
-        if (!paymentResult.receiptUrl && paymentResult.receipt_url) {
-          paymentResult.receiptUrl = paymentResult.receipt_url;
-        }
-        if (!paymentResult.receiptUrl && paymentResult.id) {
-          paymentResult.receiptUrl = `https://www.clover.com/receipt/${paymentResult.id}`;
-        }
       }
 
       if (
@@ -1327,13 +1306,6 @@ router.post(
 
         console.log('Clover payment request:', paymentData);
         paymentResult = await paymentService.processPayment(paymentData);
-
-        if (!paymentResult.receiptUrl && paymentResult.receipt_url) {
-          paymentResult.receiptUrl = paymentResult.receipt_url;
-        }
-        if (!paymentResult.receiptUrl && paymentResult.id) {
-          paymentResult.receiptUrl = `https://www.clover.com/receipt/${paymentResult.id}`;
-        }
       }
 
       if (
@@ -1694,13 +1666,6 @@ router.post('/process', authenticate, async (req, res) => {
       };
 
       paymentResult = await paymentService.processPayment(paymentData);
-
-      if (!paymentResult.receiptUrl && paymentResult.receipt_url) {
-        paymentResult.receiptUrl = paymentResult.receipt_url;
-      }
-      if (!paymentResult.receiptUrl && paymentResult.id) {
-        paymentResult.receiptUrl = `https://www.clover.com/receipt/${paymentResult.id}`;
-      }
     }
 
     if (
@@ -2173,6 +2138,73 @@ router.post('/clover/process', authenticate, async (req, res) => {
     });
   } finally {
     session.endSession();
+  }
+});
+
+// Get Clover receipt details for internal receipt page
+router.get('/clover/receipt/:orderId', authenticate, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    console.log('🔍 Fetching Clover receipt for orderId:', orderId);
+
+    // Find the payment by orderId
+    const payment = await Payment.findOne({
+      orderId: orderId,
+      paymentSystem: 'clover',
+    })
+      .populate('playerIds', 'fullName')
+      .populate('parentId', 'fullName email');
+
+    if (!payment) {
+      console.log('❌ Payment not found for orderId:', orderId);
+      return res.status(404).json({
+        success: false,
+        error: 'Receipt not found',
+      });
+    }
+
+    // Check authorization - only the parent who paid or admin can view
+    if (
+      req.user.role !== 'admin' &&
+      payment.parentId._id.toString() !== req.user.id
+    ) {
+      return res.status(403).json({
+        success: false,
+        error: 'Unauthorized',
+      });
+    }
+
+    console.log('✅ Found payment:', {
+      orderId: payment.orderId,
+      paymentId: payment.paymentId,
+      amount: payment.amount,
+      parentEmail: payment.parentId?.email,
+    });
+
+    // Return receipt data (without trying to fetch from Clover API)
+    res.json({
+      success: true,
+      receipt: {
+        orderId: payment.orderId,
+        paymentId: payment.paymentId,
+        amount: payment.amount,
+        currency: payment.currency,
+        date: payment.createdAt,
+        status: payment.status,
+        cardBrand: payment.cardBrand,
+        cardLastFour: payment.cardLastFour,
+        buyerEmail: payment.buyerEmail,
+        players: payment.playerIds,
+        parent: payment.parentId,
+      },
+    });
+  } catch (error) {
+    console.error('❌ Error fetching Clover receipt:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
   }
 });
 

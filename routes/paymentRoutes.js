@@ -425,6 +425,7 @@ router.get(
 );
 
 // Get payments by parent ID with access control
+// Get payments by parent ID with access control
 router.get(
   '/parent/:parentId',
   authenticate,
@@ -447,6 +448,7 @@ router.get(
 
       // Filter sensitive data based on role
       const sanitizedPayments = payments.map((payment) => {
+        // ✅ Base payment includes paymentSystem and orderId for ALL users
         const basePayment = {
           _id: payment._id,
           amount: payment.amount,
@@ -458,9 +460,12 @@ router.get(
           refunds: payment.refunds,
           playerIds: payment.playerIds,
           playerCount: payment.playerCount,
+          // ✅ ADD THESE - needed for receipt handling
+          paymentSystem: payment.paymentSystem,
+          orderId: payment.orderId,
         };
 
-        // Only admins get full payment details
+        // Only admins get full payment details (sensitive info)
         if (req.user.role === 'admin') {
           return {
             ...basePayment,
@@ -472,7 +477,7 @@ router.get(
           };
         }
 
-        // Regular users and coaches get limited info
+        // Regular users and coaches get limited info (but still get paymentSystem and orderId)
         return basePayment;
       });
 
@@ -508,10 +513,17 @@ router.get('/', authenticate, isAdmin, async (req, res) => {
       .populate('playerIds', 'fullName grade')
       .lean();
 
+    // ✅ Ensure paymentSystem and orderId are included
+    const paymentsWithSystem = payments.map((payment) => ({
+      ...payment,
+      paymentSystem: payment.paymentSystem,
+      orderId: payment.orderId,
+    }));
+
     const total = await Payment.countDocuments(filter);
 
     res.json({
-      payments,
+      payments: paymentsWithSystem,
       totalPages: Math.ceil(total / limit),
       currentPage: page,
       total,
