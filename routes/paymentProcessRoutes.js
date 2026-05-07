@@ -293,6 +293,10 @@ router.post('/tournament-team', authenticate, async (req, res) => {
       };
 
       paymentResult = await paymentService.processPayment(paymentData);
+
+      if (paymentResult.receiptUrl && !paymentResult.receipt_url) {
+        paymentResult.receipt_url = paymentResult.receiptUrl;
+      }
     }
 
     if (!paymentResult) {

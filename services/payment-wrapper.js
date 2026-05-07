@@ -85,6 +85,9 @@ async function submitPayment(sourceId, amount, options = {}) {
       processedPayment = {
         ...paymentResponse.data,
         orderId: cloverOrder.id,
+        receiptUrl:
+          paymentResponse.data.receipt_url ||
+          `https://www.clover.com/receipt/${paymentResponse.data.id}`,
       };
     } else {
       // Square, Stripe, PayPal - standard processing
