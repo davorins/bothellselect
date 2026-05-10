@@ -4,7 +4,7 @@ const School = require('../models/School');
 const normalizeSchoolName = require('../utils/normalizeSchoolName');
 
 const MONGO_URI =
-  'mongodb+srv://partizan:7ykGhss7VGk78ozy@cluster0.2uaqsib.mongodb.net/?appName=Cluster0';
+  'mongodb+srv://bothellselect:nrMNUpNv7Zavgfak@bothellselect.9wh96.mongodb.net/bothellselect?retryWrites=true&w=majority&appName=bothellselect';
 
 async function migrateSchools() {
   try {
@@ -17,7 +17,7 @@ async function migrateSchools() {
     }).select('schoolName');
 
     const schoolSet = new Set(
-      players.map((p) => normalizeSchoolName(p.schoolName))
+      players.map((p) => normalizeSchoolName(p.schoolName)),
     );
 
     for (const name of schoolSet) {

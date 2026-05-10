@@ -33,7 +33,7 @@ const emailTemplateSchema = new mongoose.Schema(
     signatureConfig: {
       organizationName: {
         type: String,
-        default: 'Partizan',
+        default: 'Bothell Select',
         trim: true,
       },
       title: {
@@ -59,7 +59,7 @@ const emailTemplateSchema = new mongoose.Schema(
       website: {
         type: String,
         trim: true,
-        default: 'https://partizanhoops.com',
+        default: 'https://bothellselect.com',
       },
       additionalInfo: {
         type: String,
@@ -173,7 +173,7 @@ emailTemplateSchema.index({ includeSignature: 1 });
 const getR2PublicUrl = () => {
   return (
     process.env.R2_PUBLIC_URL ||
-    'https://pub-3eb0901007e24e51b6ed1bde149cb0bb.r2.dev'
+    'https://pub-eab2790b2e94418f896b048a8e6658d0.r2.dev'
   );
 };
 
@@ -219,9 +219,9 @@ const extractBodyContent = (html) => {
       '',
     );
 
-    // Remove Partizan header
+    // Remove Bothell Select header
     content = content.replace(
-      /<div[^>]*>\s*<img[^>]*alt="Partizan Logo"[^>]*>\s*<\/div>/i,
+      /<div[^>]*>\s*<img[^>]*alt="Bothell Select Logo"[^>]*>\s*<\/div>/i,
       '',
     );
 
@@ -245,7 +245,10 @@ const extractBodyContent = (html) => {
     );
 
     // Remove copyright footer
-    content = content.replace(/<p[^>]*>&copy;[^<]*Partizan[^<]*<\/p>/i, '');
+    content = content.replace(
+      /<p[^>]*>&copy;[^<]*Bothell Select[^<]*<\/p>/i,
+      '',
+    );
 
     // Clean up extra whitespace
     content = content.replace(/\n\s*\n\s*\n/g, '\n\n');
@@ -422,12 +425,12 @@ emailTemplateSchema.methods.generateSignatureHTML = function () {
   }
 
   const {
-    organizationName = 'Partizan',
+    organizationName = 'Bothell Select',
     title = '',
     fullName = '',
     phone = '',
     email = '',
-    website = 'https://partizanhoops.com',
+    website = 'https://bothellselect.com',
     additionalInfo = '',
   } = this.signatureConfig;
 
@@ -478,7 +481,7 @@ emailTemplateSchema.methods.getCompleteEmailHTML = function () {
   if (
     this.content.includes('<!DOCTYPE') ||
     this.content.includes('email-body') ||
-    this.content.includes('Partizan Logo')
+    this.content.includes('Bothell Select Logo')
   ) {
     // Content already has headers/footers, return it as-is
     return this.content;
@@ -527,7 +530,7 @@ emailTemplateSchema.methods.getCompleteEmailHTML = function () {
             <tr>
               <td style="padding: 30px 30px 0;">
                 <div style="text-align: left; border-bottom: 1px solid #eaeaea; padding-bottom: 20px;">
-                  <img src="${logoUrl}" alt="Partizan Logo" height="30" style="display: block; margin: 0; height: 30px;" 
+                  <img src="${logoUrl}" alt="Bothell Select Logo" height="30" style="display: block; margin: 0; height: 30px;" 
                        onerror="this.onerror=null; this.src='${baseUrl}/logo/logo.png';" />
                 </div>
               </td>
@@ -542,11 +545,11 @@ emailTemplateSchema.methods.getCompleteEmailHTML = function () {
             <tr>
               <td style="padding: 0 30px;">
                 <div style="text-align: center; font-size: 13px; color: #666; padding: 30px 0 20px; margin-top: 40px; border-top: 1px solid #eaeaea;">
-                  <p style="margin: 0 0 8px;"> you're part of <strong style="color: #333;">Partizan</strong>.</p>
+                  <p style="margin: 0 0 8px;"> you're part of <strong style="color: #333;">Bothell Select</strong>.</p>
                   <p style="margin: 0;">
-                    <a href="https://partizanhoops.com/unsubscribe" style="color: #594230; text-decoration: none; border-bottom: 1px solid #594230; padding-bottom: 1px;">Unsubscribe</a> • 
-                    <a href="https://partizanhoops.com/contact" style="color: #594230; text-decoration: none; border-bottom: 1px solid #594230; padding-bottom: 1px;">Contact Us</a> • 
-                    <a href="https://partizanhoops.com" style="color: #594230; text-decoration: none; border-bottom: 1px solid #594230; padding-bottom: 1px;">Website</a>
+                    <a href="https://bothellselect.com/unsubscribe" style="color: #594230; text-decoration: none; border-bottom: 1px solid #594230; padding-bottom: 1px;">Unsubscribe</a> • 
+                    <a href="https://bothellselect.com/contact" style="color: #594230; text-decoration: none; border-bottom: 1px solid #594230; padding-bottom: 1px;">Contact Us</a> • 
+                    <a href="https://bothellselect.com" style="color: #594230; text-decoration: none; border-bottom: 1px solid #594230; padding-bottom: 1px;">Website</a>
                   </p>
                 </div>
               </td>
@@ -555,7 +558,7 @@ emailTemplateSchema.methods.getCompleteEmailHTML = function () {
           <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-top: 20px;">
             <tr>
               <td align="center" style="padding: 20px 0;">
-                <p style="margin: 0; font-size: 12px; color: #999;">&copy; ${new Date().getFullYear()} Partizan. All rights reserved.</p>
+                <p style="margin: 0; font-size: 12px; color: #999;">&copy; ${new Date().getFullYear()} Bothell Select. All rights reserved.</p>
               </td>
             </tr>
           </table>

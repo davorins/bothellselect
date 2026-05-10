@@ -57,9 +57,9 @@ const corsOptions = {
     const allowedOrigins = [
       'http://localhost:3000',
       'http://localhost:3001',
-      'https://partizanhoops.com',
-      'https://www.partizanhoops.com',
-      'partizan-tau.vercel.app',
+      'https://bothellselect.com',
+      'https://www.bothellselect.com',
+      'https://bothellselect.vercel.app',
       // Add localhost with different ports Safari might use
       'http://127.0.0.1:3000',
       'http://127.0.0.1:3001',

@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 
 const uri =
   process.env.MONGO_URI ||
-  'mongodb+srv://partizan:7ykGhss7VGk78ozy@cluster0.2uaqsib.mongodb.net/?appName=Cluster0';
+  'mongodb+srv://bothellselect:nrMNUpNv7Zavgfak@bothellselect.9wh96.mongodb.net/bothellselect?retryWrites=true&w=majority&appName=bothellselect';
 
 async function cleanSchools() {
   try {
@@ -242,7 +242,7 @@ async function cleanSchools() {
     const toTitleCase = (str) =>
       str.replace(
         /\w\S*/g,
-        (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase()
+        (txt) => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase(),
       );
 
     // 4️⃣ Process each collection
@@ -263,14 +263,14 @@ async function cleanSchools() {
         if (corrected && corrected.trim() !== doc.schoolName.trim()) {
           await collection.updateOne(
             { _id: doc._id },
-            { $set: { schoolName: corrected } }
+            { $set: { schoolName: corrected } },
           );
           updatedCount++;
         }
       }
 
       console.log(
-        `✔ ${name} collection updated: ${updatedCount} documents rewritten`
+        `✔ ${name} collection updated: ${updatedCount} documents rewritten`,
       );
     }
 

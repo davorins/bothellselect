@@ -644,7 +644,7 @@ router.get('/test-r2-connection', authenticate, async (req, res) => {
     const listCommand = new ListBucketsCommand({});
     const buckets = await r2Client.send(listCommand);
 
-    const testBuffer = Buffer.from('Test file from Partizan app');
+    const testBuffer = Buffer.from('Test file from Bothell Select app');
     const testKey = `test-connection-${Date.now()}.txt`;
 
     const uploadCommand = new PutObjectCommand({
@@ -685,7 +685,7 @@ const Setting = require('../models/Setting');
 // Multer config for video uploads (80 MB limit, mp4/webm/ogg)
 const videoUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 80 * 1024 * 1024 }, // 80MB limit
+  limits: { fileSize: 200 * 1024 * 1024 }, // 200MB limit
   fileFilter: (req, file, cb) => {
     const allowedMimes = [
       'video/mp4',

@@ -3,7 +3,7 @@ require('dotenv').config();
 const mongoose = require('mongoose');
 
 const uri =
-  'mongodb+srv://partizan:7ykGhss7VGk78ozy@cluster0.2uaqsib.mongodb.net/?appName=Cluster0';
+  'mongodb+srv://bothellselect:nrMNUpNv7Zavgfak@bothellselect.9wh96.mongodb.net/bothellselect?retryWrites=true&w=majority&appName=bothellselect';
 
 async function cleanupAllDuplicates() {
   try {
@@ -56,7 +56,7 @@ async function cleanupAllDuplicates() {
 
       // Priority: Keep PAID registrations first
       let keepDoc = docs.find(
-        (d) => d.paymentStatus === 'paid' || d.paymentComplete === true
+        (d) => d.paymentStatus === 'paid' || d.paymentComplete === true,
       );
 
       // If no paid, keep most recent
@@ -64,7 +64,7 @@ async function cleanupAllDuplicates() {
         keepDoc = docs.reduce((latest, current) =>
           new Date(current.createdAt) > new Date(latest.createdAt)
             ? current
-            : latest
+            : latest,
         );
       }
 
@@ -77,20 +77,20 @@ async function cleanupAllDuplicates() {
         await registrations.deleteMany({ _id: { $in: deleteIds } });
         registrationsDeleted += deleteIds.length;
         console.log(
-          `   ✅ Player ${player}: Deleted ${deleteIds.length} duplicate registration(s) for ${season} ${year}`
+          `   ✅ Player ${player}: Deleted ${deleteIds.length} duplicate registration(s) for ${season} ${year}`,
         );
       }
     }
 
     console.log(
-      `\n📊 REGISTRATIONS SUMMARY: Deleted ${registrationsDeleted} duplicate registrations\n`
+      `\n📊 REGISTRATIONS SUMMARY: Deleted ${registrationsDeleted} duplicate registrations\n`,
     );
 
     // ============================================
     // PART 2: Clean up duplicate SEASONS in Players
     // ============================================
     console.log(
-      '🧹 PART 2: Cleaning duplicate seasons in players collection...'
+      '🧹 PART 2: Cleaning duplicate seasons in players collection...',
     );
     const players = db.collection('players');
 
@@ -136,12 +136,12 @@ async function cleanupAllDuplicates() {
 
         await players.updateOne(
           { _id: player._id },
-          { $set: { seasons: uniqueSeasons } }
+          { $set: { seasons: uniqueSeasons } },
         );
 
         playersUpdated++;
         console.log(
-          `   ✅ Player ${player.fullName}: Removed ${originalCount - uniqueSeasons.length} duplicate seasons`
+          `   ✅ Player ${player.fullName}: Removed ${originalCount - uniqueSeasons.length} duplicate seasons`,
         );
       }
     }
@@ -176,7 +176,7 @@ async function cleanupAllDuplicates() {
 
         const latestSeason = sortedSeasons[0];
         const hasPaidSeason = sortedSeasons.some(
-          (s) => s.paymentStatus === 'paid'
+          (s) => s.paymentStatus === 'paid',
         );
 
         const updateFields = {
@@ -190,11 +190,11 @@ async function cleanupAllDuplicates() {
 
         // Update lastPaymentDate if there are paid seasons
         const paidSeasons = sortedSeasons.filter(
-          (s) => s.paymentStatus === 'paid' && s.paymentDate
+          (s) => s.paymentStatus === 'paid' && s.paymentDate,
         );
         if (paidSeasons.length > 0) {
           const latestPayment = paidSeasons.sort(
-            (a, b) => new Date(b.paymentDate) - new Date(a.paymentDate)
+            (a, b) => new Date(b.paymentDate) - new Date(a.paymentDate),
           )[0];
           updateFields.lastPaymentDate = latestPayment.paymentDate;
         }
@@ -202,7 +202,7 @@ async function cleanupAllDuplicates() {
         // Check if update is needed
         const needsUpdate = Object.keys(updateFields).some(
           (key) =>
-            JSON.stringify(player[key]) !== JSON.stringify(updateFields[key])
+            JSON.stringify(player[key]) !== JSON.stringify(updateFields[key]),
         );
 
         if (needsUpdate) {
@@ -213,7 +213,7 @@ async function cleanupAllDuplicates() {
     }
 
     console.log(
-      `📊 SYNC SUMMARY: Synced ${playersSynced} players' top-level fields`
+      `📊 SYNC SUMMARY: Synced ${playersSynced} players' top-level fields`,
     );
 
     // ============================================
@@ -247,7 +247,7 @@ async function cleanupAllDuplicates() {
       .toArray();
 
     console.log(
-      `\n🔍 REMAINING DUPLICATE REGISTRATIONS: ${remainingRegDuplicates[0]?.total || 0}`
+      `\n🔍 REMAINING DUPLICATE REGISTRATIONS: ${remainingRegDuplicates[0]?.total || 0}`,
     );
   } catch (err) {
     console.error('❌ Error during cleanup:', err);

@@ -9,7 +9,7 @@ async function updateEmailTemplateLinks() {
     const mongoUri =
       process.env.MONGODB_URI ||
       process.env.MONGO_URI ||
-      'mongodb://localhost:27017/partizan-be';
+      'mongodb://localhost:27017/bothell-select';
 
     console.log(`🔗 Connecting to MongoDB...`);
 
@@ -32,7 +32,7 @@ async function updateEmailTemplateLinks() {
     for (const [index, template] of templates.entries()) {
       try {
         console.log(
-          `\n🔍 [${index + 1}/${templates.length}] Checking template: "${template.title}"`
+          `\n🔍 [${index + 1}/${templates.length}] Checking template: "${template.title}"`,
         );
 
         let needsUpdate = false;
@@ -48,12 +48,12 @@ async function updateEmailTemplateLinks() {
             // Check for old unsubscribe link and update
             if (
               fieldContent.includes(
-                'href="https://partizanhoops.com/unsubscribe"'
+                'href="https://bothellselect.com/unsubscribe"',
               )
             ) {
               fieldContent = fieldContent.replace(
-                /href="https:\/\/partizanhoops\.com\/unsubscribe"/g,
-                'href="https://partizanhoops.com/general-settings/notifications-settings"'
+                /href="https:\/\/bothellselect\.com\/unsubscribe"/g,
+                'href="https://bothellselect.com/general-settings/notifications-settings"',
               );
               console.log(`   ↳ Updated unsubscribe link in ${field}`);
               needsUpdate = true;
@@ -61,11 +61,11 @@ async function updateEmailTemplateLinks() {
 
             // Check for old contact link and update
             if (
-              fieldContent.includes('href="https://partizanhoops.com/contact"')
+              fieldContent.includes('href="https://bothellselect.com/contact"')
             ) {
               fieldContent = fieldContent.replace(
-                /href="https:\/\/partizanhoops\.com\/contact"/g,
-                'href="https://partizanhoops.com/contact-us"'
+                /href="https:\/\/bothellselect\.com\/contact"/g,
+                'href="https://bothellselect.com/contact-us"',
               );
               console.log(`   ↳ Updated contact link in ${field}`);
               needsUpdate = true;
@@ -73,11 +73,11 @@ async function updateEmailTemplateLinks() {
 
             // Check for old website link and update
             if (
-              fieldContent.includes('href="https://partizanhoops.com/website"')
+              fieldContent.includes('href="https://bothellselect.com/website"')
             ) {
               fieldContent = fieldContent.replace(
-                /href="https:\/\/partizanhoops\.com\/website"/g,
-                'href="https://partizanhoops.com"'
+                /href="https:\/\/bothellselect\.com\/website"/g,
+                'href="https://bothellselect.com"',
               );
               console.log(`   ↳ Updated website link in ${field}`);
               needsUpdate = true;
@@ -87,25 +87,25 @@ async function updateEmailTemplateLinks() {
             // Check for links without quotes
             if (
               fieldContent.includes(
-                'href=https://partizanhoops.com/unsubscribe'
+                'href=https://bothellselect.com/unsubscribe',
               )
             ) {
               fieldContent = fieldContent.replace(
-                /href=https:\/\/partizanhoops\.com\/unsubscribe/g,
-                'href="https://partizanhoops.com/general-settings/notifications-settings"'
+                /href=https:\/\/bothellselect\.com\/unsubscribe/g,
+                'href="https://bothellselect.com/general-settings/notifications-settings"',
               );
               console.log(
-                `   ↳ Updated unsubscribe link (no quotes) in ${field}`
+                `   ↳ Updated unsubscribe link (no quotes) in ${field}`,
               );
               needsUpdate = true;
             }
 
             if (
-              fieldContent.includes('href=https://partizanhoops.com/contact')
+              fieldContent.includes('href=https://bothellselect.com/contact')
             ) {
               fieldContent = fieldContent.replace(
-                /href=https:\/\/partizanhoops\.com\/contact/g,
-                'href="https://partizanhoops.com/contact-us"'
+                /href=https:\/\/bothellselect\.com\/contact/g,
+                'href="https://bothellselect.com/contact-us"',
               );
               console.log(`   ↳ Updated contact link (no quotes) in ${field}`);
               needsUpdate = true;
@@ -145,10 +145,10 @@ async function updateEmailTemplateLinks() {
     if (updatedCount > 0) {
       console.log('Changes made:');
       console.log(
-        '• Old unsubscribe link → https://partizanhoops.com/general-settings/notifications-settings'
+        '• Old unsubscribe link → https://bothellselect.com/general-settings/notifications-settings',
       );
-      console.log('• Old contact link → https://partizanhoops.com/contact-us');
-      console.log('• Old website link → https://partizanhoops.com');
+      console.log('• Old contact link → https://bothellselect.com/contact-us');
+      console.log('• Old website link → https://bothellselect.com');
     }
 
     mongoose.disconnect();

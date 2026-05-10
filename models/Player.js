@@ -238,8 +238,8 @@ playerSchema.virtual('avatarUrl').get(function () {
     return `${this.avatar}${this.avatar.includes('?') ? '&' : '?'}ts=${Date.now()}`;
   }
   return this.gender === 'Female'
-    ? 'https://partizan-be.onrender.com/uploads/avatars/girl.png'
-    : 'https://partizan-be.onrender.com/uploads/avatars/boy.png';
+    ? 'https://bothell-select.onrender.com/uploads/avatars/girl.png'
+    : 'https://bothell-select.onrender.com/uploads/avatars/boy.png';
 });
 
 // ==================== INDEXES ====================

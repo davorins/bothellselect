@@ -401,16 +401,16 @@ router.post(
         const welcomeEmailHtml = `
           <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px;">
             <div style="text-align: center; margin-bottom: 20px;">
-              <img src="https://partizanhoops.com/assets/img/logo.png" alt="Partizan Basketball" style="max-width: 200px;">
+              <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px;">
             </div>
             
             <div style="background: #f8f9fa; padding: 30px; border-radius: 8px;">
-              <h1 style="color: #333; text-align: center;">Welcome to Partizan Basketball!</h1>
+              <h1 style="color: #333; text-align: center;">Welcome to Bothell Select Basketball!</h1>
               
               <div style="margin: 30px 0;">
                 <p>Dear <strong>${parent.fullName}</strong>,</p>
                 
-                <p>Thank you for creating an account with Partizan Basketball! We're excited to have you join our community.</p>
+                <p>Thank you for creating an account with Bothell Select Basketball! We're excited to have you join our community.</p>
                 
                 <div style="background: white; padding: 20px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #594230;">
                   <h3 style="margin-top: 0; color: #594230;">🎉 Account Created Successfully</h3>
@@ -429,7 +429,7 @@ router.post(
                 </ul>
                 
                 <div style="text-align: center; margin: 30px 0;">
-                  <a href="${process.env.FRONTEND_URL || 'https://partizanhoops.com'}/dashboard" 
+                  <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}/dashboard" 
                      style="background: #594230; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
                     Go to Your Dashboard
                   </a>
@@ -442,24 +442,24 @@ router.post(
                   </p>
                 </div>
                 
-                <p>If you have any questions or need assistance, please contact us at <a href="mailto:partizanhoops@proton.me">partizanhoops@proton.me</a></p>
+                <p>If you have any questions or need assistance, please contact us at <a href="mailto:bothellselect@proton.me">bothellselect@proton.me</a></p>
                 
                 <p style="text-align: center; margin-top: 30px;">
-                  <strong>Welcome to the Partizan family! 🏀</strong>
+                  <strong>Welcome to the Bothell Select family! 🏀</strong>
                 </p>
               </div>
             </div>
             
             <div style="text-align: center; margin-top: 30px; color: #666; font-size: 14px;">
-              <p>Partizan Basketball<br>
-              partizanhoops@proton.me</p>
+              <p>Bothell Select Basketball<br>
+              bothellselect@proton.me</p>
             </div>
           </div>
         `;
 
         sendEmail({
           to: parent.email,
-          subject: 'Welcome to Partizan Basketball!',
+          subject: 'Welcome to Bothell Select Basketball!',
           html: welcomeEmailHtml,
         }).catch((err) => console.error('Welcome email failed:', err));
       } catch (emailError) {
@@ -1914,8 +1914,8 @@ router.get(
           imgSrc: player.avatar
             ? `${player.avatar}${player.avatar.includes('?') ? '&' : '?'}ts=${Date.now()}`
             : player.gender === 'Female'
-              ? 'https://partizan-be.onrender.com/uploads/avatars/girl.png'
-              : 'https://partizan-be.onrender.com/uploads/avatars/boy.png',
+              ? 'https://bothell-select.onrender.com/uploads/avatars/girl.png'
+              : 'https://bothell-select.onrender.com/uploads/avatars/boy.png',
         };
       });
 
@@ -2645,7 +2645,7 @@ router.post('/contact', async (req, res) => {
 
   try {
     await sendEmail({
-      to: 'partizanhoops@proton.me',
+      to: 'bothellselect@proton.me',
       subject: subject || 'New Inquiry from Contact Form',
       html,
     });
@@ -2696,8 +2696,8 @@ router.put('/parent/:id/avatar', authenticate, async (req, res) => {
     }
 
     // If it has the double domain issue, extract just the R2 part
-    if (cleanUrl.includes('partizan-be.onrender.comhttps://')) {
-      cleanUrl = cleanUrl.split('partizan-be.onrender.com')[1];
+    if (cleanUrl.includes('bothell-select.onrender.comhttps://')) {
+      cleanUrl = cleanUrl.split('bothell-select.onrender.com')[1];
     }
 
     console.log('🧹 Cleaned URL:', cleanUrl);
@@ -2851,8 +2851,8 @@ router.delete('/player/:id/avatar', authenticate, async (req, res) => {
     // Set to default avatar based on gender
     const defaultAvatar =
       player.gender === 'Female'
-        ? 'https://partizan-be.onrender.com/uploads/avatars/girl.png'
-        : 'https://partizan-be.onrender.com/uploads/avatars/boy.png';
+        ? 'https://bothell-select.onrender.com/uploads/avatars/girl.png'
+        : 'https://bothell-select.onrender.com/uploads/avatars/boy.png';
 
     player.avatar = defaultAvatar;
     await player.save();
@@ -5194,7 +5194,7 @@ router.post(
       await parent.save();
 
       // Send verification email
-      const verificationLink = `${process.env.FRONTEND_URL || 'https://partizanhoops.com'}/verify-email?token=${verificationToken}`;
+      const verificationLink = `${process.env.FRONTEND_URL || 'https://bothellselect.com'}/verify-email?token=${verificationToken}`;
 
       const emailHtml = `
   <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #f9f9f9; padding: 20px;">
@@ -5205,7 +5205,7 @@ router.post(
       
       <p>Hello <strong>${parent.fullName}</strong>,</p>
       
-      <p>Thank you for starting your registration with Partizan Basketball. Please verify your email address to complete your account setup.</p>
+      <p>Thank you for starting your registration with Bothell Select Basketball. Please verify your email address to complete your account setup.</p>
       
       <!-- Primary Verification Button -->
       <div style="text-align: center; margin: 30px 0;">
@@ -5238,7 +5238,7 @@ router.post(
 </div>
         
         <p style="margin: 12px 0 0 0; color: #6c757d; font-size: 13px;">
-          Go to: <a href="${process.env.FRONTEND_URL || 'https://partizanhoops.com'}/verify-email" style="color: #594230;">${process.env.FRONTEND_URL || 'https://partizanhoops.com'}/verify-email</a> and paste this token.
+          Go to: <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}/verify-email" style="color: #594230;">${process.env.FRONTEND_URL || 'https://bothellselect.com'}/verify-email</a> and paste this token.
         </p>
       </div>
       
@@ -5265,7 +5265,7 @@ router.post(
       <!-- Security Notice -->
       <div style="border-top: 1px solid #eee; padding-top: 20px; margin-top: 25px;">
         <p style="color: #6c757d; font-size: 12px; margin: 0;">
-          If you didn't start a registration with Partizan Basketball, please ignore this email.
+          If you didn't start a registration with Bothell Select Basketball, please ignore this email.
         </p>
       </div>
     </div>
@@ -5273,7 +5273,7 @@ router.post(
     <!-- Footer -->
     <div style="text-align: center; margin-top: 20px;">
       <p style="color: #6c757d; font-size: 12px; margin: 0;">
-        Partizan Basketball<br>
+        Bothell Select Basketball<br>
         © ${new Date().getFullYear()} All rights reserved
       </p>
     </div>
@@ -5282,7 +5282,7 @@ router.post(
 
       await sendEmail({
         to: parent.email,
-        subject: 'Verify Your Email - Partizan Basketball',
+        subject: 'Verify Your Email - Bothell Select Basketball',
         html: emailHtml,
       });
 
@@ -5565,7 +5565,7 @@ const sendVerificationEmailWithToken = async (email, token) => {
     
     <p>Hello,</p>
     
-    <p>Thank you for starting your registration with Partizan Basketball. Please verify your email address to continue with your registration.</p>
+    <p>Thank you for starting your registration with Bothell Select Basketball. Please verify your email address to continue with your registration.</p>
     
     <div style="background:#f8f9fa;border:1px solid #e9ecef;border-radius:6px;padding:20px;margin:25px 0">
       <h3 style="color:#495057;margin-top:0;font-size:16px">📋 Verification Token</h3>
@@ -5604,14 +5604,14 @@ const sendVerificationEmailWithToken = async (email, token) => {
     
     <div style="border-top:1px solid #eee;padding-top:20px;margin-top:25px">
       <p style="color:#6c757d;font-size:12px;margin:0">
-        If you didn't start a registration with Partizan Basketball, please ignore this email.
+        If you didn't start a registration with Bothell Select Basketball, please ignore this email.
       </p>
     </div>
   </div>
   
   <div style="text-align:center;margin-top:20px">
     <p style="color:#6c757d;font-size:12px;margin:0">
-      Partizan Basketball<br>
+      Bothell Select Basketball<br>
       © ${new Date().getFullYear()} All rights reserved
     </p>
   </div>
@@ -5619,7 +5619,7 @@ const sendVerificationEmailWithToken = async (email, token) => {
 
     await sendEmail({
       to: email,
-      subject: 'Verify Your Email - Partizan Basketball',
+      subject: 'Verify Your Email - Bothell Select Basketball',
       html: emailHtml,
     });
 
@@ -5713,8 +5713,8 @@ router.get('/players/my-players', authenticate, async (req, res) => {
       imgSrc: player.avatar
         ? `${player.avatar}${player.avatar.includes('?') ? '&' : '?'}ts=${Date.now()}`
         : player.gender === 'Female'
-          ? 'https://partizan-be.onrender.com/uploads/avatars/girl.png'
-          : 'https://partizan-be.onrender.com/uploads/avatars/boy.png',
+          ? 'https://bothell-select.onrender.com/uploads/avatars/girl.png'
+          : 'https://bothell-select.onrender.com/uploads/avatars/boy.png',
     }));
 
     res.json(playersWithAvatars);
@@ -6633,8 +6633,8 @@ router.get(
           imgSrc: player.avatar
             ? `${player.avatar}${player.avatar.includes('?') ? '&' : '?'}ts=${Date.now()}`
             : player.gender === 'Female'
-              ? 'https://partizan-be.onrender.com/uploads/avatars/girl.png'
-              : 'https://partizan-be.onrender.com/uploads/avatars/boy.png',
+              ? 'https://bothell-select.onrender.com/uploads/avatars/girl.png'
+              : 'https://bothell-select.onrender.com/uploads/avatars/boy.png',
           formattedDob: player.dob
             ? new Date(player.dob).toLocaleDateString()
             : null,

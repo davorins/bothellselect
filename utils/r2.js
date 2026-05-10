@@ -17,7 +17,7 @@ const r2Client = new S3Client({
   },
 });
 
-const BUCKET_NAME = process.env.R2_BUCKET || 'partizan';
+const BUCKET_NAME = process.env.R2_BUCKET || 'bothellselect';
 const PUBLIC_URL = process.env.R2_PUBLIC_URL;
 
 /**
@@ -132,8 +132,8 @@ const getKeyFromUrl = (url) => {
   }
 
   // Handle double domain issue
-  if (cleanUrl.includes('partizan-be.onrender.comhttps://')) {
-    cleanUrl = cleanUrl.split('partizan-be.onrender.com')[1];
+  if (cleanUrl.includes('bothell-select.onrender.comhttps://')) {
+    cleanUrl = cleanUrl.split('bothell-select.onrender.com')[1];
   }
 
   // Extract key after public URL

@@ -42,7 +42,7 @@ router.get(
       const { season, year, grade, gender } = req.query;
 
       let query = {
-        'seasons.season': season || 'Partizan Tryout',
+        'seasons.season': season || 'Bothell Select Tryout',
         'seasons.paymentComplete': true,
         'seasons.paymentStatus': 'paid',
       };

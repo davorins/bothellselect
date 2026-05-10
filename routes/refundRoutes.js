@@ -150,7 +150,7 @@ router.post('/process', authenticate, async (req, res) => {
       console.error('❌ Refund not found');
       console.log(
         'Available refunds:',
-        payment.refunds?.map((r) => r._id)
+        payment.refunds?.map((r) => r._id),
       );
       return res.status(404).json({
         success: false,
@@ -478,11 +478,11 @@ router.use('/process', authenticate, (req, res, next) => {
 
 // Email notification functions (keep these the same)
 async function sendRefundNotification(payment, refundRequest, user) {
-  const adminEmail = process.env.ADMIN_EMAIL || 'admin@partizanhoops.com';
+  const adminEmail = process.env.ADMIN_EMAIL || 'admin@bothellselect.com';
 
   await sendEmail({
     to: adminEmail,
-    subject: 'New Refund Request - Partizan Basketball',
+    subject: 'New Refund Request - Bothell Select Basketball',
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto;">
         <h2 style="color: #dc2626;">⚠️ New Refund Request</h2>
@@ -500,7 +500,7 @@ async function sendRefundNotification(payment, refundRequest, user) {
         <p>Please review this refund request in the admin panel.</p>
         
         <div style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 5px;">
-          <a href="${process.env.ADMIN_URL || 'https://partizanhoops.com'}/admin/refunds" 
+          <a href="${process.env.ADMIN_URL || 'https://bothellselect.com'}/admin/refunds" 
              style="background: #dc2626; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px;">
             Review Refund Request
           </a>
@@ -518,7 +518,7 @@ async function sendRefundConfirmation(payment, refund) {
 
   await sendEmail({
     to: parent.email,
-    subject: 'Refund Processed - Partizan Basketball',
+    subject: 'Refund Processed - Bothell Select Basketball',
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto;">
         <h2 style="color: #059669;">✅ Refund Processed</h2>
@@ -534,7 +534,7 @@ async function sendRefundConfirmation(payment, refund) {
         <p>The refund should appear on your original payment method within 5-10 business days.</p>
         
         <div style="margin-top: 20px; padding: 15px; background: #f8f9fa; border-radius: 5px;">
-          <p>If you have any questions, please contact us at partizanhoops@proton.me</p>
+          <p>If you have any questions, please contact us at bothellselect@proton.me</p>
         </div>
       </div>
     `,

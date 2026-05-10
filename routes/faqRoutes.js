@@ -59,7 +59,7 @@ router.post('/', async (req, res) => {
 
     // Generate a custom ID
     const count = await Faq.countDocuments();
-    const newId = `partizan_faq_${String(count + 1).padStart(3, '0')}`;
+    const newId = `bothellselect_faq_${String(count + 1).padStart(3, '0')}`;
 
     const newFaq = new Faq({
       _id: newId,

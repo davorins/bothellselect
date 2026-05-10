@@ -21,7 +21,7 @@ const sendEmailNotification = async (emails, message) => {
 
     const emailHtml = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-        <h2 style="color: #2563eb;">New Notification from Partizan</h2>
+        <h2 style="color: #2563eb;">New Notification from Bothell Select</h2>
         <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px;">
           <p style="font-size: 16px; line-height: 1.5;">${message}</p>
         </div>
@@ -32,9 +32,9 @@ const sendEmailNotification = async (emails, message) => {
     `;
 
     const { data, error } = await resend.emails.send({
-      from: 'Partizan <info@partizanhoops.com>',
+      from: 'Bothell Select <info@bothellselect.com>',
       to: emails,
-      subject: 'New Notification from Partizan',
+      subject: 'New Notification from Bothell Select',
       html: emailHtml,
     });
 
@@ -90,9 +90,9 @@ exports.createNotification = async (req, res) => {
         ...new Set(
           players
             .map((p) =>
-              p.parentId ? new mongoose.Types.ObjectId(p.parentId) : null
+              p.parentId ? new mongoose.Types.ObjectId(p.parentId) : null,
             )
-            .filter(Boolean)
+            .filter(Boolean),
         ),
       ];
     }
@@ -178,7 +178,7 @@ exports.markAsRead = async (req, res) => {
     const notification = await Notification.findByIdAndUpdate(
       id,
       { read: true },
-      { new: true }
+      { new: true },
     ).populate('user', 'fullName avatar');
 
     if (!notification) {
@@ -233,7 +233,7 @@ exports.dismissNotification = async (req, res) => {
     await Notification.findByIdAndUpdate(
       id,
       { $addToSet: { dismissedBy: userId } },
-      { new: true }
+      { new: true },
     );
 
     res.status(200).json({

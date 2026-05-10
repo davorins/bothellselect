@@ -14,7 +14,7 @@ const cleanTemplateContent = (html) => {
   const isCompleteEmail =
     content.includes('<!DOCTYPE') ||
     content.includes('email-body') ||
-    content.includes('Partizan Logo');
+    content.includes('Bothell Select Logo');
 
   if (!isCompleteEmail) {
     // It's just body content, return as-is
@@ -42,11 +42,11 @@ const cleanTemplateContent = (html) => {
   content = content.replace(/<\/body>/i, '');
   content = content.replace(
     /<table[^>]*role="presentation"[^>]*>[\s\S]*?<\/table>/gi,
-    ''
+    '',
   );
   content = content.replace(
-    /<div[^>]*>\s*<img[^>]*alt="Partizan Logo"[^>]*>\s*<\/div>/i,
-    ''
+    /<div[^>]*>\s*<img[^>]*alt="Bothell Select Logo"[^>]*>\s*<\/div>/i,
+    '',
   );
 
   const footerRegex =
@@ -55,17 +55,17 @@ const cleanTemplateContent = (html) => {
 
   content = content.replace(
     /<a[^>]*href="[^"]*unsubscribe[^"]*"[^>]*>[\s\S]*?<\/a>/gi,
-    ''
+    '',
   );
   content = content.replace(
     /<a[^>]*href="[^"]*contact[^"]*"[^>]*>[\s\S]*?<\/a>/gi,
-    ''
+    '',
   );
   content = content.replace(
     /<a[^>]*href="[^"]*website[^"]*"[^>]*>[\s\S]*?<\/a>/gi,
-    ''
+    '',
   );
-  content = content.replace(/<p[^>]*>&copy;[^<]*Partizan[^<]*<\/p>/i, '');
+  content = content.replace(/<p[^>]*>&copy;[^<]*Bothell Select[^<]*<\/p>/i, '');
 
   return content.trim();
 };
@@ -75,7 +75,7 @@ async function migrateTemplates() {
     const mongoUri =
       process.env.MONGODB_URI ||
       process.env.MONGO_URI ||
-      'mongodb://localhost:27017/partizan-be';
+      'mongodb://localhost:27017/bothell-select';
 
     console.log(`🔗 Connecting to MongoDB...`);
 
@@ -98,7 +98,7 @@ async function migrateTemplates() {
     for (const [index, template] of templates.entries()) {
       try {
         console.log(
-          `\n🔍 [${index + 1}/${templates.length}] "${template.title}"`
+          `\n🔍 [${index + 1}/${templates.length}] "${template.title}"`,
         );
 
         // 1. Clean the content if it has headers/footers
