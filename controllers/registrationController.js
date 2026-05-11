@@ -64,17 +64,44 @@ exports.updateFormConfig = async (req, res) => {
     const seasonName = season || seasonEvent.season;
     const seasonYear = year || seasonEvent.year;
 
+    // Prepare the update data
+    const updateData = {
+      eventId,
+      season: seasonName,
+      year: seasonYear,
+      isActive: config.isActive,
+      requiresPayment: config.requiresPayment,
+      requiresQualification: config.requiresQualification,
+      description: config.description || '',
+      pricing: {
+        basePrice: config.pricing?.basePrice || 0,
+        packages: config.pricing?.packages || [],
+      },
+    };
+
+    // Include trainingDetails if it exists in the config
+    if (config.trainingDetails) {
+      updateData.trainingDetails = config.trainingDetails;
+      console.log(
+        '📝 Saving trainingDetails:',
+        JSON.stringify(config.trainingDetails, null, 2),
+      );
+    }
+
     // Update or create form config
     const formConfig = await RegistrationFormConfig.findOneAndUpdate(
       { eventId },
-      {
-        eventId,
-        season: seasonName,
-        year: seasonYear,
-        ...config,
-      },
-      { upsert: true, new: true, runValidators: true }
+      updateData,
+      { upsert: true, new: true, runValidators: true },
     );
+
+    console.log('✅ Form config saved successfully:', {
+      eventId: formConfig.eventId,
+      hasTrainingDetails: !!formConfig.trainingDetails,
+      trainingDetailsKeys: formConfig.trainingDetails
+        ? Object.keys(formConfig.trainingDetails.toObject())
+        : [],
+    });
 
     res.json(formConfig);
   } catch (error) {
@@ -86,10 +113,7 @@ exports.updateFormConfig = async (req, res) => {
 exports.getFormConfigs = async (req, res) => {
   try {
     const configs = await RegistrationFormConfig.find();
-    console.log(
-      '📊 Raw configs from database:',
-      JSON.stringify(configs, null, 2)
-    );
+    console.log('📊 Found configs:', configs.length);
 
     const configMap = {};
     configs.forEach((config) => {
@@ -113,13 +137,30 @@ exports.getFormConfigs = async (req, res) => {
         ...pkg,
       }));
 
+      // Ensure trainingDetails exists (even if empty)
+      if (!configObj.trainingDetails) {
+        configObj.trainingDetails = {
+          startDate: '',
+          endDate: '',
+          duration: '',
+          gender: '',
+          days: [],
+          location: { name: '', address: '', city: '', state: '', zipCode: '' },
+          trainingSessions: [],
+          notes: [],
+          dropOffTime: '',
+          pickUpTime: '',
+          hasLimitedSpots: false,
+          contactEmail: '',
+          ageGroups: [],
+          maxParticipants: null,
+        };
+      }
+
       configMap[key] = configObj;
     });
 
-    console.log(
-      '🎯 Final config map sent to frontend:',
-      Object.keys(configMap)
-    );
+    console.log('🎯 Config keys sent:', Object.keys(configMap));
     res.json(configMap);
   } catch (error) {
     console.error('❌ Get form configs error:', error);
