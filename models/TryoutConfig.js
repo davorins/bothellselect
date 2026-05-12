@@ -27,11 +27,13 @@ const TryoutDetailsSchema = new mongoose.Schema({
   gender: { type: String, default: '' },
   days: [{ type: String }],
   location: { type: TryoutLocationSchema, default: () => ({}) },
+  locations: [TryoutLocationSchema],
   tryoutSessions: [TryoutSessionSchema],
   notes: [{ type: String }],
   dropOffTime: { type: String, default: '' },
   pickUpTime: { type: String, default: '' },
   hasLimitedSpots: { type: Boolean, default: false },
+
   contactEmail: { type: String, default: '' },
   ageGroups: [{ type: String }],
   maxParticipants: { type: Number, default: null },

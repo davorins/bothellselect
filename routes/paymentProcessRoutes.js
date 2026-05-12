@@ -1271,6 +1271,13 @@ router.post(
       const amountInCents = parseInt(amount);
 
       if (paymentService.type === 'square') {
+        // Create a shorter reference ID for Square only (max 40 chars)
+        const shortRefId =
+          `tr:${parent._id.toString().slice(-12)}:${Date.now().toString().slice(-8)}`.slice(
+            0,
+            40,
+          );
+
         const paymentRequest = {
           sourceId: sourceId || token,
           amountMoney: {
@@ -1280,7 +1287,7 @@ router.post(
           idempotencyKey: crypto.randomUUID(),
           locationId: paymentService.config.locationId,
           customerId: parent.squareCustomerId,
-          referenceId: `training:${parent._id}:${Date.now()}`,
+          referenceId: shortRefId,
           note: `Training payment for ${players.length} player(s)`,
           buyerEmailAddress: email,
           autocomplete: true,
@@ -1289,7 +1296,7 @@ router.post(
         console.log('Square payment request:', {
           locationId: paymentService.config.locationId,
           amount: amountInCents,
-          referenceId: paymentRequest.referenceId,
+          referenceId: shortRefId,
         });
 
         const { result } =
