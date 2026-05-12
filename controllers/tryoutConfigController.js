@@ -8,14 +8,52 @@ exports.getTryoutConfigs = async (req, res) => {
       tryoutYear: -1,
       tryoutName: 1,
     });
-    res.json(configs);
+
+    // Ensure tryoutDetails exists for each config (backward compatibility)
+    const configsWithDefaults = configs.map((config) => {
+      const configObj = config.toObject();
+
+      // Add default tryoutDetails if missing
+      if (!configObj.tryoutDetails) {
+        configObj.tryoutDetails = {
+          startDate: '',
+          endDate: '',
+          duration: '',
+          gender: '',
+          days: [],
+          location: { name: '', address: '', city: '', state: '', zipCode: '' },
+          tryoutSessions: [],
+          notes: [],
+          dropOffTime: '',
+          pickUpTime: '',
+          hasLimitedSpots: false,
+          contactEmail: '',
+          ageGroups: [],
+          maxParticipants: null,
+          whatToBring: [],
+        };
+      }
+
+      return configObj;
+    });
+
+    console.log(
+      'Backend tryout configs:',
+      configs.map((c) => ({
+        tryoutName: c.tryoutName,
+        hasTryoutDetails: !!c.tryoutDetails,
+        tryoutDetails: c.tryoutDetails,
+      })),
+    );
+
+    res.json(configsWithDefaults);
   } catch (error) {
     console.error('❌ Error getting tryout configs:', error);
     res.status(500).json({ error: error.message });
   }
 };
 
-// Create or update tryout config - FIXED VERSION
+// Create or update tryout config
 exports.updateTryoutConfig = async (req, res) => {
   try {
     const config = req.body;
@@ -23,8 +61,9 @@ exports.updateTryoutConfig = async (req, res) => {
 
     console.log('🎯 Updating tryout config:', {
       config,
-      description: config.description, // Debug
-      descriptionLength: config.description?.length, // Debug
+      description: config.description,
+      descriptionLength: config.description?.length,
+      hasTryoutDetails: !!config.tryoutDetails,
       originalTryoutName,
     });
 
@@ -51,7 +90,6 @@ exports.updateTryoutConfig = async (req, res) => {
     if (existingConfig) {
       // Update existing config
       if (originalTryoutName !== config.tryoutName) {
-        // Check if new name already exists
         const nameExists = await TryoutConfig.findOne({
           tryoutName: config.tryoutName,
           _id: { $ne: existingConfig._id },
@@ -73,17 +111,23 @@ exports.updateTryoutConfig = async (req, res) => {
       if (updates.paymentDeadline) {
         updates.paymentDeadline = new Date(updates.paymentDeadline);
       }
-      if (updates.tryoutDates && Array.isArray(updates.tryoutDates)) {
-        updates.tryoutDates = updates.tryoutDates.map((date) => new Date(date));
-      }
 
       // ✅ Ensure description is set (even if empty string)
       updates.description = updates.description || '';
 
+      // ✅ IMPORTANT: Include tryoutDetails if it exists
+      if (updates.tryoutDetails) {
+        console.log(
+          '📝 Saving tryoutDetails:',
+          JSON.stringify(updates.tryoutDetails, null, 2),
+        );
+      }
+
       console.log('🔄 Applying updates to existing config:', {
         updates,
         description: updates.description,
-        descriptionLength: updates.description.length,
+        descriptionLength: updates.description?.length,
+        tryoutDetails: updates.tryoutDetails ? 'present' : 'missing',
       });
 
       // Update the document
@@ -100,6 +144,7 @@ exports.updateTryoutConfig = async (req, res) => {
         tryoutName: savedConfig.tryoutName,
         description: savedConfig.description,
         descriptionLength: savedConfig.description?.length,
+        hasTryoutDetails: !!savedConfig.tryoutDetails,
       });
 
       res.json(savedConfig);
@@ -115,35 +160,30 @@ exports.updateTryoutConfig = async (req, res) => {
         });
       }
 
-      // ✅ Create new config with all fields
+      // Create new config with all fields
       const newConfigData = { ...config };
       delete newConfigData.originalTryoutName;
 
       // Convert string dates to Date objects
       if (newConfigData.registrationDeadline) {
         newConfigData.registrationDeadline = new Date(
-          newConfigData.registrationDeadline
+          newConfigData.registrationDeadline,
         );
       }
       if (newConfigData.paymentDeadline) {
         newConfigData.paymentDeadline = new Date(newConfigData.paymentDeadline);
       }
-      if (
-        newConfigData.tryoutDates &&
-        Array.isArray(newConfigData.tryoutDates)
-      ) {
-        newConfigData.tryoutDates = newConfigData.tryoutDates.map(
-          (date) => new Date(date)
-        );
-      }
 
-      // ✅ Ensure description is set
+      // Ensure description is set
       newConfigData.description = newConfigData.description || '';
+
+      // tryoutDetails will be included automatically from the config
 
       console.log('🆕 Creating new config:', {
         newConfigData,
         description: newConfigData.description,
-        descriptionLength: newConfigData.description.length,
+        descriptionLength: newConfigData.description?.length,
+        hasTryoutDetails: !!newConfigData.tryoutDetails,
       });
 
       const newConfig = new TryoutConfig(newConfigData);
@@ -154,6 +194,7 @@ exports.updateTryoutConfig = async (req, res) => {
         tryoutName: savedConfig.tryoutName,
         description: savedConfig.description,
         descriptionLength: savedConfig.description?.length,
+        hasTryoutDetails: !!savedConfig.tryoutDetails,
       });
 
       res.json(savedConfig);
@@ -185,7 +226,33 @@ exports.getTryoutsBySeason = async (req, res) => {
     }
 
     const tryouts = await TryoutConfig.find(query).sort({ tryoutYear: -1 });
-    res.json(tryouts);
+
+    // Add default tryoutDetails if missing
+    const tryoutsWithDefaults = tryouts.map((tryout) => {
+      const obj = tryout.toObject();
+      if (!obj.tryoutDetails) {
+        obj.tryoutDetails = {
+          startDate: '',
+          endDate: '',
+          duration: '',
+          gender: '',
+          days: [],
+          location: { name: '', address: '', city: '', state: '', zipCode: '' },
+          tryoutSessions: [],
+          notes: [],
+          dropOffTime: '',
+          pickUpTime: '',
+          hasLimitedSpots: false,
+          contactEmail: '',
+          ageGroups: [],
+          maxParticipants: null,
+          whatToBring: [],
+        };
+      }
+      return obj;
+    });
+
+    res.json(tryoutsWithDefaults);
   } catch (error) {
     console.error('Error getting tryouts by season:', error);
     res.status(500).json({ error: error.message });
@@ -199,12 +266,35 @@ exports.getTryoutConfig = async (req, res) => {
     const config = await TryoutConfig.findOne({ tryoutName });
 
     if (config) {
+      const configObj = config.toObject();
+      // Add default tryoutDetails if missing
+      if (!configObj.tryoutDetails) {
+        configObj.tryoutDetails = {
+          startDate: '',
+          endDate: '',
+          duration: '',
+          gender: '',
+          days: [],
+          location: { name: '', address: '', city: '', state: '', zipCode: '' },
+          tryoutSessions: [],
+          notes: [],
+          dropOffTime: '',
+          pickUpTime: '',
+          hasLimitedSpots: false,
+          contactEmail: '',
+          ageGroups: [],
+          maxParticipants: null,
+          whatToBring: [],
+        };
+      }
+
       console.log('✅ Found tryout config:', {
-        tryoutName: config.tryoutName,
-        description: config.description,
-        descriptionLength: config.description?.length,
+        tryoutName: configObj.tryoutName,
+        description: configObj.description,
+        descriptionLength: configObj.description?.length,
+        hasTryoutDetails: !!configObj.tryoutDetails,
       });
-      res.json(config);
+      res.json(configObj);
     } else {
       console.log('📭 No tryout config found for:', tryoutName);
       res.status(404).json({ message: 'Tryout configuration not found' });
@@ -233,20 +323,43 @@ exports.deleteTryoutConfig = async (req, res) => {
   }
 };
 
-// ✅ Get tryout config by eventId
+// Get tryout config by eventId
 exports.getTryoutConfigByEventId = async (req, res) => {
   try {
     const { eventId } = req.params;
     const config = await TryoutConfig.findOne({ eventId });
 
     if (config) {
+      const configObj = config.toObject();
+      // Add default tryoutDetails if missing
+      if (!configObj.tryoutDetails) {
+        configObj.tryoutDetails = {
+          startDate: '',
+          endDate: '',
+          duration: '',
+          gender: '',
+          days: [],
+          location: { name: '', address: '', city: '', state: '', zipCode: '' },
+          tryoutSessions: [],
+          notes: [],
+          dropOffTime: '',
+          pickUpTime: '',
+          hasLimitedSpots: false,
+          contactEmail: '',
+          ageGroups: [],
+          maxParticipants: null,
+          whatToBring: [],
+        };
+      }
+
       console.log('✅ Found tryout config by eventId:', {
         eventId,
-        tryoutName: config.tryoutName,
-        description: config.description,
-        descriptionLength: config.description?.length,
+        tryoutName: configObj.tryoutName,
+        description: configObj.description,
+        descriptionLength: configObj.description?.length,
+        hasTryoutDetails: !!configObj.tryoutDetails,
       });
-      res.json(config);
+      res.json(configObj);
     } else {
       console.log('📭 No tryout config found for eventId:', eventId);
       res
