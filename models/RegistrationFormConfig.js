@@ -20,9 +20,11 @@ const TrainingLocationSchema = new mongoose.Schema({
 const TrainingSessionSchema = new mongoose.Schema({
   id: { type: String, required: true },
   number: { type: Number, required: true },
+  date: { type: String, default: '' },
   startTime: { type: String, required: true },
   endTime: { type: String, required: true },
   grades: { type: String, required: true },
+  location: { type: TrainingLocationSchema, default: () => ({}) },
 });
 
 const TrainingDetailsSchema = new mongoose.Schema({
@@ -32,6 +34,7 @@ const TrainingDetailsSchema = new mongoose.Schema({
   gender: { type: String, default: '' },
   days: [{ type: String }],
   location: { type: TrainingLocationSchema, default: () => ({}) },
+  locations: [TrainingLocationSchema],
   trainingSessions: [TrainingSessionSchema],
   notes: [{ type: String }],
   dropOffTime: { type: String, default: '' },
