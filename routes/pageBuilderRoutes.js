@@ -17,7 +17,7 @@ router.get('/pages/:slug', async (req, res) => {
 
     // List all pages to see what's there
     const allPages = await PageLayout.find({}).select(
-      'pageSlug pageTitle isActive isTemplate publishedAt -_id'
+      'pageSlug pageTitle isActive isTemplate publishedAt -_id',
     );
     console.log('📋 All pages in database:', JSON.stringify(allPages, null, 2));
 
@@ -32,7 +32,7 @@ router.get('/pages/:slug', async (req, res) => {
     });
     console.log(
       '1. Exact query (with isActive: true):',
-      query1 ? 'FOUND' : 'NOT FOUND'
+      query1 ? 'FOUND' : 'NOT FOUND',
     );
 
     // Query 2: Without isActive filter
@@ -129,7 +129,7 @@ router.get(
         message: 'Server error',
       });
     }
-  }
+  },
 );
 
 // GET all pages with filtering and pagination (admin)
@@ -175,7 +175,7 @@ router.get('/admin/pages', requireAuth, requireAdmin, async (req, res) => {
       .skip(skip)
       .limit(parseInt(limit))
       .select(
-        'pageSlug pageTitle pageType isActive updatedAt publishedAt createdAt settings sections'
+        'pageSlug pageTitle pageType isActive updatedAt publishedAt createdAt settings sections',
       )
       .lean();
 
@@ -276,7 +276,7 @@ router.post('/admin/pages', requireAuth, requireAdmin, async (req, res) => {
       defaultSectionSpacing: '3rem',
       backgroundColor: '#ffffff',
       textColor: '#333333',
-      accentColor: '#594230',
+      accentColor: '#506ee4',
       canonicalUrl: '',
       openGraphImage: '',
       headerScripts: '',
@@ -470,10 +470,10 @@ router.put('/admin/pages/:id', requireAuth, requireAdmin, async (req, res) => {
       // Log each section with its title
       sections.forEach((section, index) => {
         console.log(
-          `  ${index}: ${section.type} - "${section.title}" - id: ${section.id}`
+          `  ${index}: ${section.type} - "${section.title}" - id: ${section.id}`,
         );
         console.log(
-          `     Content preview: ${section.content?.substring(0, 50)}...`
+          `     Content preview: ${section.content?.substring(0, 50)}...`,
         );
       });
 
@@ -549,7 +549,7 @@ router.put('/admin/pages/:id', requireAuth, requireAdmin, async (req, res) => {
     console.log('💾 Saving to database...');
     const updateResult = await PageLayout.updateOne(
       { _id: req.params.id },
-      { $set: updateData }
+      { $set: updateData },
     );
 
     console.log('📊 MongoDB update result:', {
@@ -642,7 +642,7 @@ router.patch(
       const page = await PageLayout.findByIdAndUpdate(
         req.params.id,
         { $set: updates },
-        { new: true, runValidators: true }
+        { new: true, runValidators: true },
       );
 
       if (!page) {
@@ -665,7 +665,7 @@ router.patch(
         error: error.message,
       });
     }
-  }
+  },
 );
 
 // POST publish page (admin)
@@ -695,7 +695,7 @@ router.post(
       const updatedPage = await PageLayout.findByIdAndUpdate(
         req.params.id,
         { $set: updateData },
-        { new: true }
+        { new: true },
       );
 
       res.json({
@@ -711,7 +711,7 @@ router.post(
         error: error.message,
       });
     }
-  }
+  },
 );
 
 // POST unpublish page (admin)
@@ -740,7 +740,7 @@ router.post(
       const updatedPage = await PageLayout.findByIdAndUpdate(
         req.params.id,
         { $set: updateData },
-        { new: true }
+        { new: true },
       );
 
       res.json({
@@ -756,7 +756,7 @@ router.post(
         error: error.message,
       });
     }
-  }
+  },
 );
 
 // DELETE page (admin)
@@ -787,7 +787,7 @@ router.delete(
         error: error.message,
       });
     }
-  }
+  },
 );
 
 // ===================== TEMPLATE ROUTES =====================
@@ -803,7 +803,7 @@ router.get('/admin/templates', requireAuth, requireAdmin, async (req, res) => {
     })
       .sort({ updatedAt: -1 })
       .select(
-        'templateName name description category thumbnail sections settings'
+        'templateName name description category thumbnail sections settings',
       )
       .lean();
 
@@ -879,7 +879,7 @@ router.post('/admin/templates', requireAuth, requireAdmin, async (req, res) => {
         defaultSectionSpacing: '3rem',
         backgroundColor: '#ffffff',
         textColor: '#333333',
-        accentColor: '#594230',
+        accentColor: '#506ee4',
         ...settings,
       },
       version: '1.0.0',
@@ -979,7 +979,7 @@ router.post(
         error: error.message,
       });
     }
-  }
+  },
 );
 
 // DELETE template (admin)
@@ -1013,7 +1013,7 @@ router.delete(
         error: error.message,
       });
     }
-  }
+  },
 );
 
 // ===================== UTILITY ROUTES =====================
@@ -1068,7 +1068,7 @@ router.get(
         error: error.message,
       });
     }
-  }
+  },
 );
 
 // POST duplicate page (admin)
@@ -1144,7 +1144,7 @@ router.post(
         error: error.message,
       });
     }
-  }
+  },
 );
 
 // ===================== HELPER FUNCTIONS =====================
@@ -1217,7 +1217,7 @@ router.post(
         error: error.message,
       });
     }
-  }
+  },
 );
 
 // POST import page configuration
@@ -1289,7 +1289,7 @@ router.post(
           defaultSectionSpacing: '3rem',
           backgroundColor: '#ffffff',
           textColor: '#333333',
-          accentColor: '#594230',
+          accentColor: '#506ee4',
         },
         version: '1.0.0',
         isTemplate: false,
@@ -1314,7 +1314,7 @@ router.post(
         error: error.message,
       });
     }
-  }
+  },
 );
 
 module.exports = router;

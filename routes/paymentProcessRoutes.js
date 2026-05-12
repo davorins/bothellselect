@@ -1039,14 +1039,14 @@ router.post(
               <div style="text-align: center; margin-bottom: 20px;">
                 <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px; height: auto;">
               </div>
-              <div style="background: #594230; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+              <div style="background: #506ee4; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
                 <h1 style="margin: 0;">🎉 Payment Confirmed!</h1>
               </div>
               <div style="background: white; padding: 20px; border-radius: 0 0 5px 5px;">
                 <p style="font-size: 16px;">Dear ${parent.fullName || 'Valued Customer'},</p>
                 <p style="font-size: 16px;">Thank you for your payment! Your registration has been confirmed.</p>
-                <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #594230;">
-                  <h3 style="margin-top: 0; color: #594230;">Payment Details</h3>
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
+                  <h3 style="margin-top: 0; color: #506ee4;">Payment Details</h3>
                   <p style="margin: 8px 0;"><strong>Number of Players:</strong> ${players.length}</p>
                   <p style="margin: 8px 0;"><strong>Fee per Player:</strong> $${perPlayerAmount}</p>
                   <p style="margin: 8px 0;"><strong>Total Amount Paid:</strong> $${amount / 100}</p>
@@ -1473,14 +1473,14 @@ router.post(
               <div style="text-align: center; margin-bottom: 20px;">
                 <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px; height: auto;">
               </div>
-              <div style="background: #594230; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+              <div style="background: #506ee4; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
                 <h1 style="margin: 0;">🏀 Training Payment Confirmed!</h1>
               </div>
               <div style="background: white; padding: 20px; border-radius: 0 0 5px 5px;">
                 <p style="font-size: 16px;">Dear ${parent.fullName || 'Valued Customer'},</p>
                 <p style="font-size: 16px;">Thank you for your training payment! Your registration has been confirmed.</p>
-                <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #594230;">
-                  <h3 style="margin-top: 0; color: #594230;">Training Payment Details</h3>
+                <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
+                  <h3 style="margin-top: 0; color: #506ee4;">Training Payment Details</h3>
                   <p style="margin: 8px 0;"><strong>Training Program:</strong> ${players[0]?.season || 'Basketball Training'}</p>
                   <p style="margin: 8px 0;"><strong>Year:</strong> ${players[0]?.year || new Date().getFullYear()}</p>
                   <p style="margin: 8px 0;"><strong>Number of Players:</strong> ${players.length}</p>
@@ -1783,14 +1783,14 @@ router.post('/process', authenticate, async (req, res) => {
             <div style="text-align: center; margin-bottom: 20px;">
               <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px; height: auto;">
             </div>
-            <div style="background: #594230; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+            <div style="background: #506ee4; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
               <h1 style="margin: 0;">🎉 Payment Confirmed!</h1>
             </div>
             <div style="background: white; padding: 20px; border-radius: 0 0 5px 5px;">
               <p style="font-size: 16px;">Dear ${parent.fullName || 'Valued Customer'},</p>
               <p style="font-size: 16px;">Thank you for your payment! Your registration has been confirmed.</p>
-              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #594230;">
-                <h3 style="margin-top: 0; color: #594230;">Payment Details</h3>
+              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
+                <h3 style="margin-top: 0; color: #506ee4;">Payment Details</h3>
                 <p style="margin: 8px 0;"><strong>Number of Players:</strong> ${players.length}</p>
                 <p style="margin: 8px 0;"><strong>Total Amount Paid:</strong> $${amount / 100}</p>
                 <p style="margin: 8px 0;"><strong>Payment ID:</strong> ${paymentResult.id}</p>

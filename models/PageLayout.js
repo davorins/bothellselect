@@ -54,7 +54,7 @@ const pageSectionSchema = new mongoose.Schema(
       default: true,
     },
   },
-  { _id: false, timestamps: true }
+  { _id: false, timestamps: true },
 );
 
 const pageLayoutSchema = new mongoose.Schema(
@@ -104,7 +104,7 @@ const pageLayoutSchema = new mongoose.Schema(
       defaultSectionSpacing: { type: String, default: '3rem' },
       backgroundColor: { type: String, default: '#ffffff' },
       textColor: { type: String, default: '#333333' },
-      accentColor: { type: String, default: '#594230' },
+      accentColor: { type: String, default: '#506ee4' },
       canonicalUrl: String,
       openGraphImage: String,
       headerScripts: String,
@@ -122,7 +122,7 @@ const pageLayoutSchema = new mongoose.Schema(
   {
     timestamps: true,
     versionKey: false,
-  }
+  },
 );
 
 pageLayoutSchema.index({ pageType: 1 });

@@ -555,7 +555,7 @@ async function sendWelcomeEmail(parentId, playerId) {
                    onerror="this.onerror=null; this.src='https://bothellselect.com/assets/img/logo.png';" />
             </div>
             
-            <div style="background: #594230; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+            <div style="background: #506ee4; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
               <h1 style="margin: 0;">Welcome to Bothell Select Basketball!</h1>
             </div>
             
@@ -564,8 +564,8 @@ async function sendWelcomeEmail(parentId, playerId) {
               
               <p style="font-size: 16px;">Welcome to the Bothell Select Basketball family! We're excited to have [player.firstName] join our program.</p>
               
-              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #594230;">
-                <h3 style="margin-top: 0; color: #594230;">Registration Confirmed</h3>
+              <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
+                <h3 style="margin-top: 0; color: #506ee4;">Registration Confirmed</h3>
                 <p style="margin: 8px 0;"><strong>Player:</strong> [player.fullName]</p>
               </div>
               
@@ -681,7 +681,7 @@ async function sendTournamentWelcomeEmail(parentId, teamId, tournament, year) {
                onerror="this.onerror=null; this.src='https://bothellselect.com/assets/img/logo.png';" />
         </div>
         
-        <div style="background: #594230; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+        <div style="background: #506ee4; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
           <h1 style="margin: 0;">🏀 Tournament Registration Received!</h1>
         </div>
         
@@ -690,8 +690,8 @@ async function sendTournamentWelcomeEmail(parentId, teamId, tournament, year) {
           
           <p style="font-size: 16px;">Thank you for registering for the ${tournament} ${year} tournament!</p>
           
-          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #594230;">
-            <h3 style="margin-top: 0; color: #594230;">Registration Details</h3>
+          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
+            <h3 style="margin-top: 0; color: #506ee4;">Registration Details</h3>
             ${team ? `<p style="margin: 8px 0;"><strong>Team:</strong> ${team.name}</p>` : ''}
             <p style="margin: 8px 0;"><strong>Tournament:</strong> ${tournament} ${year}</p>
             <p style="margin: 8px 0;"><strong>Registration Fee:</strong> $425 per team</p>
@@ -799,7 +799,7 @@ async function sendTournamentRegistrationEmail(
                onerror="this.onerror=null; this.src='https://bothellselect.com/assets/img/logo.png';" />
         </div>
         
-        <div style="background: #594230; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+        <div style="background: #506ee4; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
           <h1 style="margin: 0;">🎉 Tournament Registration Confirmed!</h1>
         </div>
         
@@ -808,8 +808,8 @@ async function sendTournamentRegistrationEmail(
           
           <p style="font-size: 16px;">Thank you for your payment! Your tournament registration for ${teamCount} team(s) has been confirmed.</p>
           
-          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #594230;">
-            <h3 style="margin-top: 0; color: #594230;">Payment & Registration Details</h3>
+          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
+            <h3 style="margin-top: 0; color: #506ee4;">Payment & Registration Details</h3>
             <p style="margin: 8px 0;"><strong>Number of Teams:</strong> ${teamCount}</p>
             <p style="margin: 8px 0;"><strong>Tournament:</strong> ${tournament} ${year}</p>
             <p style="margin: 8px 0;"><strong>Total Amount Paid:</strong> $${totalAmount}</p>
@@ -820,7 +820,7 @@ async function sendTournamentRegistrationEmail(
             teams.length > 0
               ? `
           <div style="margin: 20px 0;">
-            <h4 style="color: #594230;">Team Details:</h4>
+            <h4 style="color: #506ee4;">Team Details:</h4>
             ${teamsInfoHtml}
           </div>
           `
@@ -1120,7 +1120,7 @@ async function sendTrainingRegistrationPendingEmail(
                onerror="this.onerror=null; this.src='https://bothellselect.com/assets/img/logo.png';" />
         </div>
         
-        <div style="background: #594230; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+        <div style="background: #506ee4; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
           <h1 style="margin: 0;">🏀 Registration Received!</h1>
         </div>
         
@@ -1129,8 +1129,8 @@ async function sendTrainingRegistrationPendingEmail(
           
           <p style="font-size: 16px;">Thank you for registering for the Bothell Select ${season} ${year} program! We've received your registration details for ${players.length} player(s).</p>
           
-          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #594230;">
-            <h3 style="margin-top: 0; color: #594230;">Training Registration Details</h3>
+          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
+            <h3 style="margin-top: 0; color: #506ee4;">Training Registration Details</h3>
             <p style="margin: 8px 0;"><strong>Number of Players:</strong> ${players.length}</p>
             ${packageDetails}
             <p style="margin: 8px 0;"><strong>Program:</strong> ${season} ${year}</p>
@@ -1161,7 +1161,7 @@ async function sendTrainingRegistrationPendingEmail(
 
           <div style="text-align: center; margin: 30px 0;">
             <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}/dashboard" 
-                style="background: #594230; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
+                style="background: #506ee4; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
               Go to Your Dashboard
             </a>
           </div>
@@ -1247,7 +1247,7 @@ async function sendRegistrationPendingEmail(
                onerror="this.onerror=null; this.src='https://bothellselect.com/assets/img/logo.png';" />
         </div>
         
-        <div style="background: #594230; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+        <div style="background: #506ee4; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
           <h1 style="margin: 0;">🏀 Registration Received!</h1>
         </div>
         
@@ -1256,8 +1256,8 @@ async function sendRegistrationPendingEmail(
           
           <p style="font-size: 16px;">Thank you for registering for the Bothell Select ${season} ${year} program! We've received your registration details for ${players.length} player(s).</p>
           
-          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #594230;">
-            <h3 style="margin-top: 0; color: #594230;">Registration Details</h3>
+          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
+            <h3 style="margin-top: 0; color: #506ee4;">Registration Details</h3>
             <p style="margin: 8px 0;"><strong>Number of Players:</strong> ${players.length}</p>
             ${packageDetails}
             <p style="margin: 8px 0;"><strong>Season:</strong> ${season} ${year}</p>
@@ -1471,7 +1471,7 @@ async function sendFormPaymentReceiptEmail(formData, submissionData) {
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
           }
           .header {
-            background: #594230;
+            background: #506ee4;
             color: white;
             padding: 20px;
             text-align: center;
@@ -1512,7 +1512,7 @@ async function sendFormPaymentReceiptEmail(formData, submissionData) {
           .button {
             display: inline-block;
             padding: 10px 20px;
-            background: #594230;
+            background: #506ee4;
             color: white;
             text-decoration: none;
             border-radius: 5px;
@@ -1528,7 +1528,7 @@ async function sendFormPaymentReceiptEmail(formData, submissionData) {
                onerror="this.onerror=null; this.src='https://bothellselect.com/assets/img/logo.png';" />
         </div>
         
-        <div style="background: #594230; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+        <div style="background: #506ee4; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
           <h1 style="margin: 0;">${formTitle}</h1>
           <span style="margin: 10px 0 0; opacity: 0.9;">Thank you for your purchase</span>
         </div>
@@ -1551,7 +1551,7 @@ async function sendFormPaymentReceiptEmail(formData, submissionData) {
                   </tr>
                   <tr>
                     <td><strong>Total:</strong></td>
-                    <td><strong style="color: #594230;">${formattedAmount}</strong></td>
+                    <td><strong style="color: #506ee4;">${formattedAmount}</strong></td>
                   </tr>
                   <tr>
                     <td><strong>Payment Method:</strong></td>
@@ -1673,7 +1673,7 @@ async function sendFormSubmissionConfirmationEmail(formData, submissionData) {
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
           }
           .header {
-            background: #594230;
+            background: #506ee4;
             color: white;
             padding: 20px;
             text-align: center;
@@ -1710,7 +1710,7 @@ async function sendFormSubmissionConfirmationEmail(formData, submissionData) {
             <p>Thank you for submitting the form. We have received your information.</p>
             
             <div class="section">
-              <h3 style="margin-top: 0; color: #594230;">Submission Details</h3>
+              <h3 style="margin-top: 0; color: #506ee4;">Submission Details</h3>
               <table>
                 <tr>
                   <td><strong>Form:</strong></td>
@@ -1731,7 +1731,7 @@ async function sendFormSubmissionConfirmationEmail(formData, submissionData) {
               formDataFull
                 ? `
             <div class="section">
-              <h3 style="margin-top: 0; color: #594230;">Your Submission</h3>
+              <h3 style="margin-top: 0; color: #506ee4;">Your Submission</h3>
               <table>
                 ${Object.entries(formDataFull)
                   .map(
@@ -1837,7 +1837,7 @@ async function sendFormOwnerNotificationEmail({
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
           }
           .header {
-            background: #594230;
+            background: #506ee4;
             color: white;
             padding: 20px;
             text-align: center;
@@ -1852,7 +1852,7 @@ async function sendFormOwnerNotificationEmail({
           }
           .payment-info {
             background: #f8f9fa;
-            border-left: 4px solid #594230;
+            border-left: 4px solid #506ee4;
           }
           .tournament-info {
             background: #f0f9f0;
@@ -1877,7 +1877,7 @@ async function sendFormOwnerNotificationEmail({
           
           <div class="content">
             <div class="section payment-info">
-              <h3 style="margin-top: 0; color: #594230;">Payment Details</h3>
+              <h3 style="margin-top: 0; color: #506ee4;">Payment Details</h3>
               <table>
                 <tr>
                   <td><strong>Form:</strong></td>
@@ -2039,7 +2039,7 @@ async function sendAcceptanceEmail({
         <tr>
           <td style="padding: 10px 0; border-bottom: 1px solid #eee;">
             <strong>Square</strong><br/>
-            <a href="${squareLink}" style="color: #594230; word-break: break-all;">${squareLink}</a>
+            <a href="${squareLink}" style="color: #506ee4; word-break: break-all;">${squareLink}</a>
           </td>
         </tr>`;
     }
@@ -2055,8 +2055,8 @@ async function sendAcceptanceEmail({
     }
 
     const additionalInfoHtml = additionalInfo
-      ? `<div style="background:#f0f4f8;padding:15px;border-radius:5px;margin:20px 0;border-left:4px solid #594230;">
-           <h3 style="margin-top:0;color:#594230;">Additional Information</h3>
+      ? `<div style="background:#f0f4f8;padding:15px;border-radius:5px;margin:20px 0;border-left:4px solid #506ee4;">
+           <h3 style="margin-top:0;color:#506ee4;">Additional Information</h3>
            <p style="margin:0;white-space:pre-line;color:#333;">${additionalInfo}</p>
          </div>`
       : '';
@@ -2102,7 +2102,7 @@ async function sendAcceptanceEmail({
             </div>
 
             <!-- Payment options -->
-            <h3 style="color:#594230;font-size:16px;margin-bottom:8px;">Payment Options</h3>
+            <h3 style="color:#506ee4;font-size:16px;margin-bottom:8px;">Payment Options</h3>
             <table style="width:100%;border-collapse:collapse;border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;">
               <tbody>${paymentRowsHtml}</tbody>
             </table>
@@ -2111,7 +2111,7 @@ async function sendAcceptanceEmail({
 
             <p style="font-size:14px;color:#555;margin-top:24px;">
               If you have any questions please reach out at
-              <a href="mailto:bothellselect@proton.me" style="color:#594230;">bothellselect@proton.me</a>.
+              <a href="mailto:bothellselect@proton.me" style="color:#506ee4;">bothellselect@proton.me</a>.
             </p>
 
             <p style="font-size:15px;font-weight:bold;color:#333;">We look forward to a great season ahead!</p>

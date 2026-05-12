@@ -175,7 +175,7 @@ router.post('/email-receipt', async (req, res) => {
             box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
           }
           .header {
-            background: #594230;
+            background: #506ee4;
             color: white;
             padding: 30px 20px;
             text-align: center;
@@ -231,7 +231,7 @@ router.post('/email-receipt', async (req, res) => {
           }
           .btn-receipt {
             display: inline-block;
-            background: #594230;
+            background: #506ee4;
             color: white;
             text-decoration: none;
             padding: 12px 30px;

@@ -412,8 +412,8 @@ router.post(
                 
                 <p>Thank you for creating an account with Bothell Select Basketball! We're excited to have you join our community.</p>
                 
-                <div style="background: white; padding: 20px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #594230;">
-                  <h3 style="margin-top: 0; color: #594230;">🎉 Account Created Successfully</h3>
+                <div style="background: white; padding: 20px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #506ee4;">
+                  <h3 style="margin-top: 0; color: #506ee4;">🎉 Account Created Successfully</h3>
                   <p><strong>Email:</strong> ${parent.email}</p>
                   <p><strong>Account Type:</strong> ${parent.isCoach ? 'Coach Account' : 'Parent/Guardian Account'}</p>
                   ${parent.isCoach && parent.aauNumber ? `<p><strong>AAU Number:</strong> ${parent.aauNumber}</p>` : ''}
@@ -430,7 +430,7 @@ router.post(
                 
                 <div style="text-align: center; margin: 30px 0;">
                   <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}/dashboard" 
-                     style="background: #594230; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
+                     style="background: #506ee4; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
                     Go to Your Dashboard
                   </a>
                 </div>
@@ -5210,7 +5210,7 @@ router.post(
       <!-- Primary Verification Button -->
       <div style="text-align: center; margin: 30px 0;">
         <a href="${verificationLink}" 
-           style="background-color: #594230; color: white; padding: 14px 32px; text-decoration: none; border-radius: 6px; display: inline-block; font-size: 16px; font-weight: bold;">
+           style="background-color: #506ee4; color: white; padding: 14px 32px; text-decoration: none; border-radius: 6px; display: inline-block; font-size: 16px; font-weight: bold;">
           Verify Email Address
         </a>
       </div>
@@ -5238,7 +5238,7 @@ router.post(
 </div>
         
         <p style="margin: 12px 0 0 0; color: #6c757d; font-size: 13px;">
-          Go to: <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}/verify-email" style="color: #594230;">${process.env.FRONTEND_URL || 'https://bothellselect.com'}/verify-email</a> and paste this token.
+          Go to: <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}/verify-email" style="color: #506ee4;">${process.env.FRONTEND_URL || 'https://bothellselect.com'}/verify-email</a> and paste this token.
         </p>
       </div>
       
@@ -5247,9 +5247,9 @@ router.post(
         <p style="margin-bottom: 8px; color: #6c757d; font-size: 14px;">
           Or copy and paste this full verification link in your browser:
         </p>
-        <div style="background: #f8f9fa; padding: 12px; border-radius: 4px; border-left: 4px solid #594230;">
+        <div style="background: #f8f9fa; padding: 12px; border-radius: 4px; border-left: 4px solid #506ee4;">
           <a href="${verificationLink}" 
-             style="color: #594230; text-decoration: none; word-break: break-all; font-size: 13px;">
+             style="color: #506ee4; text-decoration: none; word-break: break-all; font-size: 13px;">
             ${verificationLink}
           </a>
         </div>
