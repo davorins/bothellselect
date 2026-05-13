@@ -565,7 +565,7 @@ async function sendWelcomeEmail(parentId, playerId) {
               <p style="font-size: 16px;">Welcome to the Bothell Select Basketball family! We're excited to have [player.firstName] join our program.</p>
               
               <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
-                <h3 style="margin-top: 0; color: #506ee4;">Registration Confirmed</h3>
+                <h3 style="margin-top: 0; color: rgba(0, 0, 0, .7);">Registration Confirmed</h3>
                 <p style="margin: 8px 0;"><strong>Player:</strong> [player.fullName]</p>
               </div>
               
@@ -691,7 +691,7 @@ async function sendTournamentWelcomeEmail(parentId, teamId, tournament, year) {
           <p style="font-size: 16px;">Thank you for registering for the ${tournament} ${year} tournament!</p>
           
           <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
-            <h3 style="margin-top: 0; color: #506ee4;">Registration Details</h3>
+            <h3 style="margin-top: 0; color: rgba(0, 0, 0, .7);">Registration Details</h3>
             ${team ? `<p style="margin: 8px 0;"><strong>Team:</strong> ${team.name}</p>` : ''}
             <p style="margin: 8px 0;"><strong>Tournament:</strong> ${tournament} ${year}</p>
             <p style="margin: 8px 0;"><strong>Registration Fee:</strong> $425 per team</p>
@@ -809,7 +809,7 @@ async function sendTournamentRegistrationEmail(
           <p style="font-size: 16px;">Thank you for your payment! Your tournament registration for ${teamCount} team(s) has been confirmed.</p>
           
           <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
-            <h3 style="margin-top: 0; color: #506ee4;">Payment & Registration Details</h3>
+            <h3 style="margin-top: 0; color: rgba(0, 0, 0, .7);">Payment & Registration Details</h3>
             <p style="margin: 8px 0;"><strong>Number of Teams:</strong> ${teamCount}</p>
             <p style="margin: 8px 0;"><strong>Tournament:</strong> ${tournament} ${year}</p>
             <p style="margin: 8px 0;"><strong>Total Amount Paid:</strong> $${totalAmount}</p>
@@ -820,7 +820,7 @@ async function sendTournamentRegistrationEmail(
             teams.length > 0
               ? `
           <div style="margin: 20px 0;">
-            <h4 style="color: #506ee4;">Team Details:</h4>
+            <h4 style="color: rgba(0, 0, 0, .7);">Team Details:</h4>
             ${teamsInfoHtml}
           </div>
           `
@@ -1130,7 +1130,7 @@ async function sendTrainingRegistrationPendingEmail(
           <p style="font-size: 16px;">Thank you for registering for the Bothell Select ${season} ${year} program! We've received your registration details for ${players.length} player(s).</p>
           
           <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
-            <h3 style="margin-top: 0; color: #506ee4;">Training Registration Details</h3>
+            <h3 style="margin-top: 0; color: rgba(0, 0, 0, .7);">Training Registration Details</h3>
             <p style="margin: 8px 0;"><strong>Number of Players:</strong> ${players.length}</p>
             ${packageDetails}
             <p style="margin: 8px 0;"><strong>Program:</strong> ${season} ${year}</p>
@@ -1257,7 +1257,7 @@ async function sendRegistrationPendingEmail(
           <p style="font-size: 16px;">Thank you for registering for the Bothell Select ${season} ${year} program! We've received your registration details for ${players.length} player(s).</p>
           
           <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
-            <h3 style="margin-top: 0; color: #506ee4;">Registration Details</h3>
+            <h3 style="margin-top: 0; color: rgba(0, 0, 0, .7);">Registration Details</h3>
             <p style="margin: 8px 0;"><strong>Number of Players:</strong> ${players.length}</p>
             ${packageDetails}
             <p style="margin: 8px 0;"><strong>Season:</strong> ${season} ${year}</p>
@@ -1551,7 +1551,7 @@ async function sendFormPaymentReceiptEmail(formData, submissionData) {
                   </tr>
                   <tr>
                     <td><strong>Total:</strong></td>
-                    <td><strong style="color: #506ee4;">${formattedAmount}</strong></td>
+                    <td><strong style="color: rgba(0, 0, 0, .7);">${formattedAmount}</strong></td>
                   </tr>
                   <tr>
                     <td><strong>Payment Method:</strong></td>
@@ -1710,7 +1710,7 @@ async function sendFormSubmissionConfirmationEmail(formData, submissionData) {
             <p>Thank you for submitting the form. We have received your information.</p>
             
             <div class="section">
-              <h3 style="margin-top: 0; color: #506ee4;">Submission Details</h3>
+              <h3 style="margin-top: 0; color: rgba(0, 0, 0, .7);">Submission Details</h3>
               <table>
                 <tr>
                   <td><strong>Form:</strong></td>
@@ -1731,7 +1731,7 @@ async function sendFormSubmissionConfirmationEmail(formData, submissionData) {
               formDataFull
                 ? `
             <div class="section">
-              <h3 style="margin-top: 0; color: #506ee4;">Your Submission</h3>
+              <h3 style="margin-top: 0; color: rgba(0, 0, 0, .7);">Your Submission</h3>
               <table>
                 ${Object.entries(formDataFull)
                   .map(
@@ -1877,7 +1877,7 @@ async function sendFormOwnerNotificationEmail({
           
           <div class="content">
             <div class="section payment-info">
-              <h3 style="margin-top: 0; color: #506ee4;">Payment Details</h3>
+              <h3 style="margin-top: 0; color: rgba(0, 0, 0, .7);">Payment Details</h3>
               <table>
                 <tr>
                   <td><strong>Form:</strong></td>
@@ -2039,7 +2039,7 @@ async function sendAcceptanceEmail({
         <tr>
           <td style="padding: 10px 0; border-bottom: 1px solid #eee;">
             <strong>Square</strong><br/>
-            <a href="${squareLink}" style="color: #506ee4; word-break: break-all;">${squareLink}</a>
+            <a href="${squareLink}" style="color: rgba(0, 0, 0, .7); word-break: break-all;">${squareLink}</a>
           </td>
         </tr>`;
     }

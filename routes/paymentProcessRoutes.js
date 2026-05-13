@@ -1046,7 +1046,7 @@ router.post(
                 <p style="font-size: 16px;">Dear ${parent.fullName || 'Valued Customer'},</p>
                 <p style="font-size: 16px;">Thank you for your payment! Your registration has been confirmed.</p>
                 <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
-                  <h3 style="margin-top: 0; color: #506ee4;">Payment Details</h3>
+                  <h3 style="margin-top: 0; color: rgba(0, 0, 0, .7);">Payment Details</h3>
                   <p style="margin: 8px 0;"><strong>Number of Players:</strong> ${players.length}</p>
                   <p style="margin: 8px 0;"><strong>Fee per Player:</strong> $${perPlayerAmount}</p>
                   <p style="margin: 8px 0;"><strong>Total Amount Paid:</strong> $${amount / 100}</p>
@@ -1487,7 +1487,7 @@ router.post(
                 <p style="font-size: 16px;">Dear ${parent.fullName || 'Valued Customer'},</p>
                 <p style="font-size: 16px;">Thank you for your training payment! Your registration has been confirmed.</p>
                 <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
-                  <h3 style="margin-top: 0; color: #506ee4;">Training Payment Details</h3>
+                  <h3 style="margin-top: 0; color: rgba(0, 0, 0, .7);">Training Payment Details</h3>
                   <p style="margin: 8px 0;"><strong>Training Program:</strong> ${players[0]?.season || 'Basketball Training'}</p>
                   <p style="margin: 8px 0;"><strong>Year:</strong> ${players[0]?.year || new Date().getFullYear()}</p>
                   <p style="margin: 8px 0;"><strong>Number of Players:</strong> ${players.length}</p>
@@ -1797,7 +1797,7 @@ router.post('/process', authenticate, async (req, res) => {
               <p style="font-size: 16px;">Dear ${parent.fullName || 'Valued Customer'},</p>
               <p style="font-size: 16px;">Thank you for your payment! Your registration has been confirmed.</p>
               <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
-                <h3 style="margin-top: 0; color: #506ee4;">Payment Details</h3>
+                <h3 style="margin-top: 0; color: rgba(0, 0, 0, .7);">Payment Details</h3>
                 <p style="margin: 8px 0;"><strong>Number of Players:</strong> ${players.length}</p>
                 <p style="margin: 8px 0;"><strong>Total Amount Paid:</strong> $${amount / 100}</p>
                 <p style="margin: 8px 0;"><strong>Payment ID:</strong> ${paymentResult.id}</p>
