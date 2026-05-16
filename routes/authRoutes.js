@@ -18,6 +18,7 @@ const Notification = require('../models/Notification');
 const TournamentConfig = require('../models/TournamentConfig');
 const RegistrationFormConfig = require('../models/RegistrationFormConfig');
 const SeasonEvent = require('../models/SeasonEvent');
+const MergeRequest = require('../models/MergeRequest');
 const TryoutConfig = require('../models/TryoutConfig');
 const {
   comparePasswords,
@@ -701,7 +702,6 @@ router.post('/players/register', authenticate, async (req, res) => {
     });
   }
 
-  // Continue with the existing handler logic...
   const {
     fullName,
     gender,
@@ -717,6 +717,7 @@ router.post('/players/register', authenticate, async (req, res) => {
     tryoutId,
     skipSeasonRegistration = false,
     immediatePaymentFlow = false,
+    forceCreate = false,
   } = req.body;
 
   // Log what we received
@@ -750,35 +751,128 @@ router.post('/players/register', authenticate, async (req, res) => {
     // Declare existingPlayer outside the if block so it's available later
     let existingPlayer = null;
 
-    // 🛡️ DUPLICATE CHECK - Check for player existence
-    // Only check duplicate if we have the required fields
-    if (fullName && dob && gender) {
-      existingPlayer = await Player.findOne({
-        parentId,
-        fullName: { $regex: new RegExp(`^${fullName.trim()}$`, 'i') },
-        dob: new Date(dob),
-        gender: gender,
-      }).session(session);
+    // 🛡️ DUPLICATE CHECK - Aggressive matching
+    if (fullName && parentId && !forceCreate) {
+      console.log('🔍 Running duplicate detection (forceCreate = false)');
 
-      if (existingPlayer) {
+      const normalizedFullName = fullName.trim().toLowerCase();
+      const currentParent = await Parent.findById(parentId).session(session);
+
+      // Get ALL players from different parents (NO filters)
+      const potentialMatches = await Player.find({
+        parentId: { $ne: parentId },
+      })
+        .populate('parentId', 'fullName email additionalGuardians')
+        .session(session);
+
+      console.log(
+        `🔍 Found ${potentialMatches.length} potential matches for "${fullName}"`,
+      );
+
+      let bestMatch = null;
+      let bestScore = 0;
+
+      for (const existingPlayer of potentialMatches) {
+        if (!existingPlayer.parentId) continue;
+
+        const existingName = existingPlayer.fullName?.toLowerCase() || '';
+        if (!existingName) continue;
+
+        let score = 0;
+
+        // Split names into parts
+        const inputParts = normalizedFullName.split(' ');
+        const existingParts = existingName.split(' ');
+
+        // First name match (highest weight)
+        if (inputParts[0] === existingParts[0]) {
+          score += 50;
+        }
+
+        // Last name match (highest weight)
+        const inputLastName = inputParts[inputParts.length - 1];
+        const existingLastName = existingParts[existingParts.length - 1];
+        if (inputLastName === existingLastName) {
+          score += 50;
+        }
+
+        // Check if one name contains the other (e.g., "Ariana Savovic" vs "Ariana Belle Savovic")
+        if (
+          existingName.includes(normalizedFullName) ||
+          normalizedFullName.includes(existingName)
+        ) {
+          score = Math.max(score, 85); // High confidence for containment
+        }
+
+        // Grade match bonus
+        if (grade && existingPlayer.grade) {
+          const inputGrade = String(grade).trim();
+          const existingGrade = String(existingPlayer.grade).trim();
+          if (inputGrade === existingGrade) {
+            score += 20;
+            console.log(`📚 Grade match! +20 points (Total: ${score})`);
+          }
+        }
+
+        // Guardian match bonus (strong indicator)
+        const originalParent = existingPlayer.parentId;
+        const originalGuardianNames = [
+          originalParent.fullName,
+          ...(originalParent.additionalGuardians?.map((g) => g.fullName) || []),
+        ].map((name) => name?.trim().toLowerCase() || '');
+
+        const currentGuardianNames = [
+          currentParent.fullName,
+          ...(currentParent.additionalGuardians?.map((g) => g.fullName) || []),
+        ].map((name) => name?.trim().toLowerCase() || '');
+
+        const hasMatchingGuardian = currentGuardianNames.some((currentName) =>
+          originalGuardianNames.some(
+            (originalName) =>
+              currentName && originalName && currentName === originalName,
+          ),
+        );
+
+        if (hasMatchingGuardian) {
+          score += 30;
+          console.log(`👨‍👩‍👧 Guardian match! +30 points (Total: ${score})`);
+        }
+
+        console.log(`🏆 "${existingPlayer.fullName}" - Score: ${score}`);
+
+        // Lower threshold to 30
+        if (score > bestScore && score >= 30) {
+          bestScore = score;
+          bestMatch = existingPlayer;
+        }
+      }
+
+      if (bestMatch && bestScore >= 30) {
         await session.abortTransaction();
-        console.log('❌ Duplicate player detected:', {
-          fullName,
-          parentId,
-          dob,
-          gender,
-          existingPlayerId: existingPlayer._id,
-        });
-        return res.status(400).json({
-          error: `Player "${fullName}" already exists in your account.`,
-          duplicatePlayerId: existingPlayer._id,
-          existingPlayer: {
-            id: existingPlayer._id,
-            fullName: existingPlayer.fullName,
-            seasons: existingPlayer.seasons,
+
+        console.log('❌ Duplicate detected! Returning 409 with player info');
+        console.log('📋 Best match:', bestMatch.fullName, 'Score:', bestScore);
+
+        return res.status(409).json({
+          error: 'PLAYER_ALREADY_REGISTERED_ELSEWHERE',
+          message: `A player named "${bestMatch.fullName}" already exists under another account.`,
+          duplicateInfo: {
+            playerId: bestMatch._id,
+            playerName: bestMatch.fullName,
+            grade: bestMatch.grade || grade || '',
+            dob: bestMatch.dob,
+            existingParentId: bestMatch.parentId._id,
+            existingParentName: bestMatch.parentId.fullName,
+            existingParentEmail: bestMatch.parentId.email,
+            confidenceScore: bestScore,
+            isExactMatch: bestScore === 100,
           },
         });
       }
+    } else {
+      console.log(
+        `⏭️ Skipping duplicate detection: forceCreate = ${forceCreate}`,
+      );
     }
 
     // Generate tryoutId if season is provided
@@ -6736,8 +6830,6 @@ router.post('/players/check-duplicate', authenticate, async (req, res) => {
 });
 
 // Link an existing player to the current parent's account
-// Both parents share the same player record; player.parentId stays with original owner
-// but new parent gets the player in their players[] array
 router.post('/players/link-to-parent', authenticate, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -6755,6 +6847,15 @@ router.post('/players/link-to-parent', authenticate, async (req, res) => {
     if (!player) {
       await session.abortTransaction();
       return res.status(404).json({ error: 'Player not found' });
+    }
+
+    // Get the original parent (owner of the player)
+    const originalParent = await Parent.findById(player.parentId).session(
+      session,
+    );
+    if (!originalParent) {
+      await session.abortTransaction();
+      return res.status(404).json({ error: 'Original parent not found' });
     }
 
     // Verify the new parent exists
@@ -6789,11 +6890,83 @@ router.post('/players/link-to-parent', authenticate, async (req, res) => {
 
     await session.commitTransaction();
 
+    // ✅ Send notification email to the original parent
+    try {
+      const emailHtml = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { text-align: center; padding: 20px 0; border-bottom: 2px solid #506ee4; }
+            .content { padding: 30px 20px; background: #f9f9f9; border-radius: 8px; margin: 20px 0; }
+            .player-card { background: white; padding: 15px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #28a745; }
+            .button { display: inline-block; padding: 12px 30px; background-color: #506ee4; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; }
+            .footer { text-align: center; padding: 20px; font-size: 12px; color: #666; border-top: 1px solid #eee; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <h2 style="color: #506ee4;">Player Linked to Another Account</h2>
+            </div>
+            
+            <div class="content">
+              <p>Hello <strong>${originalParent.fullName}</strong>,</p>
+              
+              <p><strong>${newParent.fullName}</strong> (${newParent.email}) has linked <strong>${player.fullName}</strong> to their account.</p>
+              
+              <div class="player-card">
+                <strong>Player Details:</strong><br>
+                Name: ${player.fullName}<br>
+                Grade: ${player.grade || 'Not specified'}<br>
+                Gender: ${player.gender || 'Not specified'}
+              </div>
+              
+              <p>Both accounts can now manage ${player.fullName}'s registrations independently. Each parent keeps their own login credentials.</p>
+              
+              <p>If you did not authorize this action or have concerns, please contact us immediately.</p>
+              
+              <div style="text-align: center; margin: 30px 0;">
+                <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}/dashboard" class="button">
+                  Go to Dashboard
+                </a>
+              </div>
+            </div>
+            
+            <div class="footer">
+              <p>Bothell Select Basketball<br>
+              <a href="mailto:bothellselect@proton.me">bothellselect@proton.me</a></p>
+              <p>© ${new Date().getFullYear()} Bothell Select Basketball. All rights reserved.</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `;
+
+      await sendEmail({
+        to: originalParent.email,
+        subject: `Player "${player.fullName}" linked to another account - Bothell Select`,
+        html: emailHtml,
+      });
+
+      console.log(
+        `✅ Notification email sent to ${originalParent.email} about player link`,
+      );
+    } catch (emailError) {
+      console.error('Failed to send link notification email:', emailError);
+      // Don't fail the request if email fails
+    }
+
     res.json({
       success: true,
       message: 'Player linked successfully',
       playerId: player._id,
       playerName: player.fullName,
+      notifiedParent: originalParent.email,
     });
   } catch (error) {
     await session.abortTransaction();
@@ -6806,75 +6979,944 @@ router.post('/players/link-to-parent', authenticate, async (req, res) => {
   }
 });
 
-// Send a merge-account request email to the existing parent
-// No DB state change — just sends email with a deep-link that the existing parent
-// can accept. A production system would store a MergeRequest document; here we
-// use a signed token embedded in the link so the existing parent can confirm.
+// Send a merge-account request to the existing parent
 router.post('/parents/request-merge', authenticate, async (req, res) => {
   try {
-    const { existingParentId, newParentId, playerId } = req.body;
+    const { existingParentId, newParentId, playerId, mergeFullAccount } =
+      req.body;
+
+    const MergeRequest = require('../models/MergeRequest');
 
     const [existingParent, newParent, player] = await Promise.all([
       Parent.findById(existingParentId).select('fullName email'),
-      Parent.findById(newParentId).select('fullName email'),
-      Player.findById(playerId).select('fullName'),
+      Parent.findById(newParentId).select('fullName email phone relationship'),
+      playerId
+        ? Player.findById(playerId).select('fullName grade')
+        : Promise.resolve(null),
     ]);
 
-    if (!existingParent || !newParent || !player) {
-      return res.status(404).json({ error: 'Parent or player not found' });
+    if (!existingParent || !newParent) {
+      return res.status(404).json({ error: 'Parent not found' });
     }
 
-    // Build a short-lived signed token encoding the merge intent
-    const mergePayload = Buffer.from(
-      JSON.stringify({
-        existingParentId,
-        newParentId,
-        playerId,
-        expires: Date.now() + 48 * 60 * 60 * 1000, // 48 hours
-      }),
-    ).toString('base64url');
+    // Check if there's already a pending merge request
+    const existingRequest = await MergeRequest.findOne({
+      fromParentId: newParentId,
+      toParentId: existingParentId,
+      status: 'pending',
+    });
 
-    const mergeLink = `${process.env.FRONTEND_URL || 'https://bothellselect.com'}/accept-merge?token=${mergePayload}`;
+    if (existingRequest) {
+      return res.status(400).json({
+        error: 'A merge request is already pending',
+        message: `A request was already sent to ${existingParent.email}`,
+      });
+    }
 
+    // Generate unique token
+    const token = crypto.randomBytes(32).toString('hex');
+
+    // Create merge request record
+    const mergeRequest = new MergeRequest({
+      fromParentId: newParentId,
+      toParentId: existingParentId,
+      playerId: playerId || null,
+      token,
+      expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000), // 48 hours
+    });
+
+    await mergeRequest.save();
+
+    // Use your frontend URL
+    const FRONTEND_URL =
+      process.env.FRONTEND_URL || 'https://bothellselect.com';
+    const acceptLink = `${FRONTEND_URL}/merge-account?token=${token}`;
+
+    // Beautiful email HTML that matches your original design
     const emailHtml = `
-      <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
-        <h2 style="color:#333;">Account merge request</h2>
-        <p>Hello <strong>${existingParent.fullName}</strong>,</p>
-        <p>
-          <strong>${newParent.fullName}</strong> (${newParent.email}) registered an account
-          and tried to add <strong>${player.fullName}</strong>, who is already linked to your account.
-        </p>
-        <p>They have requested to merge both accounts into one so you can both manage
-          ${player.fullName}'s registration with your own separate logins.
-        </p>
-        <div style="text-align:center;margin:30px 0;">
-          <a href="${mergeLink}"
-             style="background:#506ee4;color:white;padding:14px 28px;text-decoration:none;
-                    border-radius:6px;display:inline-block;font-weight:bold;">
-            Accept merge request
-          </a>
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Account Merge Request</title>
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+          }
+          .email-container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+          }
+          .email-card {
+            background: white;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+          }
+          .email-header {
+            background: linear-gradient(135deg, #506ee4 0%, #3a56c4 100%);
+            padding: 30px;
+            text-align: center;
+            color: white;
+          }
+          .email-header h1 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 600;
+          }
+          .email-header p {
+            margin: 10px 0 0;
+            opacity: 0.9;
+          }
+          .email-content {
+            padding: 30px;
+          }
+          .player-card {
+            background: #f8f9fa;
+            border-left: 4px solid #506ee4;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+          }
+          .player-card p {
+            margin: 5px 0;
+          }
+          .info-box {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            font-size: 14px;
+          }
+          .button {
+            display: inline-block;
+            padding: 14px 32px;
+            background-color: #506ee4;
+            color: white !important;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            margin: 20px 0;
+            font-size: 16px;
+            transition: all 0.3s ease;
+          }
+          .button:hover {
+            background-color: #3a56c4;
+            transform: translateY(-2px);
+          }
+          .footer {
+            text-align: center;
+            padding: 20px;
+            font-size: 12px;
+            color: #666;
+            border-top: 1px solid #eee;
+            background: #f9f9f9;
+          }
+          .link-text {
+            font-size: 12px;
+            color: #666;
+            margin-top: 15px;
+            word-break: break-all;
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 6px;
+          }
+          .warning-text {
+            color: #dc3545;
+            font-size: 12px;
+            margin-top: 15px;
+          }
+          .avatar-placeholder {
+            width: 48px;
+            height: 48px;
+            background: #e9ecef;
+            border-radius: 50%;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 18px;
+            color: #6c757d;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="email-container">
+          <div class="email-card">
+            <div class="email-header">
+              <h1>🔄 Account Merge Request</h1>
+              <p>Combine accounts for easier management</p>
+            </div>
+            
+            <div class="email-content">
+              <p style="font-size: 16px;">Hello <strong>${existingParent.fullName}</strong>,</p>
+              
+              <p><strong>${newParent.fullName}</strong> (${newParent.email}) has requested to merge their account with yours.</p>
+              
+              ${
+                player
+                  ? `
+                <div class="player-card">
+                  <p><strong>👤 Player Details:</strong></p>
+                  <p>Name: ${player.fullName}</p>
+                  ${player.grade ? `<p>Grade: ${player.grade}</p>` : ''}
+                </div>
+                <p>They attempted to add <strong>${player.fullName}</strong> to their account and discovered this player is already registered under your account.</p>
+              `
+                  : `
+                <p>This is a full account merge request - both accounts will be combined into one.</p>
+              `
+              }
+              
+              <p><strong>What happens when you merge accounts?</strong></p>
+              <ul style="margin: 15px 0; padding-left: 20px;">
+                <li>✓ Both accounts will be combined into one master account</li>
+                <li>✓ Each parent keeps their own login credentials</li>
+                <li>✓ All players from both accounts will be accessible by both parents</li>
+                <li>✓ ${newParent.fullName} will be added as a guardian to your account</li>
+                ${player ? `<li>✓ ${player.fullName} will be linked to both accounts</li>` : ''}
+              </ul>
+              
+              <div style="text-align: center;">
+                <a href="${acceptLink}" class="button">
+                  ✓ Accept Merge Request
+                </a>
+              </div>
+              
+              <div class="link-text">
+                <strong>🔗 Or copy and paste this link into your browser:</strong><br>
+                ${acceptLink}
+              </div>
+              
+              <div class="info-box">
+                <strong>⚠️ Important Information:</strong><br>
+                • Each parent keeps their own login credentials after merge<br>
+                • Both parents can manage all players independently<br>
+                • This action cannot be undone once accepted<br>
+                • This merge request will expire in 48 hours
+              </div>
+              
+              <p style="margin-top: 20px;">
+                If you don't know ${newParent.fullName} or didn't expect this request, you can safely ignore this email.
+                No changes will be made to your account unless you approve this request.
+              </p>
+            </div>
+            
+            <div class="footer">
+              <p><strong>Bothell Select Basketball</strong><br>
+              <a href="mailto:bothellselect@proton.me" style="color: #506ee4; text-decoration: none;">bothellselect@proton.me</a></p>
+              <p>© ${new Date().getFullYear()} Bothell Select Basketball. All rights reserved.</p>
+              <p style="font-size: 11px;">This is an automated message, please do not reply to this email.</p>
+            </div>
+          </div>
         </div>
-        <p style="color:#6c757d;font-size:13px;">
-          This link expires in 48 hours. If you don't know ${newParent.fullName} or
-          did not expect this request, you can safely ignore this email.
-        </p>
-      </div>`;
+      </body>
+      </html>`;
 
     await sendEmail({
       to: existingParent.email,
-      subject: `Account merge request from ${newParent.fullName} — Bothell Select`,
+      subject: `Account merge request from ${newParent.fullName} — Bothell Select Basketball`,
       html: emailHtml,
     });
 
     res.json({
       success: true,
       message: `Merge request sent to ${existingParent.email}`,
+      requestId: mergeRequest._id,
     });
   } catch (error) {
     console.error('Merge request error:', error);
-    res
-      .status(500)
-      .json({ error: 'Failed to send merge request', details: error.message });
+    res.status(500).json({
+      error: 'Failed to send merge request',
+      details: error.message,
+    });
+  }
+});
+
+// Approve merge endpoint (handles both single and bulk)
+router.post('/parents/approve-merge', async (req, res) => {
+  const { token } = req.body;
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const MergeRequest = require('../models/MergeRequest');
+
+    const mergeRequest = await MergeRequest.findOne({
+      token,
+      status: 'pending',
+      expiresAt: { $gt: new Date() },
+    }).session(session);
+
+    if (!mergeRequest) {
+      return res
+        .status(400)
+        .json({ error: 'Invalid or expired merge request' });
+    }
+
+    const originalAccount = await Parent.findById(
+      mergeRequest.toParentId,
+    ).session(session);
+    const accountToMerge = await Parent.findById(
+      mergeRequest.fromParentId,
+    ).session(session);
+
+    if (!originalAccount || !accountToMerge) {
+      await session.abortTransaction();
+      return res.status(404).json({ error: 'Parent not found' });
+    }
+
+    // Get players to merge (either single or multiple)
+    let playersToMerge = [];
+    if (mergeRequest.playerIds && mergeRequest.playerIds.length > 0) {
+      playersToMerge = await Player.find({
+        _id: { $in: mergeRequest.playerIds },
+      }).session(session);
+    } else if (mergeRequest.playerId) {
+      const player = await Player.findById(mergeRequest.playerId).session(
+        session,
+      );
+      if (player) playersToMerge = [player];
+    }
+
+    // ✅ Add the merged account's credentials as linked credentials
+    if (!originalAccount.linkedCredentials) {
+      originalAccount.linkedCredentials = [];
+    }
+
+    const alreadyLinked = originalAccount.linkedCredentials.some(
+      (cred) => cred.email === accountToMerge.email,
+    );
+
+    if (!alreadyLinked) {
+      const hashedPassword = await bcrypt.hash(accountToMerge.password, 12);
+      originalAccount.linkedCredentials.push({
+        email: accountToMerge.email,
+        password: hashedPassword,
+        fullName: accountToMerge.fullName,
+        role: accountToMerge.role || 'user',
+        isActive: true,
+        linkedAt: new Date(),
+      });
+    }
+
+    // ✅ Add as additional guardian
+    const alreadyGuardian = originalAccount.additionalGuardians?.some(
+      (g) => g.email === accountToMerge.email,
+    );
+
+    if (!alreadyGuardian) {
+      originalAccount.additionalGuardians.push({
+        fullName: accountToMerge.fullName,
+        email: accountToMerge.email,
+        phone: accountToMerge.phone,
+        relationship: accountToMerge.relationship,
+        address: accountToMerge.address,
+        isCoach: accountToMerge.isCoach || false,
+        aauNumber: accountToMerge.aauNumber || '',
+        isPrimaryParent: false,
+      });
+    }
+
+    // ✅ Link all players from the merged account AND the players in the merge request
+    const allPlayerIds = new Set([
+      ...accountToMerge.players.map((id) => id.toString()),
+      ...playersToMerge.map((p) => p._id.toString()),
+    ]);
+
+    for (const playerId of allPlayerIds) {
+      if (!originalAccount.players.includes(playerId)) {
+        originalAccount.players.push(playerId);
+      }
+    }
+
+    await originalAccount.save({ session });
+
+    // ✅ DELETE the merged account
+    await Parent.findByIdAndDelete(accountToMerge._id).session(session);
+
+    // Update merge request status
+    mergeRequest.status = 'accepted';
+    mergeRequest.respondedAt = new Date();
+    await mergeRequest.save({ session });
+
+    await session.commitTransaction();
+
+    // Send confirmation email
+    const playerNames = playersToMerge.map((p) => p.fullName).join(', ');
+    const playerCount = playersToMerge.length;
+
+    await sendEmail({
+      to: accountToMerge.email,
+      subject: `Account merge completed - ${playerCount} player${playerCount !== 1 ? 's' : ''} merged - Bothell Select Basketball`,
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <title>Account Merge Complete</title>
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; line-height: 1.6; color: #333; background: #f5f5f5; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .card { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            .header { background: linear-gradient(135deg, #28a745 0%, #1e7e34 100%); padding: 30px; text-align: center; color: white; }
+            .content { padding: 30px; }
+            .credentials-box { background: #f8f9fa; border-radius: 8px; padding: 20px; margin: 20px 0; }
+            .button { display: inline-block; padding: 14px 32px; background-color: #506ee4; color: white; text-decoration: none; border-radius: 8px; font-weight: 600; margin: 20px 0; }
+            .footer { text-align: center; padding: 20px; font-size: 12px; color: #666; border-top: 1px solid #eee; background: #f9f9f9; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="card">
+              <div class="header">
+                <h1>✓ Account Merge Complete!</h1>
+              </div>
+              <div class="content">
+                <p>Hello <strong>${accountToMerge.fullName}</strong>,</p>
+                <p>Your account has been successfully merged with <strong>${originalAccount.fullName}</strong>'s account!</p>
+                <div class="credentials-box">
+                  <p><strong>📋 Summary:</strong></p>
+                  <p>• ${playerCount} player${playerCount !== 1 ? 's' : ''} merged: <strong>${playerNames}</strong></p>
+                  <p>• You can still log in with your email (<strong>${accountToMerge.email}</strong>) and password</p>
+                  <p>• All players are now accessible by both accounts</p>
+                </div>
+                <div style="text-align: center;">
+                  <a href="${process.env.FRONTEND_URL}/login" class="button">Log In to Your Account</a>
+                </div>
+              </div>
+              <div class="footer">
+                <p>Bothell Select Basketball<br>© ${new Date().getFullYear()} All rights reserved.</p>
+              </div>
+            </div>
+          </div>
+        </body>
+        </html>
+      `,
+    });
+
+    res.json({
+      success: true,
+      message: `${playerCount} player${playerCount !== 1 ? 's' : ''} merged successfully`,
+      playersMerged: playerCount,
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Merge approval error:', error);
+    res.status(500).json({ error: 'Failed to merge accounts' });
+  } finally {
+    session.endSession();
+  }
+});
+
+// Accept merge request endpoint (GET - opens in browser)
+router.get('/parents/accept-merge/:token', async (req, res) => {
+  const { token } = req.params;
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    console.log(
+      '🔗 Merge acceptance request received for token:',
+      token.substring(0, 10) + '...',
+    );
+
+    const MergeRequest = require('../models/MergeRequest');
+
+    const mergeRequest = await MergeRequest.findOne({
+      token,
+      status: 'pending',
+      expiresAt: { $gt: new Date() },
+    }).session(session);
+
+    if (!mergeRequest) {
+      console.log('❌ No valid merge request found for token:', token);
+      return res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Merge Request Expired</title>
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; text-align: center; padding: 50px; margin: 0; background: #f5f5f5; }
+            .container { max-width: 500px; margin: 0 auto; background: white; border-radius: 10px; padding: 40px; box-shadow: 0 10px 40px rgba(0,0,0,0.1); }
+            .error { color: #dc3545; }
+            .button { display: inline-block; margin-top: 20px; padding: 12px 24px; background-color: #506ee4; color: white; text-decoration: none; border-radius: 6px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <h1 class="error">❌ Merge Request Expired or Invalid</h1>
+            <p>This merge request may have expired (48 hour limit) or already been processed.</p>
+            <p>Please contact support if you need assistance.</p>
+            <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}" class="button">Return to Home</a>
+          </div>
+        </body>
+        </html>
+      `);
+    }
+
+    const fromParent = await Parent.findById(mergeRequest.fromParentId).session(
+      session,
+    );
+    const toParent = await Parent.findById(mergeRequest.toParentId).session(
+      session,
+    );
+    const player = await Player.findById(mergeRequest.playerId).session(
+      session,
+    );
+
+    if (!fromParent || !toParent || !player) {
+      await session.abortTransaction();
+      console.log('❌ Parent or player not found');
+      return res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Error Processing Request</title>
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; text-align: center; padding: 50px; margin: 0; background: #f5f5f5; }
+            .container { max-width: 500px; margin: 0 auto; background: white; border-radius: 10px; padding: 40px; box-shadow: 0 10px 40px rgba(0,0,0,0.1); }
+            .error { color: #dc3545; }
+            .button { display: inline-block; margin-top: 20px; padding: 12px 24px; background-color: #506ee4; color: white; text-decoration: none; border-radius: 6px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <h1 class="error">⚠️ Error Processing Merge Request</h1>
+            <p>Parent or player information could not be found.</p>
+            <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}" class="button">Return to Home</a>
+          </div>
+        </body>
+        </html>
+      `);
+    }
+
+    // Check if player is already linked
+    const isAlreadyLinked = fromParent.players.some(
+      (pid) => pid.toString() === player._id.toString(),
+    );
+
+    if (!isAlreadyLinked) {
+      await Parent.findByIdAndUpdate(
+        mergeRequest.fromParentId,
+        { $addToSet: { players: player._id } },
+        { session },
+      );
+      console.log(
+        `✅ Player ${player.fullName} linked to ${fromParent.fullName}`,
+      );
+    }
+
+    mergeRequest.status = 'accepted';
+    mergeRequest.respondedAt = new Date();
+    await mergeRequest.save({ session });
+
+    await session.commitTransaction();
+
+    // Send confirmation emails
+    try {
+      await sendEmail({
+        to: fromParent.email,
+        subject: 'Account merge accepted - Bothell Select',
+        html: `<p>${toParent.fullName} has accepted your merge request. ${player.fullName} is now linked to both accounts.</p>`,
+      });
+
+      await sendEmail({
+        to: toParent.email,
+        subject: 'Account merge completed - Bothell Select',
+        html: `<p>You have successfully merged accounts. ${player.fullName} is now linked to both accounts.</p>`,
+      });
+    } catch (emailError) {
+      console.error('Failed to send confirmation emails:', emailError);
+    }
+
+    // Return success HTML page
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Merge Successful!</title>
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            text-align: center;
+            padding: 50px;
+            margin: 0;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+          }
+          .container {
+            max-width: 500px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            padding: 40px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+          }
+          .success-icon {
+            font-size: 64px;
+            color: #28a745;
+            margin-bottom: 20px;
+          }
+          h1 { color: #28a745; margin-bottom: 10px; }
+          .button {
+            display: inline-block;
+            margin-top: 30px;
+            padding: 12px 30px;
+            background-color: #506ee4;
+            color: white;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: bold;
+          }
+          .button:hover { background-color: #4058b0; }
+          .details {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin: 20px 0;
+            text-align: left;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <div class="success-icon">✓</div>
+          <h1>Merge Successful!</h1>
+          <p>Accounts have been merged successfully.</p>
+          
+          <div class="details">
+            <strong>${player.fullName}</strong> is now linked to both accounts.<br>
+            Each parent keeps their own login credentials.
+          </div>
+          
+          <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}/login" class="button">
+            Log In to Your Account
+          </a>
+        </div>
+      </body>
+      </html>
+    `);
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Merge accept error:', error);
+    res.send(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Error Processing Request</title>
+        <style>
+          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; text-align: center; padding: 50px; margin: 0; background: #f5f5f5; }
+          .container { max-width: 500px; margin: 0 auto; background: white; border-radius: 10px; padding: 40px; box-shadow: 0 10px 40px rgba(0,0,0,0.1); }
+          .error { color: #dc3545; }
+          .button { display: inline-block; margin-top: 20px; padding: 12px 24px; background-color: #506ee4; color: white; text-decoration: none; border-radius: 6px; }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1 class="error">❌ Error Processing Merge Request</h1>
+          <p>${error.message}</p>
+          <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}" class="button">Return to Home</a>
+        </div>
+      </body>
+      </html>
+    `);
+  } finally {
+    session.endSession();
+  }
+});
+
+// Bulk merge request endpoint
+router.post('/parents/request-merge-bulk', authenticate, async (req, res) => {
+  try {
+    const { existingParentId, newParentId, playerIds } = req.body;
+
+    const MergeRequest = require('../models/MergeRequest');
+
+    // Fetch parent data
+    const [existingParent, newParent, players] = await Promise.all([
+      Parent.findById(existingParentId).select('fullName email'),
+      Parent.findById(newParentId).select('fullName email phone relationship'),
+      Player.find({ _id: { $in: playerIds } }).select('fullName grade'),
+    ]);
+
+    if (!existingParent || !newParent) {
+      return res.status(404).json({ error: 'Parent not found' });
+    }
+
+    // Check if there's already a pending merge request
+    const existingRequest = await MergeRequest.findOne({
+      fromParentId: newParentId,
+      toParentId: existingParentId,
+      status: 'pending',
+    });
+
+    if (existingRequest) {
+      return res.status(400).json({
+        error: 'A merge request is already pending',
+        message: `A request was already sent to ${existingParent.email}`,
+      });
+    }
+
+    // Generate unique token
+    const token = crypto.randomBytes(32).toString('hex');
+
+    // Create merge request record with all player IDs
+    const mergeRequest = new MergeRequest({
+      fromParentId: newParentId,
+      toParentId: existingParentId,
+      playerIds: playerIds, // Store all player IDs as array
+      token,
+      expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000), // 48 hours
+    });
+
+    await mergeRequest.save();
+
+    // Use frontend URL
+    const FRONTEND_URL =
+      process.env.FRONTEND_URL || 'https://bothellselect.com';
+    const acceptLink = `${FRONTEND_URL}/merge-account?token=${token}`;
+
+    // Build players list HTML
+    const playersListHtml = players
+      .map(
+        (player, idx) => `
+      <div style="display: flex; align-items: center; gap: 12px; padding: 10px; background: white; border-radius: 8px; margin-bottom: 8px; border-left: 3px solid #506ee4;">
+        <div style="width: 40px; height: 40px; background: #e8ecf7; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; color: #506ee4;">
+          ${player.fullName
+            .split(' ')
+            .map((p) => p[0])
+            .join('')
+            .toUpperCase()
+            .slice(0, 2)}
+        </div>
+        <div style="flex: 1;">
+          <div style="font-weight: 600;">${player.fullName}</div>
+          <div style="font-size: 12px; color: #666;">Grade ${player.grade || 'Not specified'}</div>
+        </div>
+      </div>
+    `,
+      )
+      .join('');
+
+    // Beautiful email HTML for bulk merge request
+    const emailHtml = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Account Merge Request</title>
+        <style>
+          body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
+          }
+          .email-container {
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+          }
+          .email-card {
+            background: white;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+          }
+          .email-header {
+            background: linear-gradient(135deg, #506ee4 0%, #3a56c4 100%);
+            padding: 30px;
+            text-align: center;
+            color: white;
+          }
+          .email-header h1 {
+            margin: 0;
+            font-size: 24px;
+            font-weight: 600;
+          }
+          .email-header p {
+            margin: 10px 0 0;
+            opacity: 0.9;
+          }
+          .email-content {
+            padding: 30px;
+          }
+          .players-section {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            margin: 20px 0;
+          }
+          .players-section h3 {
+            margin: 0 0 10px 0;
+            font-size: 16px;
+            color: #333;
+          }
+          .info-box {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+            font-size: 14px;
+          }
+          .button {
+            display: inline-block;
+            padding: 14px 32px;
+            background-color: #506ee4;
+            color: white !important;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            margin: 20px 0;
+            font-size: 16px;
+            transition: all 0.3s ease;
+          }
+          .button:hover {
+            background-color: #3a56c4;
+            transform: translateY(-2px);
+          }
+          .footer {
+            text-align: center;
+            padding: 20px;
+            font-size: 12px;
+            color: #666;
+            border-top: 1px solid #eee;
+            background: #f9f9f9;
+          }
+          .link-text {
+            font-size: 12px;
+            color: #666;
+            margin-top: 15px;
+            word-break: break-all;
+            background: #f5f5f5;
+            padding: 10px;
+            border-radius: 6px;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="email-container">
+          <div class="email-card">
+            <div class="email-header">
+              <h1>🔄 Bulk Account Merge Request</h1>
+              <p>Combine multiple players at once</p>
+            </div>
+            
+            <div class="email-content">
+              <p style="font-size: 16px;">Hello <strong>${existingParent.fullName}</strong>,</p>
+              
+              <p><strong>${newParent.fullName}</strong> (${newParent.email}) has requested to merge their account with yours. They are trying to add <strong>${players.length} player${players.length !== 1 ? 's' : ''}</strong> that are already registered under your account.</p>
+              
+              <div class="players-section">
+                <h3>📋 Players to be merged:</h3>
+                ${playersListHtml}
+              </div>
+              
+              <p><strong>What happens when you merge accounts?</strong></p>
+              <ul style="margin: 15px 0; padding-left: 20px;">
+                <li>✓ Both accounts will be combined into one master account</li>
+                <li>✓ Each parent keeps their own login credentials</li>
+                <li>✓ All ${players.length} player${players.length !== 1 ? 's will' : ' will'} be accessible by both parents</li>
+                <li>✓ ${newParent.fullName} will be added as a guardian to your account</li>
+              </ul>
+              
+              <div style="text-align: center;">
+                <a href="${acceptLink}" class="button">
+                  ✓ Accept Merge Request
+                </a>
+              </div>
+              
+              <div class="link-text">
+                <strong>🔗 Or copy and paste this link into your browser:</strong><br>
+                ${acceptLink}
+              </div>
+              
+              <div class="info-box">
+                <strong>⚠️ Important Information:</strong><br>
+                • Each parent keeps their own login credentials after merge<br>
+                • Both parents can manage all players independently<br>
+                • This action cannot be undone once accepted<br>
+                • This merge request will expire in 48 hours
+              </div>
+              
+              <p style="margin-top: 20px;">
+                If you don't know ${newParent.fullName} or didn't expect this request, you can safely ignore this email.
+                No changes will be made to your account unless you approve this request.
+              </p>
+            </div>
+            
+            <div class="footer">
+              <p><strong>Bothell Select Basketball</strong><br>
+              <a href="mailto:bothellselect@proton.me" style="color: #506ee4; text-decoration: none;">bothellselect@proton.me</a></p>
+              <p>© ${new Date().getFullYear()} Bothell Select Basketball. All rights reserved.</p>
+              <p style="font-size: 11px;">This is an automated message, please do not reply to this email.</p>
+            </div>
+          </div>
+        </div>
+      </body>
+      </html>`;
+
+    await sendEmail({
+      to: existingParent.email,
+      subject: `Bulk account merge request from ${newParent.fullName} — ${players.length} player${players.length !== 1 ? 's' : ''} — Bothell Select Basketball`,
+      html: emailHtml,
+    });
+
+    res.json({
+      success: true,
+      message: `Merge request sent to ${existingParent.email}`,
+      requestId: mergeRequest._id,
+      playersCount: players.length,
+    });
+  } catch (error) {
+    console.error('Bulk merge request error:', error);
+    res.status(500).json({
+      error: 'Failed to send merge request',
+      details: error.message,
+    });
+  }
+});
+
+// Get user by email
+router.get('/user/by-email/:email', authenticate, async (req, res) => {
+  try {
+    const { email } = req.params;
+    const user = await Parent.findOne({
+      email: decodeURIComponent(email),
+    }).select('_id email fullName');
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json(user);
+  } catch (error) {
+    console.error('Error finding user by email:', error);
+    res.status(500).json({ error: 'Failed to find user' });
   }
 });
 
