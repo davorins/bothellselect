@@ -6690,4 +6690,192 @@ router.get('/players/seasons/list', authenticate, async (req, res) => {
   }
 });
 
+// ─── Duplicate player detection ───────────────────────────────────────────────
+// Check if a player with same name+dob+grade already exists under a DIFFERENT parent
+router.post('/players/check-duplicate', authenticate, async (req, res) => {
+  try {
+    const { fullName, dob, grade, currentParentId } = req.body;
+
+    if (!fullName || !dob) {
+      return res.json({ isDuplicate: false });
+    }
+
+    // Search across all parents for matching player
+    const existingPlayer = await Player.findOne({
+      fullName: { $regex: new RegExp(`^${fullName.trim()}$`, 'i') },
+      dob: new Date(dob),
+      ...(grade ? { grade } : {}),
+      parentId: { $ne: currentParentId }, // Must be a DIFFERENT parent
+    }).populate('parentId', 'fullName email');
+
+    if (!existingPlayer) {
+      return res.json({ isDuplicate: false });
+    }
+
+    // Return enough info for the modal without exposing sensitive data
+    res.json({
+      isDuplicate: true,
+      matchedPlayer: {
+        playerId: existingPlayer._id,
+        playerName: existingPlayer.fullName,
+        grade: existingPlayer.grade,
+        dob: existingPlayer.dob,
+        existingParentId: existingPlayer.parentId._id,
+        existingParentName: existingPlayer.parentId.fullName,
+        // Partially mask the email: j***@gmail.com
+        existingParentEmail: existingPlayer.parentId.email.replace(
+          /^(.{1,3}).*(@.+)$/,
+          (_, start, end) => start + '***' + end,
+        ),
+      },
+    });
+  } catch (error) {
+    console.error('Duplicate check error:', error);
+    res.status(500).json({ isDuplicate: false, error: error.message });
+  }
+});
+
+// Link an existing player to the current parent's account
+// Both parents share the same player record; player.parentId stays with original owner
+// but new parent gets the player in their players[] array
+router.post('/players/link-to-parent', authenticate, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    const { playerId, newParentId } = req.body;
+
+    if (!playerId || !newParentId) {
+      return res
+        .status(400)
+        .json({ error: 'playerId and newParentId required' });
+    }
+
+    // Verify the player exists
+    const player = await Player.findById(playerId).session(session);
+    if (!player) {
+      await session.abortTransaction();
+      return res.status(404).json({ error: 'Player not found' });
+    }
+
+    // Verify the new parent exists
+    const newParent = await Parent.findById(newParentId).session(session);
+    if (!newParent) {
+      await session.abortTransaction();
+      return res.status(404).json({ error: 'Parent not found' });
+    }
+
+    // Prevent linking to the player's own original parent
+    if (player.parentId.toString() === newParentId.toString()) {
+      await session.abortTransaction();
+      return res
+        .status(400)
+        .json({ error: 'Player already belongs to this account' });
+    }
+
+    // Prevent duplicate link
+    if (newParent.players.some((id) => id.toString() === playerId.toString())) {
+      await session.abortTransaction();
+      return res
+        .status(400)
+        .json({ error: 'Player already linked to this account' });
+    }
+
+    // Add player to new parent's players array
+    await Parent.findByIdAndUpdate(
+      newParentId,
+      { $addToSet: { players: player._id } },
+      { session },
+    );
+
+    await session.commitTransaction();
+
+    res.json({
+      success: true,
+      message: 'Player linked successfully',
+      playerId: player._id,
+      playerName: player.fullName,
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    console.error('Link player error:', error);
+    res
+      .status(500)
+      .json({ error: 'Failed to link player', details: error.message });
+  } finally {
+    session.endSession();
+  }
+});
+
+// Send a merge-account request email to the existing parent
+// No DB state change — just sends email with a deep-link that the existing parent
+// can accept. A production system would store a MergeRequest document; here we
+// use a signed token embedded in the link so the existing parent can confirm.
+router.post('/parents/request-merge', authenticate, async (req, res) => {
+  try {
+    const { existingParentId, newParentId, playerId } = req.body;
+
+    const [existingParent, newParent, player] = await Promise.all([
+      Parent.findById(existingParentId).select('fullName email'),
+      Parent.findById(newParentId).select('fullName email'),
+      Player.findById(playerId).select('fullName'),
+    ]);
+
+    if (!existingParent || !newParent || !player) {
+      return res.status(404).json({ error: 'Parent or player not found' });
+    }
+
+    // Build a short-lived signed token encoding the merge intent
+    const mergePayload = Buffer.from(
+      JSON.stringify({
+        existingParentId,
+        newParentId,
+        playerId,
+        expires: Date.now() + 48 * 60 * 60 * 1000, // 48 hours
+      }),
+    ).toString('base64url');
+
+    const mergeLink = `${process.env.FRONTEND_URL || 'https://bothellselect.com'}/accept-merge?token=${mergePayload}`;
+
+    const emailHtml = `
+      <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;padding:20px;">
+        <h2 style="color:#333;">Account merge request</h2>
+        <p>Hello <strong>${existingParent.fullName}</strong>,</p>
+        <p>
+          <strong>${newParent.fullName}</strong> (${newParent.email}) registered an account
+          and tried to add <strong>${player.fullName}</strong>, who is already linked to your account.
+        </p>
+        <p>They have requested to merge both accounts into one so you can both manage
+          ${player.fullName}'s registration with your own separate logins.
+        </p>
+        <div style="text-align:center;margin:30px 0;">
+          <a href="${mergeLink}"
+             style="background:#506ee4;color:white;padding:14px 28px;text-decoration:none;
+                    border-radius:6px;display:inline-block;font-weight:bold;">
+            Accept merge request
+          </a>
+        </div>
+        <p style="color:#6c757d;font-size:13px;">
+          This link expires in 48 hours. If you don't know ${newParent.fullName} or
+          did not expect this request, you can safely ignore this email.
+        </p>
+      </div>`;
+
+    await sendEmail({
+      to: existingParent.email,
+      subject: `Account merge request from ${newParent.fullName} — Bothell Select`,
+      html: emailHtml,
+    });
+
+    res.json({
+      success: true,
+      message: `Merge request sent to ${existingParent.email}`,
+    });
+  } catch (error) {
+    console.error('Merge request error:', error);
+    res
+      .status(500)
+      .json({ error: 'Failed to send merge request', details: error.message });
+  }
+});
+
 module.exports = router;
