@@ -777,4 +777,9 @@ playerSchema.query.bySeason = function (season, year) {
   });
 };
 
+playerSchema.index(
+  { parentId: 1, fullName: 1, dob: 1 },
+  { unique: true, name: 'unique_player_per_parent' },
+);
+
 module.exports = mongoose.model('Player', playerSchema);

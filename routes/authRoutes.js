@@ -796,12 +796,12 @@ router.post('/players/register', authenticate, async (req, res) => {
           score += 50;
         }
 
-        // Check if one name contains the other (e.g., "Ariana Savovic" vs "Ariana Belle Savovic")
+        // Check if one name contains the other
         if (
           existingName.includes(normalizedFullName) ||
           normalizedFullName.includes(existingName)
         ) {
-          score = Math.max(score, 85); // High confidence for containment
+          score = Math.max(score, 85);
         }
 
         // Grade match bonus
@@ -814,7 +814,7 @@ router.post('/players/register', authenticate, async (req, res) => {
           }
         }
 
-        // Guardian match bonus (strong indicator)
+        // Guardian match bonus
         const originalParent = existingPlayer.parentId;
         const originalGuardianNames = [
           originalParent.fullName,
@@ -840,7 +840,6 @@ router.post('/players/register', authenticate, async (req, res) => {
 
         console.log(`🏆 "${existingPlayer.fullName}" - Score: ${score}`);
 
-        // Lower threshold to 30
         if (score > bestScore && score >= 30) {
           bestScore = score;
           bestMatch = existingPlayer;
@@ -884,7 +883,6 @@ router.post('/players/register', authenticate, async (req, res) => {
     let normalizedSeason = season ? season.trim() : null;
 
     if (!skipSeasonRegistration && normalizedSeason) {
-      // Determine program type based on tryoutId or season name
       const isTrainingEvent =
         finalTryoutId?.includes('-camp-') ||
         finalTryoutId?.includes('-training-') ||
@@ -911,7 +909,6 @@ router.post('/players/register', authenticate, async (req, res) => {
         }
       }
     }
-    // ============ END NORMALIZE SEASON NAMES ============
 
     // Verify parent exists
     const parent = await Parent.findById(parentId).session(session);
@@ -921,7 +918,79 @@ router.post('/players/register', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Parent not found' });
     }
 
-    // Create player data - only include fields that were provided
+    // Check if a player with the same parentId, fullName, and dob already exists
+    if (fullName && dob) {
+      const existingSameParentPlayer = await Player.findOne({
+        parentId: parentId,
+        fullName: fullName.trim(),
+        dob: new Date(dob),
+      }).session(session);
+
+      if (existingSameParentPlayer) {
+        console.log(
+          '♻️ Player already exists for this parent, updating season registration',
+        );
+
+        if (!skipSeasonRegistration && normalizedSeason) {
+          const seasonExists = existingSameParentPlayer.seasons.some(
+            (s) =>
+              s.season === normalizedSeason &&
+              s.year === registrationYear &&
+              s.tryoutId === finalTryoutId,
+          );
+          if (!seasonExists) {
+            existingSameParentPlayer.seasons.push({
+              season: normalizedSeason,
+              year: registrationYear,
+              tryoutId: finalTryoutId,
+              registrationDate: new Date(),
+              paymentStatus: 'pending',
+              paymentComplete: false,
+            });
+            if (registrationYear > existingSameParentPlayer.registrationYear) {
+              existingSameParentPlayer.registrationYear = registrationYear;
+              existingSameParentPlayer.season = normalizedSeason;
+            }
+            await existingSameParentPlayer.save({ session });
+          }
+
+          await Registration.findOneAndUpdate(
+            {
+              player: existingSameParentPlayer._id,
+              parent: parentId,
+              season: normalizedSeason,
+              year: registrationYear,
+              tryoutId: finalTryoutId,
+            },
+            {
+              $setOnInsert: {
+                player: existingSameParentPlayer._id,
+                parent: parentId,
+                season: normalizedSeason,
+                year: registrationYear,
+                tryoutId: finalTryoutId,
+                registrationComplete: true,
+                createdAt: new Date(),
+              },
+              $set: {
+                paymentStatus: 'pending',
+                paymentComplete: false,
+                updatedAt: new Date(),
+              },
+            },
+            { upsert: true, session, runValidators: true },
+          );
+        }
+
+        await session.commitTransaction();
+        return res.status(200).json({
+          message: 'Player already registered, season updated',
+          player: existingSameParentPlayer,
+        });
+      }
+    }
+
+    // Create player data
     const playerData = {
       parentId,
       registrationYear,
@@ -932,7 +1001,6 @@ router.post('/players/register', authenticate, async (req, res) => {
       updatedAt: new Date(),
     };
 
-    // Only add fields that were provided in the request
     if (fullName) playerData.fullName = fullName.trim();
     if (gender) playerData.gender = gender;
     if (dob) playerData.dob = new Date(dob);
@@ -942,11 +1010,8 @@ router.post('/players/register', authenticate, async (req, res) => {
     if (calculatedGrade) playerData.grade = calculatedGrade;
     playerData.isGradeOverridden = isGradeOverridden;
 
-    // Add season data if NOT skipping season registration
     if (!skipSeasonRegistration && normalizedSeason) {
       playerData.season = normalizedSeason;
-
-      // Create season entry
       const seasonEntry = {
         season: normalizedSeason,
         year: registrationYear,
@@ -956,7 +1021,6 @@ router.post('/players/register', authenticate, async (req, res) => {
         paymentComplete: false,
       };
 
-      // Check if we found an existing player (from duplicate check)
       if (
         existingPlayer &&
         existingPlayer.seasons &&
@@ -982,14 +1046,12 @@ router.post('/players/register', authenticate, async (req, res) => {
     const player = new Player(playerData);
     await player.save({ session });
 
-    // Update parent's players array
     await Parent.findByIdAndUpdate(
       parentId,
       { $push: { players: player._id } },
       { session },
     );
 
-    // Create registration with normalized season names
     let registration = null;
 
     if (!skipSeasonRegistration && normalizedSeason) {
@@ -1034,7 +1096,6 @@ router.post('/players/register', authenticate, async (req, res) => {
       parentId,
     });
 
-    // Build response object
     const responseData = {
       message: 'Player registered successfully',
       player: {
@@ -1054,7 +1115,6 @@ router.post('/players/register', authenticate, async (req, res) => {
       },
     };
 
-    // Add registration data if it exists
     if (registration) {
       responseData.registration = {
         id: registration._id,
@@ -1078,10 +1138,34 @@ router.post('/players/register', authenticate, async (req, res) => {
 
     console.error('❌ Error registering player:', error.message, error.stack);
 
+    // Handle duplicate key error from unique index (E11000)
     if (error.code === 11000) {
-      return res.status(400).json({
-        error: 'Duplicate registration detected',
-        details: 'This player is already registered for this season/tryout',
+      try {
+        const existingPlayer = await Player.findOne({
+          parentId: parentId,
+          fullName: fullName.trim(),
+          dob: dob ? new Date(dob) : null,
+        });
+
+        if (existingPlayer) {
+          console.log(
+            '♻️ Duplicate prevented by unique index, returning existing player',
+          );
+          return res.status(200).json({
+            message: 'Player already exists',
+            player: existingPlayer,
+          });
+        }
+      } catch (fetchError) {
+        console.error(
+          'Failed to fetch existing player after duplicate error:',
+          fetchError,
+        );
+      }
+
+      return res.status(409).json({
+        error: 'DUPLICATE_PLAYER',
+        message: 'This player is already registered in your account',
       });
     }
 
