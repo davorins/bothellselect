@@ -780,73 +780,86 @@ router.post('/players/register', authenticate, async (req, res) => {
 
         let score = 0;
 
-        // Split names into parts
         const inputParts = normalizedFullName.split(' ');
         const existingParts = existingName.split(' ');
 
-        // First name match (highest weight)
-        if (inputParts[0] === existingParts[0]) {
-          score += 50;
-        }
+        const inputFirst = inputParts[0];
+        const existingFirst = existingParts[0];
+        const inputLast = inputParts[inputParts.length - 1];
+        const existingLast = existingParts[existingParts.length - 1];
 
-        // Last name match (highest weight)
-        const inputLastName = inputParts[inputParts.length - 1];
-        const existingLastName = existingParts[existingParts.length - 1];
-        if (inputLastName === existingLastName) {
-          score += 50;
-        }
+        // Exact full name match — highest confidence
+        if (normalizedFullName === existingName) {
+          score = 100;
+        } else {
+          // First name MUST match to score any points
+          // Different first name = different person, score stays 0
+          if (inputFirst === existingFirst) {
+            score += 50;
 
-        // Check if one name contains the other
-        if (
-          existingName.includes(normalizedFullName) ||
-          normalizedFullName.includes(existingName)
-        ) {
-          score = Math.max(score, 85);
-        }
+            // Last name match only awarded when first name also matches
+            if (inputLast === existingLast) {
+              score += 30;
+            }
 
-        // Grade match bonus
-        if (grade && existingPlayer.grade) {
-          const inputGrade = String(grade).trim();
-          const existingGrade = String(existingPlayer.grade).trim();
-          if (inputGrade === existingGrade) {
-            score += 20;
-            console.log(`📚 Grade match! +20 points (Total: ${score})`);
+            // One name contains the other (e.g. "John" vs "John Michael")
+            // Only meaningful when first names already match
+            if (
+              existingName.includes(normalizedFullName) ||
+              normalizedFullName.includes(existingName)
+            ) {
+              score = Math.max(score, 85);
+            }
+
+            // Grade match bonus — only runs when first name matches
+            if (grade && existingPlayer.grade) {
+              const inputGrade = String(grade).trim();
+              const existingGrade = String(existingPlayer.grade).trim();
+              if (inputGrade === existingGrade) {
+                score += 10;
+                console.log(`📚 Grade match! +10 points (Total: ${score})`);
+              }
+            }
+
+            // Guardian match bonus — only runs when first name matches
+            const originalParent = existingPlayer.parentId;
+            const originalGuardianNames = [
+              originalParent.fullName,
+              ...(originalParent.additionalGuardians?.map((g) => g.fullName) ||
+                []),
+            ].map((name) => name?.trim().toLowerCase() || '');
+
+            const currentGuardianNames = [
+              currentParent.fullName,
+              ...(currentParent.additionalGuardians?.map((g) => g.fullName) ||
+                []),
+            ].map((name) => name?.trim().toLowerCase() || '');
+
+            const hasMatchingGuardian = currentGuardianNames.some(
+              (currentName) =>
+                originalGuardianNames.some(
+                  (originalName) =>
+                    currentName && originalName && currentName === originalName,
+                ),
+            );
+
+            if (hasMatchingGuardian) {
+              score += 20;
+              console.log(`👨‍👩‍👧 Guardian match! +20 points (Total: ${score})`);
+            }
           }
-        }
-
-        // Guardian match bonus
-        const originalParent = existingPlayer.parentId;
-        const originalGuardianNames = [
-          originalParent.fullName,
-          ...(originalParent.additionalGuardians?.map((g) => g.fullName) || []),
-        ].map((name) => name?.trim().toLowerCase() || '');
-
-        const currentGuardianNames = [
-          currentParent.fullName,
-          ...(currentParent.additionalGuardians?.map((g) => g.fullName) || []),
-        ].map((name) => name?.trim().toLowerCase() || '');
-
-        const hasMatchingGuardian = currentGuardianNames.some((currentName) =>
-          originalGuardianNames.some(
-            (originalName) =>
-              currentName && originalName && currentName === originalName,
-          ),
-        );
-
-        if (hasMatchingGuardian) {
-          score += 30;
-          console.log(`👨‍👩‍👧 Guardian match! +30 points (Total: ${score})`);
         }
 
         console.log(`🏆 "${existingPlayer.fullName}" - Score: ${score}`);
 
-        if (score > bestScore && score >= 30) {
+        // Only consider as a candidate if score meets minimum threshold
+        if (score > bestScore && score >= 80) {
           bestScore = score;
           bestMatch = existingPlayer;
         }
       }
 
-      if (bestMatch && bestScore >= 30) {
+      if (bestMatch && bestScore >= 80) {
         await session.abortTransaction();
 
         console.log('❌ Duplicate detected! Returning 409 with player info');
@@ -2260,22 +2273,30 @@ router.get('/players/by-parent/:parentId', authenticate, async (req, res) => {
   try {
     const { parentId } = req.params;
 
-    // Validate parentId
     if (!mongoose.Types.ObjectId.isValid(parentId)) {
       return res.status(400).json({ error: 'Invalid parent ID format' });
     }
 
-    // Find players by parentId
-    const players = await Player.find({ parentId })
+    // First get the parent to find ALL linked player IDs
+    const parent = await Parent.findById(parentId).select('players').lean();
+
+    if (!parent) {
+      return res.json([]);
+    }
+
+    // Query players that either:
+    // 1. Have this parentId as their primary parent, OR
+    // 2. Are in this parent's players array (linked players)
+    const players = await Player.find({
+      $or: [
+        { parentId: new mongoose.Types.ObjectId(parentId) },
+        { _id: { $in: parent.players || [] } },
+      ],
+    })
       .populate('parentId', 'fullName email')
       .lean();
 
-    // Return empty array instead of 404 for no players found
-    if (!players || players.length === 0) {
-      return res.json([]); // Return empty array instead of error
-    }
-
-    res.json(players);
+    res.json(players || []);
   } catch (error) {
     console.error('Error fetching players by parent:', error);
     res.status(500).json({
@@ -7062,6 +7083,161 @@ router.post('/players/link-to-parent', authenticate, async (req, res) => {
     session.endSession();
   }
 });
+
+// Bulk link multiple existing players to the current parent's account
+router.post(
+  '/players/link-multiple-to-parent',
+  authenticate,
+  async (req, res) => {
+    const session = await mongoose.startSession();
+    session.startTransaction();
+    try {
+      const { playerIds, newParentId } = req.body;
+
+      if (!playerIds || !Array.isArray(playerIds) || playerIds.length === 0) {
+        return res.status(400).json({ error: 'playerIds array is required' });
+      }
+      if (!newParentId) {
+        return res.status(400).json({ error: 'newParentId is required' });
+      }
+
+      // Verify the new parent exists
+      const newParent = await Parent.findById(newParentId).session(session);
+      if (!newParent) {
+        await session.abortTransaction();
+        return res.status(404).json({ error: 'Parent not found' });
+      }
+
+      const linkedPlayers = [];
+      const notifiedParents = new Set();
+
+      for (const playerId of playerIds) {
+        // Verify the player exists
+        const player = await Player.findById(playerId).session(session);
+        if (!player) {
+          await session.abortTransaction();
+          return res
+            .status(404)
+            .json({ error: `Player ${playerId} not found` });
+        }
+
+        // Get the original parent (owner of the player)
+        const originalParent = await Parent.findById(player.parentId).session(
+          session,
+        );
+        if (!originalParent) {
+          await session.abortTransaction();
+          return res.status(404).json({ error: 'Original parent not found' });
+        }
+
+        // Prevent linking to the player's own original parent
+        if (player.parentId.toString() === newParentId.toString()) {
+          await session.abortTransaction();
+          return res
+            .status(400)
+            .json({ error: 'Player already belongs to this account' });
+        }
+
+        // Prevent duplicate link
+        if (
+          newParent.players.some((id) => id.toString() === playerId.toString())
+        ) {
+          continue; // Skip if already linked
+        }
+
+        // Add player to new parent's players array
+        await Parent.findByIdAndUpdate(
+          newParentId,
+          { $addToSet: { players: player._id } },
+          { session },
+        );
+
+        linkedPlayers.push(player);
+        notifiedParents.add(originalParent.email);
+      }
+
+      await session.commitTransaction();
+
+      // Send notification emails to original parents (one per unique parent)
+      for (const originalParentEmail of notifiedParents) {
+        try {
+          const playerNames = linkedPlayers
+            .filter(
+              (p) => p.parentId && p.parentId.email === originalParentEmail,
+            )
+            .map((p) => p.fullName)
+            .join(', ');
+
+          const originalParentObj = linkedPlayers.find(
+            (p) => p.parentId && p.parentId.email === originalParentEmail,
+          )?.parentId;
+
+          if (originalParentObj) {
+            const emailHtml = `
+            <!DOCTYPE html>
+            <html>
+            <head>
+              <meta charset="UTF-8">
+              <meta name="viewport" content="width=device-width, initial-scale=1.0">
+              <style>
+                body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; line-height: 1.6; color: #333; }
+                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+                .header { text-align: center; padding: 20px 0; border-bottom: 2px solid #506ee4; }
+                .content { padding: 30px 20px; background: #f9f9f9; border-radius: 8px; margin: 20px 0; }
+                .player-card { background: white; padding: 15px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #28a745; }
+                .footer { text-align: center; padding: 20px; font-size: 12px; color: #666; border-top: 1px solid #eee; }
+              </style>
+            </head>
+            <body>
+              <div class="container">
+                <div class="header">
+                  <h2 style="color: #506ee4;">Players Linked to Another Account</h2>
+                </div>
+                <div class="content">
+                  <p>Hello <strong>${originalParentObj.fullName}</strong>,</p>
+                  <p><strong>${newParent.fullName}</strong> (${newParent.email}) has linked the following player(s) to their account:</p>
+                  <div class="player-card">
+                    <strong>Player(s):</strong><br>
+                    ${playerNames}
+                  </div>
+                  <p>Both accounts can now manage these players independently. Each parent keeps their own login credentials.</p>
+                  <p>If you did not authorize this action or have concerns, please contact us immediately.</p>
+                </div>
+                <div class="footer">
+                  <p>Bothell Select Basketball<br><a href="mailto:bothellselect@proton.me">bothellselect@proton.me</a></p>
+                </div>
+              </div>
+            </body>
+            </html>
+          `;
+
+            await sendEmail({
+              to: originalParentEmail,
+              subject: `${linkedPlayers.length} player(s) linked to another account - Bothell Select`,
+              html: emailHtml,
+            });
+          }
+        } catch (emailError) {
+          console.error('Failed to send link notification email:', emailError);
+        }
+      }
+
+      res.json({
+        success: true,
+        message: `${linkedPlayers.length} player(s) linked successfully`,
+        players: linkedPlayers,
+      });
+    } catch (error) {
+      await session.abortTransaction();
+      console.error('Bulk link players error:', error);
+      res
+        .status(500)
+        .json({ error: 'Failed to link players', details: error.message });
+    } finally {
+      session.endSession();
+    }
+  },
+);
 
 // Send a merge-account request to the existing parent
 router.post('/parents/request-merge', authenticate, async (req, res) => {
