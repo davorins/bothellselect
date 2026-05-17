@@ -300,6 +300,34 @@ const parentSchema = new mongoose.Schema(
         default: [],
       },
     ],
+    linkedCredentials: [
+      {
+        email: {
+          type: String,
+          required: true,
+          lowercase: true,
+          trim: true,
+        },
+        password: {
+          type: String,
+          required: true,
+          select: false,
+        },
+        fullName: {
+          type: String,
+          required: true,
+          trim: true,
+        },
+        linkedAt: {
+          type: Date,
+          default: Date.now,
+        },
+        isActive: {
+          type: Boolean,
+          default: true,
+        },
+      },
+    ],
     playersSeason: {
       type: [String],
       default: [],
