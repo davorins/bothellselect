@@ -3163,11 +3163,31 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
       paymentId,
     });
 
+    // Generate slug version of tryoutId for matching pending registrations
+    // e.g. "Summer Training Program" 2026 -> "summer-training-program-2026"
+    const slugVersion =
+      season
+        .toLowerCase()
+        .replace(/\s+/g, '-')
+        .replace(/[^\w-]/g, '')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '') +
+      '-' +
+      year;
+
+    console.log('🔍 Will match tryoutId:', tryoutId, 'OR slug:', slugVersion);
+
+    // Find existing registrations matching EITHER the real tryoutId OR the slug
     const existingRegistrations = await Registration.find({
       player: { $in: playerIds },
       parent: parentId,
       season,
       year: parseInt(year),
+      $or: [
+        { tryoutId: tryoutId },
+        { tryoutId: slugVersion },
+        { tryoutId: null },
+      ],
     }).session(session);
 
     console.log('📋 Found existing registrations:', {
@@ -3183,35 +3203,42 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
     // Group registrations by player
     const registrationsByPlayer = {};
     existingRegistrations.forEach((reg) => {
-      const playerId = reg.player.toString();
-      if (!registrationsByPlayer[playerId]) {
-        registrationsByPlayer[playerId] = [];
+      const pid = reg.player.toString();
+      if (!registrationsByPlayer[pid]) {
+        registrationsByPlayer[pid] = [];
       }
-      registrationsByPlayer[playerId].push(reg);
+      registrationsByPlayer[pid].push(reg);
     });
 
     const updatedRegistrationIds = [];
+    const playersUpdate = { modifiedCount: 0 };
 
-    // For each player, find or create the registration
+    // ── Process each player ────────────────────────────────────────────────
     for (const playerId of playerIds) {
+      // ── 1. Update or create Registration document ────────────────────────
       let registration;
       const playerRegistrations = registrationsByPlayer[playerId] || [];
 
       if (playerRegistrations.length > 0) {
         // Use the most recent registration for this player
-        const sortedRegistrations = playerRegistrations.sort(
+        registration = playerRegistrations.sort(
           (a, b) => new Date(b.createdAt) - new Date(a.createdAt),
-        );
-        registration = sortedRegistrations[0];
+        )[0];
+
+        // Normalize tryoutId to the real one (e.g. from slug to ObjectId)
+        if (registration.tryoutId !== tryoutId) {
+          console.log(
+            `🔄 Normalizing registration tryoutId from "${registration.tryoutId}" to "${tryoutId}"`,
+          );
+          registration.tryoutId = tryoutId;
+        }
 
         console.log(`✅ Using existing registration for player ${playerId}:`, {
           registrationId: registration._id,
           tryoutId: registration.tryoutId,
-          existingTryoutId: registration.tryoutId,
-          providedTryoutId: tryoutId,
         });
       } else {
-        // If no registration exists, create one (this shouldn't normally happen)
+        // No registration found — create one
         console.log(
           `⚠️ No registration found for player ${playerId}, creating one`,
         );
@@ -3230,29 +3257,21 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
         await registration.save({ session });
       }
 
-      // Update the registration with payment info
+      // Update registration with payment info
       registration.paymentStatus = paymentStatus;
       registration.paymentComplete = paymentStatus === 'paid';
       registration.paymentDate =
         paymentStatus === 'paid' ? new Date() : undefined;
-
       if (paymentId) registration.paymentId = paymentId;
       if (amountPaid) registration.amountPaid = amountPaid / playerIds.length;
       if (cardLast4) registration.cardLast4 = cardLast4;
       if (cardBrand) registration.cardBrand = cardBrand;
-
       registration.updatedAt = new Date();
 
       await registration.save({ session });
       updatedRegistrationIds.push(registration._id.toString());
-    }
 
-    // ================ FIXED SECTION STARTS HERE ================
-    // Update Player.seasons - FIXED VERSION
-    const playersUpdate = { modifiedCount: 0 };
-
-    for (const playerId of playerIds) {
-      // First, get the player to check existing seasons
+      // ── 2. Update Player.seasons ─────────────────────────────────────────
       const player = await Player.findOne({
         _id: playerId,
         parentId,
@@ -3263,93 +3282,80 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
         continue;
       }
 
-      // Check if season already exists
-      const seasonIndex = player.seasons.findIndex(
-        (s) =>
-          s.season === season &&
-          s.year === parseInt(year) &&
-          s.tryoutId === (tryoutId || null),
-      );
+      // Find matching season entry — check exact tryoutId AND slug version
+      // so a pending entry created with slug gets updated when payment
+      // comes in with the real ObjectId
+      const seasonIndex = player.seasons.findIndex((s) => {
+        if (s.season !== season) return false;
+        if (s.year !== parseInt(year)) return false;
 
-      const seasonData = {
-        season,
-        year: parseInt(year),
-        tryoutId: tryoutId || null,
-        registrationDate: new Date(),
-        paymentComplete: paymentStatus === 'paid',
-        paymentStatus: paymentStatus,
-        ...(paymentId && { paymentId }),
-        ...(amountPaid && { amountPaid: amountPaid / playerIds.length }),
-        ...(cardLast4 && { cardLast4 }),
-        ...(cardBrand && { cardBrand }),
-        ...(paymentStatus === 'paid' && { paymentDate: new Date() }),
-      };
+        // Exact match
+        if (s.tryoutId === tryoutId) return true;
+
+        // Slug match — pending entry used slug, payment uses real ID
+        if (s.tryoutId === slugVersion) return true;
+
+        // Null/empty match
+        if (!s.tryoutId && !tryoutId) return true;
+
+        return false;
+      });
 
       if (seasonIndex !== -1) {
-        // Update existing season
-        await Player.updateOne(
+        // Update existing season entry in place — no duplicate created
+        console.log(
+          `✅ Updating existing season at index ${seasonIndex} for player ${playerId}`,
           {
-            _id: playerId,
-            parentId,
+            oldTryoutId: player.seasons[seasonIndex].tryoutId,
+            newTryoutId: tryoutId,
           },
-          {
-            $set: {
-              [`seasons.${seasonIndex}.paymentComplete`]:
-                paymentStatus === 'paid',
-              [`seasons.${seasonIndex}.paymentStatus`]: paymentStatus,
-              [`seasons.${seasonIndex}.amountPaid`]: amountPaid
-                ? amountPaid / playerIds.length
-                : undefined,
-              [`seasons.${seasonIndex}.paymentId`]: paymentId,
-              [`seasons.${seasonIndex}.cardLast4`]: cardLast4,
-              [`seasons.${seasonIndex}.cardBrand`]: cardBrand,
-              [`seasons.${seasonIndex}.paymentDate`]:
-                paymentStatus === 'paid' ? new Date() : undefined,
-              // Update top-level fields only if this is the latest season
-              ...(player.registrationYear <= parseInt(year) && {
-                paymentComplete: paymentStatus === 'paid',
-                paymentStatus,
-                ...(player.registrationYear < parseInt(year) ||
-                (player.registrationYear === parseInt(year) &&
-                  player.season !== season)
-                  ? {
-                      registrationYear: parseInt(year),
-                      season,
-                    }
-                  : {}),
-              }),
-            },
-          },
-          { session },
         );
-        playersUpdate.modifiedCount++;
-      } else {
-        // Add new season to the array
-        await Player.updateOne(
-          {
-            _id: playerId,
-            parentId,
-          },
-          {
-            $push: {
-              seasons: seasonData,
-            },
-            // Update top-level fields to reflect the new season
-            $set: {
-              registrationYear: parseInt(year),
-              season: season,
-              paymentComplete: paymentStatus === 'paid',
-              paymentStatus,
-            },
-          },
-          { session },
-        );
-        playersUpdate.modifiedCount++;
-      }
-    }
-    // ================ FIXED SECTION ENDS HERE ================
 
-    // Update Parent payment status
+        player.seasons[seasonIndex].paymentComplete = paymentStatus === 'paid';
+        player.seasons[seasonIndex].paymentStatus = paymentStatus;
+        player.seasons[seasonIndex].tryoutId = tryoutId; // normalize to real ID
+        if (paymentId) player.seasons[seasonIndex].paymentId = paymentId;
+        if (amountPaid)
+          player.seasons[seasonIndex].amountPaid =
+            amountPaid / playerIds.length;
+        if (cardLast4) player.seasons[seasonIndex].cardLast4 = cardLast4;
+        if (cardBrand) player.seasons[seasonIndex].cardBrand = cardBrand;
+        if (paymentStatus === 'paid') {
+          player.seasons[seasonIndex].paymentDate = new Date();
+        }
+      } else {
+        // No matching season found — add new entry
+        console.log(
+          `➕ No matching season found, adding new entry for player ${playerId}`,
+        );
+
+        player.seasons.push({
+          season,
+          year: parseInt(year),
+          tryoutId: tryoutId || null,
+          registrationDate: new Date(),
+          paymentComplete: paymentStatus === 'paid',
+          paymentStatus,
+          ...(paymentId && { paymentId }),
+          ...(amountPaid && { amountPaid: amountPaid / playerIds.length }),
+          ...(cardLast4 && { cardLast4 }),
+          ...(cardBrand && { cardBrand }),
+          ...(paymentStatus === 'paid' && { paymentDate: new Date() }),
+        });
+      }
+
+      // Update top-level payment fields
+      if (player.registrationYear <= parseInt(year)) {
+        player.paymentComplete = paymentStatus === 'paid';
+        player.paymentStatus = paymentStatus;
+      }
+
+      player.markModified('seasons');
+      await player.save({ session });
+      playersUpdate.modifiedCount++;
+    }
+
+    // ── Update Parent payment status ───────────────────────────────────────
     const allRegistrations = await Registration.find({
       parent: parentId,
       season,
@@ -7846,10 +7852,17 @@ router.get('/parents/accept-merge/:token', async (req, res) => {
     }
 
     const alreadyGuardian = originalAccount.additionalGuardians.some(
-      (g) => g.email === newUserAccount.email,
+      (g) =>
+        g.email?.toLowerCase() === newUserAccount.email?.toLowerCase() ||
+        g.fullName?.toLowerCase().trim() ===
+          newUserAccount.fullName?.toLowerCase().trim(),
     );
 
-    if (!alreadyGuardian) {
+    if (alreadyGuardian) {
+      console.log(
+        `ℹ️ ${newUserAccount.fullName} is already a guardian on original account — skipping guardian add`,
+      );
+    } else {
       originalAccount.additionalGuardians.push({
         fullName: newUserAccount.fullName,
         email: newUserAccount.email,
