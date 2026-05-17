@@ -7045,59 +7045,54 @@ router.post('/players/link-to-parent', authenticate, async (req, res) => {
     // ✅ Send notification email to the original parent
     try {
       const emailHtml = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { text-align: center; padding: 20px 0; border-bottom: 2px solid #506ee4; }
-            .content { padding: 30px 20px; background: #f9f9f9; border-radius: 8px; margin: 20px 0; }
-            .player-card { background: white; padding: 15px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #28a745; }
-            .button { display: inline-block; padding: 12px 30px; background-color: #506ee4; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; }
-            .footer { text-align: center; padding: 20px; font-size: 12px; color: #666; border-top: 1px solid #eee; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <h2 style="color: #506ee4;">Player Linked to Another Account</h2>
-            </div>
-            
-            <div class="content">
-              <p>Hello <strong>${originalParent.fullName}</strong>,</p>
-              
-              <p><strong>${newParent.fullName}</strong> (${newParent.email}) has linked <strong>${player.fullName}</strong> to their account.</p>
-              
-              <div class="player-card">
-                <strong>Player Details:</strong><br>
-                Name: ${player.fullName}<br>
-                Grade: ${player.grade || 'Not specified'}<br>
-                Gender: ${player.gender || 'Not specified'}
-              </div>
-              
-              <p>Both accounts can now manage ${player.fullName}'s registrations independently. Each parent keeps their own login credentials.</p>
-              
-              <p>If you did not authorize this action or have concerns, please contact us immediately.</p>
-              
-              <div style="text-align: center; margin: 30px 0;">
-                <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}/dashboard" class="button">
-                  Go to Dashboard
-                </a>
-              </div>
-            </div>
-            
-            <div class="footer">
-              <p>Bothell Select Basketball<br>
-              <a href="mailto:bothellselect@proton.me">bothellselect@proton.me</a></p>
-              <p>© ${new Date().getFullYear()} Bothell Select Basketball. All rights reserved.</p>
-            </div>
-          </div>
-        </body>
-        </html>
-      `;
+  <!DOCTYPE html>
+  <html>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; line-height: 1.6; color: #333; }
+      .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+      .header { text-align: center; padding: 20px 0; border-bottom: 2px solid #506ee4; }
+      .logo { max-width: 200px; margin-bottom: 15px; }
+      .content { padding: 30px 20px; background: #f9f9f9; border-radius: 8px; margin: 20px 0; }
+      .player-card { background: white; padding: 15px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #28a745; }
+      .button { display: inline-block; padding: 12px 30px; background-color: #506ee4; color: white; text-decoration: none; border-radius: 6px; font-weight: bold; }
+      .footer { text-align: center; padding: 20px; font-size: 12px; color: #666; border-top: 1px solid #eee; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" class="logo">
+        <h2 style="color: #506ee4;">Player Linked to Another Account</h2>
+      </div>
+      <div class="content">
+        <p>Hello <strong>${originalParent.fullName}</strong>,</p>
+        <p><strong>${newParent.fullName}</strong> (${newParent.email}) has linked <strong>${player.fullName}</strong> to their account.</p>
+        <div class="player-card">
+          <strong>Player Details:</strong><br>
+          Name: ${player.fullName}<br>
+          Grade: ${player.grade || 'Not specified'}<br>
+          Gender: ${player.gender || 'Not specified'}
+        </div>
+        <p>Both accounts can now manage ${player.fullName}'s registrations independently. Each parent keeps their own login credentials.</p>
+        <p>If you did not authorize this action or have concerns, please contact us immediately.</p>
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}/dashboard" class="button">
+            Go to Dashboard
+          </a>
+        </div>
+      </div>
+      <div class="footer">
+        <p>Bothell Select Basketball<br>
+        <a href="mailto:bothellselect@proton.me">bothellselect@proton.me</a></p>
+        <p>© ${new Date().getFullYear()} Bothell Select Basketball. All rights reserved.</p>
+      </div>
+    </div>
+  </body>
+  </html>
+`;
 
       await sendEmail({
         to: originalParent.email,
@@ -7221,42 +7216,45 @@ router.post(
 
           if (originalParentObj) {
             const emailHtml = `
-            <!DOCTYPE html>
-            <html>
-            <head>
-              <meta charset="UTF-8">
-              <meta name="viewport" content="width=device-width, initial-scale=1.0">
-              <style>
-                body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; line-height: 1.6; color: #333; }
-                .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-                .header { text-align: center; padding: 20px 0; border-bottom: 2px solid #506ee4; }
-                .content { padding: 30px 20px; background: #f9f9f9; border-radius: 8px; margin: 20px 0; }
-                .player-card { background: white; padding: 15px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #28a745; }
-                .footer { text-align: center; padding: 20px; font-size: 12px; color: #666; border-top: 1px solid #eee; }
-              </style>
-            </head>
-            <body>
-              <div class="container">
-                <div class="header">
-                  <h2 style="color: #506ee4;">Players Linked to Another Account</h2>
-                </div>
-                <div class="content">
-                  <p>Hello <strong>${originalParentObj.fullName}</strong>,</p>
-                  <p><strong>${newParent.fullName}</strong> (${newParent.email}) has linked the following player(s) to their account:</p>
-                  <div class="player-card">
-                    <strong>Player(s):</strong><br>
-                    ${playerNames}
-                  </div>
-                  <p>Both accounts can now manage these players independently. Each parent keeps their own login credentials.</p>
-                  <p>If you did not authorize this action or have concerns, please contact us immediately.</p>
-                </div>
-                <div class="footer">
-                  <p>Bothell Select Basketball<br><a href="mailto:bothellselect@proton.me">bothellselect@proton.me</a></p>
-                </div>
-              </div>
-            </body>
-            </html>
-          `;
+  <!DOCTYPE html>
+  <html>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; line-height: 1.6; color: #333; }
+      .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+      .header { text-align: center; padding: 20px 0; border-bottom: 2px solid #506ee4; }
+      .logo { max-width: 200px; margin-bottom: 15px; }
+      .content { padding: 30px 20px; background: #f9f9f9; border-radius: 8px; margin: 20px 0; }
+      .player-card { background: white; padding: 15px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #28a745; }
+      .footer { text-align: center; padding: 20px; font-size: 12px; color: #666; border-top: 1px solid #eee; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" class="logo">
+        <h2 style="color: #506ee4;">Players Linked to Another Account</h2>
+      </div>
+      <div class="content">
+        <p>Hello <strong>${originalParentObj.fullName}</strong>,</p>
+        <p><strong>${newParent.fullName}</strong> (${newParent.email}) has linked the following player(s) to their account:</p>
+        <div class="player-card">
+          <strong>Player(s):</strong><br>
+          ${playerNames}
+        </div>
+        <p>Both accounts can now manage these players independently. Each parent keeps their own login credentials.</p>
+        <p>If you did not authorize this action or have concerns, please contact us immediately.</p>
+      </div>
+      <div class="footer">
+        <p>Bothell Select Basketball<br><a href="mailto:bothellselect@proton.me">bothellselect@proton.me</a></p>
+        <p>© ${new Date().getFullYear()} Bothell Select Basketball. All rights reserved.</p>
+      </div>
+    </div>
+  </body>
+  </html>
+`;
 
             await sendEmail({
               to: originalParentEmail,
@@ -7341,192 +7339,173 @@ router.post('/parents/request-merge', authenticate, async (req, res) => {
 
     // Beautiful email HTML that matches your original design
     const emailHtml = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Account Merge Request</title>
-        <style>
-          body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            margin: 0;
-            padding: 0;
-            background-color: #f5f5f5;
-          }
-          .email-container {
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 20px;
-          }
-          .email-card {
-            background: white;
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-          }
-          .email-header {
-            background: linear-gradient(135deg, #506ee4 0%, #3a56c4 100%);
-            padding: 30px;
-            text-align: center;
-            color: white;
-          }
-          .email-header h1 {
-            margin: 0;
-            font-size: 24px;
-            font-weight: 600;
-          }
-          .email-header p {
-            margin: 10px 0 0;
-            opacity: 0.9;
-          }
-          .email-content {
-            padding: 30px;
-          }
-          .player-card {
-            background: #f8f9fa;
-            border-left: 4px solid #506ee4;
-            padding: 15px;
-            border-radius: 8px;
-            margin: 20px 0;
-          }
-          .player-card p {
-            margin: 5px 0;
-          }
-          .info-box {
-            background: #fff3cd;
-            border: 1px solid #ffeaa7;
-            padding: 15px;
-            border-radius: 8px;
-            margin: 20px 0;
-            font-size: 14px;
-          }
-          .button {
-            display: inline-block;
-            padding: 14px 32px;
-            background-color: #506ee4;
-            color: white !important;
-            text-decoration: none;
-            border-radius: 8px;
-            font-weight: 600;
-            margin: 20px 0;
-            font-size: 16px;
-            transition: all 0.3s ease;
-          }
-          .button:hover {
-            background-color: #3a56c4;
-            transform: translateY(-2px);
-          }
-          .footer {
-            text-align: center;
-            padding: 20px;
-            font-size: 12px;
-            color: #666;
-            border-top: 1px solid #eee;
-            background: #f9f9f9;
-          }
-          .link-text {
-            font-size: 12px;
-            color: #666;
-            margin-top: 15px;
-            word-break: break-all;
-            background: #f5f5f5;
-            padding: 10px;
-            border-radius: 6px;
-          }
-          .warning-text {
-            color: #dc3545;
-            font-size: 12px;
-            margin-top: 15px;
-          }
-          .avatar-placeholder {
-            width: 48px;
-            height: 48px;
-            background: #e9ecef;
-            border-radius: 50%;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: bold;
-            font-size: 18px;
-            color: #6c757d;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="email-container">
-          <div class="email-card">
-            <div class="email-header">
-              <h1>🔄 Account Merge Request</h1>
-              <p>Combine accounts for easier management</p>
-            </div>
-            
-            <div class="email-content">
-              <p style="font-size: 16px;">Hello <strong>${existingParent.fullName}</strong>,</p>
-              
-              <p><strong>${newParent.fullName}</strong> (${newParent.email}) has requested to merge their account with yours.</p>
-              
-              ${
-                player
-                  ? `
-                <div class="player-card">
-                  <p><strong>👤 Player Details:</strong></p>
-                  <p>Name: ${player.fullName}</p>
-                  ${player.grade ? `<p>Grade: ${player.grade}</p>` : ''}
-                </div>
-                <p>They attempted to add <strong>${player.fullName}</strong> to their account and discovered this player is already registered under your account.</p>
-              `
-                  : `
-                <p>This is a full account merge request - both accounts will be combined into one.</p>
-              `
-              }
-              
-              <p><strong>What happens when you merge accounts?</strong></p>
-              <ul style="margin: 15px 0; padding-left: 20px;">
-                <li>✓ Both accounts will be combined into one master account</li>
-                <li>✓ Each parent keeps their own login credentials</li>
-                <li>✓ All players from both accounts will be accessible by both parents</li>
-                <li>✓ ${newParent.fullName} will be added as a guardian to your account</li>
-                ${player ? `<li>✓ ${player.fullName} will be linked to both accounts</li>` : ''}
-              </ul>
-              
-              <div style="text-align: center;">
-                <a href="${acceptLink}" class="button">
-                  ✓ Accept Merge Request
-                </a>
-              </div>
-              
-              <div class="link-text">
-                <strong>🔗 Or copy and paste this link into your browser:</strong><br>
-                ${acceptLink}
-              </div>
-              
-              <div class="info-box">
-                <strong>⚠️ Important Information:</strong><br>
-                • Each parent keeps their own login credentials after merge<br>
-                • Both parents can manage all players independently<br>
-                • This action cannot be undone once accepted<br>
-                • This merge request will expire in 48 hours
-              </div>
-              
-              <p style="margin-top: 20px;">
-                If you don't know ${newParent.fullName} or didn't expect this request, you can safely ignore this email.
-                No changes will be made to your account unless you approve this request.
-              </p>
-            </div>
-            
-            <div class="footer">
-              <p><strong>Bothell Select Basketball</strong><br>
-              <a href="mailto:bothellselect@proton.me" style="color: #506ee4; text-decoration: none;">bothellselect@proton.me</a></p>
-              <p>© ${new Date().getFullYear()} Bothell Select Basketball. All rights reserved.</p>
-              <p style="font-size: 11px;">This is an automated message, please do not reply to this email.</p>
-            </div>
-          </div>
+  <!DOCTYPE html>
+  <html>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Account Merge Request</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        line-height: 1.6;
+        color: #333;
+        margin: 0;
+        padding: 0;
+        background-color: #f5f5f5;
+      }
+      .email-container {
+        max-width: 600px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+      .email-card {
+        background: white;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      }
+      .email-header {
+        background: linear-gradient(135deg, #506ee4 0%, #3a56c4 100%);
+        padding: 30px;
+        text-align: center;
+        color: white;
+      }
+      .logo-header { max-width: 180px; margin-bottom: 15px; background: white; padding: 10px; border-radius: 8px; }
+      .email-header h1 {
+        margin: 0;
+        font-size: 24px;
+        font-weight: 600;
+      }
+      .email-header p {
+        margin: 10px 0 0;
+        opacity: 0.9;
+      }
+      .email-content {
+        padding: 30px;
+      }
+      .player-card {
+        background: #f8f9fa;
+        border-left: 4px solid #506ee4;
+        padding: 15px;
+        border-radius: 8px;
+        margin: 20px 0;
+      }
+      .player-card p {
+        margin: 5px 0;
+      }
+      .info-box {
+        background: #fff3cd;
+        border: 1px solid #ffeaa7;
+        padding: 15px;
+        border-radius: 8px;
+        margin: 20px 0;
+        font-size: 14px;
+      }
+      .button {
+        display: inline-block;
+        padding: 14px 32px;
+        background-color: #506ee4;
+        color: white !important;
+        text-decoration: none;
+        border-radius: 8px;
+        font-weight: 600;
+        margin: 20px 0;
+        font-size: 16px;
+        transition: all 0.3s ease;
+      }
+      .button:hover {
+        background-color: #3a56c4;
+        transform: translateY(-2px);
+      }
+      .footer {
+        text-align: center;
+        padding: 20px;
+        font-size: 12px;
+        color: #666;
+        border-top: 1px solid #eee;
+        background: #f9f9f9;
+      }
+      .link-text {
+        font-size: 12px;
+        color: #666;
+        margin-top: 15px;
+        word-break: break-all;
+        background: #f5f5f5;
+        padding: 10px;
+        border-radius: 6px;
+      }
+      .warning-text {
+        color: #dc3545;
+        font-size: 12px;
+        margin-top: 15px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="email-container">
+      <div class="email-card">
+        <div class="email-header">
+          <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" class="logo-header">
+          <h1>🔄 Account Merge Request</h1>
+          <p>Combine accounts for easier management</p>
         </div>
-      </body>
-      </html>`;
+        <div class="email-content">
+          <p style="font-size: 16px;">Hello <strong>${existingParent.fullName}</strong>,</p>
+          <p><strong>${newParent.fullName}</strong> (${newParent.email}) has requested to merge their account with yours.</p>
+          ${
+            player
+              ? `
+            <div class="player-card">
+              <p><strong>👤 Player Details:</strong></p>
+              <p>Name: ${player.fullName}</p>
+              ${player.grade ? `<p>Grade: ${player.grade}</p>` : ''}
+            </div>
+            <p>They attempted to add <strong>${player.fullName}</strong> to their account and discovered this player is already registered under your account.</p>
+          `
+              : `
+            <p>This is a full account merge request - both accounts will be combined into one.</p>
+          `
+          }
+          <p><strong>What happens when you merge accounts?</strong></p>
+          <ul style="margin: 15px 0; padding-left: 20px;">
+            <li>✓ Both accounts will be combined into one master account</li>
+            <li>✓ Each parent keeps their own login credentials</li>
+            <li>✓ All players from both accounts will be accessible by both parents</li>
+            <li>✓ ${newParent.fullName} will be added as a guardian to your account</li>
+            ${player ? `<li>✓ ${player.fullName} will be linked to both accounts</li>` : ''}
+          </ul>
+          <div style="text-align: center;">
+            <a href="${acceptLink}" class="button">
+              ✓ Accept Merge Request
+            </a>
+          </div>
+          <div class="link-text">
+            <strong>🔗 Or copy and paste this link into your browser:</strong><br>
+            ${acceptLink}
+          </div>
+          <div class="info-box">
+            <strong>⚠️ Important Information:</strong><br>
+            • Each parent keeps their own login credentials after merge<br>
+            • Both parents can manage all players independently<br>
+            • This action cannot be undone once accepted<br>
+            • This merge request will expire in 48 hours
+          </div>
+          <p style="margin-top: 20px;">
+            If you don't know ${newParent.fullName} or didn't expect this request, you can safely ignore this email.
+            No changes will be made to your account unless you approve this request.
+          </p>
+        </div>
+        <div class="footer">
+          <p><strong>Bothell Select Basketball</strong><br>
+          <a href="mailto:bothellselect@proton.me" style="color: #506ee4; text-decoration: none;">bothellselect@proton.me</a></p>
+          <p>© ${new Date().getFullYear()} Bothell Select Basketball. All rights reserved.</p>
+          <p style="font-size: 11px;">This is an automated message, please do not reply to this email.</p>
+        </div>
+      </div>
+    </div>
+  </body>
+  </html>`;
 
     await sendEmail({
       to: existingParent.email,
@@ -7648,38 +7627,39 @@ router.post('/parents/approve-merge', async (req, res) => {
         to: accountToMerge.email,
         subject: 'Account merge complete — Bothell Select Basketball',
         html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="background: #f8f9fa; padding: 30px; border-radius: 8px;">
-              <h2 style="color: #28a745; text-align: center;">✓ Account Merge Complete</h2>
-              
-              <p>Hello <strong>${accountToMerge.fullName}</strong>,</p>
-              
-              <p><strong>${originalAccount.fullName}</strong> has accepted your merge request.</p>
-              
-              <div style="background: white; padding: 20px; border-radius: 6px; border-left: 4px solid #28a745; margin: 20px 0;">
-                <h3 style="margin-top: 0;">What this means for you:</h3>
-                <ul>
-                  <li>Your account (<strong>${accountToMerge.email}</strong>) has been merged</li>
-                  <li>You can now log in using your existing email and password</li>
-                  <li>You will have access to all players in the combined account</li>
-                </ul>
-              </div>
-              
-              <div style="text-align: center; margin: 30px 0;">
-                <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}/login"
-                   style="background: #506ee4; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
-                  Log In Now
-                </a>
-              </div>
-              
-              <p style="color: #666; font-size: 14px;">
-                Use your existing credentials:<br>
-                Email: <strong>${accountToMerge.email}</strong><br>
-                Password: <em>your existing password</em>
-              </p>
-            </div>
-          </div>
-        `,
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+      <div style="text-align: center; margin-bottom: 20px;">
+        <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px;">
+      </div>
+      <div style="background: #f8f9fa; padding: 30px; border-radius: 8px;">
+        <h2 style="color: #28a745; text-align: center;">✓ Account Merge Complete</h2>
+        <p>Hello <strong>${accountToMerge.fullName}</strong>,</p>
+        <p><strong>${originalAccount.fullName}</strong> has accepted your merge request.</p>
+        <div style="background: white; padding: 20px; border-radius: 6px; border-left: 4px solid #28a745; margin: 20px 0;">
+          <h3 style="margin-top: 0;">What this means for you:</h3>
+          <ul>
+            <li>Your account (<strong>${accountToMerge.email}</strong>) has been merged</li>
+            <li>You can now log in using your existing email and password</li>
+            <li>You will have access to all players in the combined account</li>
+          </ul>
+        </div>
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}/login"
+             style="background: #506ee4; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
+            Log In Now
+          </a>
+        </div>
+        <p style="color: #666; font-size: 14px;">
+          Use your existing credentials:<br>
+          Email: <strong>${accountToMerge.email}</strong><br>
+          Password: <em>your existing password</em>
+        </p>
+      </div>
+      <div style="text-align: center; margin-top: 20px; color: #666; font-size: 12px;">
+        <p>Bothell Select Basketball — bothellselect@proton.me</p>
+      </div>
+    </div>
+  `,
       });
 
       // Email to the original account owner
@@ -7687,32 +7667,35 @@ router.post('/parents/approve-merge', async (req, res) => {
         to: originalAccount.email,
         subject: 'Account merge approved — Bothell Select Basketball',
         html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
-            <div style="background: #f8f9fa; padding: 30px; border-radius: 8px;">
-              <h2 style="color: #28a745; text-align: center;">✓ Merge Request Approved</h2>
-              
-              <p>Hello <strong>${originalAccount.fullName}</strong>,</p>
-              
-              <p>You have successfully approved the merge request from <strong>${accountToMerge.fullName}</strong>.</p>
-              
-              <div style="background: white; padding: 20px; border-radius: 6px; border-left: 4px solid #506ee4; margin: 20px 0;">
-                <h3 style="margin-top: 0;">Summary:</h3>
-                <ul>
-                  <li><strong>${accountToMerge.fullName}</strong> (${accountToMerge.email}) can now access your account</li>
-                  <li>All their players have been added to your account</li>
-                  <li>Your login credentials remain unchanged</li>
-                </ul>
-              </div>
-              
-              <div style="text-align: center; margin: 30px 0;">
-                <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}/dashboard"
-                   style="background: #506ee4; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
-                  Go to Dashboard
-                </a>
-              </div>
-            </div>
-          </div>
-        `,
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+      <div style="text-align: center; margin-bottom: 20px;">
+        <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px;">
+      </div>
+      <div style="background: #f8f9fa; padding: 30px; border-radius: 8px;">
+        <h2 style="color: #28a745; text-align: center;">✓ Merge Request Approved</h2>
+        <p>Hello <strong>${originalAccount.fullName}</strong>,</p>
+        <p>You have successfully approved the merge request from <strong>${accountToMerge.fullName}</strong>.</p>
+        <div style="background: white; padding: 20px; border-radius: 6px; border-left: 4px solid #506ee4; margin: 20px 0;">
+          <h3 style="margin-top: 0;">Summary:</h3>
+          <ul>
+            <li><strong>${accountToMerge.fullName}</strong> (${accountToMerge.email}) has been added as a guardian on your account</li>
+            <li>They can now log in with their own credentials and access your account</li>
+            <li>All their players have been added to your account</li>
+            <li>Your login credentials remain unchanged</li>
+          </ul>
+        </div>
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}/dashboard"
+             style="background: #506ee4; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
+            Go to Dashboard
+          </a>
+        </div>
+      </div>
+      <div style="text-align: center; margin-top: 20px; color: #666; font-size: 12px;">
+        <p>Bothell Select Basketball — bothellselect@proton.me</p>
+      </div>
+    </div>
+  `,
       });
     } catch (emailError) {
       console.error('Failed to send merge confirmation emails:', emailError);
@@ -7771,8 +7754,9 @@ router.get('/parents/accept-merge/:token', async (req, res) => {
           </style>
         </head>
         <body>
-          <div class="container">
-            <h1 class="error">❌ Merge Request Expired or Invalid</h1>
+         <div class="container">
+  <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" class="logo" style="max-width: 180px; margin-bottom: 20px;">
+  <h1 class="error">❌ Merge Request Expired or Invalid</h1>
             <p>This merge request may have expired (48 hour limit) or already been processed.</p>
             <p>Please contact support if you need assistance.</p>
             <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}" class="button">Return to Home</a>
@@ -7810,8 +7794,9 @@ router.get('/parents/accept-merge/:token', async (req, res) => {
           </style>
         </head>
         <body>
-          <div class="container">
-            <h1 class="error">⚠️ Error Processing Merge Request</h1>
+         <div class="container">
+  <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 180px; margin-bottom: 20px;">
+  <h1 class="error">⚠️ Error Processing Merge Request</h1>
             <p>Account information could not be found.</p>
             <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}" class="button">Return to Home</a>
           </div>
@@ -7987,74 +7972,76 @@ router.get('/parents/accept-merge/:token', async (req, res) => {
 
     // ── Step 7: Return success HTML page ──────────────────────────────────────
     res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Merge Successful!</title>
-        <style>
-          body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
-            text-align: center;
-            padding: 50px;
-            margin: 0;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-          }
-          .container {
-            max-width: 500px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 10px;
-            padding: 40px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-          }
-          .success-icon { font-size: 64px; color: #28a745; margin-bottom: 20px; }
-          h1 { color: #28a745; margin-bottom: 10px; }
-          .details {
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 8px;
-            margin: 20px 0;
-            text-align: left;
-            font-size: 14px;
-            line-height: 1.6;
-          }
-          .button {
-            display: inline-block;
-            margin-top: 20px;
-            padding: 12px 30px;
-            background-color: #506ee4;
-            color: white;
-            text-decoration: none;
-            border-radius: 6px;
-            font-weight: bold;
-          }
-          .button:hover { background-color: #4058b0; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="success-icon">✓</div>
-          <h1>Merge Successful!</h1>
-          <p>The accounts have been merged.</p>
-          <div class="details">
-            <strong>${newUserAccount.fullName}</strong> (${newUserAccount.email}) has been added
-            as a guardian and can now log in using their existing credentials to access
-            the combined account.<br><br>
-            All players from both accounts are now combined.
-          </div>
-          <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}/login" class="button">
-            Log In to Your Account
-          </a>
-        </div>
-      </body>
-      </html>
-    `);
+  <!DOCTYPE html>
+  <html>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Merge Successful!</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+        text-align: center;
+        padding: 50px;
+        margin: 0;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      .container {
+        max-width: 500px;
+        margin: 0 auto;
+        background: white;
+        border-radius: 10px;
+        padding: 40px;
+        box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+      }
+      .logo { max-width: 180px; margin-bottom: 20px; }
+      .success-icon { font-size: 64px; color: #28a745; margin-bottom: 20px; }
+      h1 { color: #28a745; margin-bottom: 10px; }
+      .details {
+        background: #f8f9fa;
+        padding: 20px;
+        border-radius: 8px;
+        margin: 20px 0;
+        text-align: left;
+        font-size: 14px;
+        line-height: 1.6;
+      }
+      .button {
+        display: inline-block;
+        margin-top: 20px;
+        padding: 12px 30px;
+        background-color: #506ee4;
+        color: white;
+        text-decoration: none;
+        border-radius: 6px;
+        font-weight: bold;
+      }
+      .button:hover { background-color: #4058b0; }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" class="logo">
+      <div class="success-icon">✓</div>
+      <h1>Merge Successful!</h1>
+      <p>The accounts have been merged.</p>
+      <div class="details">
+        <strong>${newUserAccount.fullName}</strong> (${newUserAccount.email}) has been added
+        as a guardian and can now log in using their existing credentials to access
+        the combined account.<br><br>
+        All players from both accounts are now combined.
+      </div>
+      <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}/login" class="button">
+        Log In to Your Account
+      </a>
+    </div>
+  </body>
+  </html>
+`);
   } catch (error) {
     await session.abortTransaction();
     console.error('Merge accept error:', error);
@@ -8074,6 +8061,7 @@ router.get('/parents/accept-merge/:token', async (req, res) => {
       </head>
       <body>
         <div class="container">
+        <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 180px; margin-bottom: 20px;">
           <h1 class="error">❌ Error Processing Merge Request</h1>
           <p>${error.message}</p>
           <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}" class="button">Return to Home</a>
@@ -8161,165 +8149,158 @@ router.post('/parents/request-merge-bulk', authenticate, async (req, res) => {
 
     // Beautiful email HTML for bulk merge request
     const emailHtml = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Account Merge Request</title>
-        <style>
-          body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            margin: 0;
-            padding: 0;
-            background-color: #f5f5f5;
-          }
-          .email-container {
-            max-width: 600px;
-            margin: 0 auto;
-            padding: 20px;
-          }
-          .email-card {
-            background: white;
-            border-radius: 12px;
-            overflow: hidden;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-          }
-          .email-header {
-            background: linear-gradient(135deg, #506ee4 0%, #3a56c4 100%);
-            padding: 30px;
-            text-align: center;
-            color: white;
-          }
-          .email-header h1 {
-            margin: 0;
-            font-size: 24px;
-            font-weight: 600;
-          }
-          .email-header p {
-            margin: 10px 0 0;
-            opacity: 0.9;
-          }
-          .email-content {
-            padding: 30px;
-          }
-          .players-section {
-            background: #f8f9fa;
-            border-radius: 8px;
-            padding: 15px;
-            margin: 20px 0;
-          }
-          .players-section h3 {
-            margin: 0 0 10px 0;
-            font-size: 16px;
-            color: #333;
-          }
-          .info-box {
-            background: #fff3cd;
-            border: 1px solid #ffeaa7;
-            padding: 15px;
-            border-radius: 8px;
-            margin: 20px 0;
-            font-size: 14px;
-          }
-          .button {
-            display: inline-block;
-            padding: 14px 32px;
-            background-color: #506ee4;
-            color: white !important;
-            text-decoration: none;
-            border-radius: 8px;
-            font-weight: 600;
-            margin: 20px 0;
-            font-size: 16px;
-            transition: all 0.3s ease;
-          }
-          .button:hover {
-            background-color: #3a56c4;
-            transform: translateY(-2px);
-          }
-          .footer {
-            text-align: center;
-            padding: 20px;
-            font-size: 12px;
-            color: #666;
-            border-top: 1px solid #eee;
-            background: #f9f9f9;
-          }
-          .link-text {
-            font-size: 12px;
-            color: #666;
-            margin-top: 15px;
-            word-break: break-all;
-            background: #f5f5f5;
-            padding: 10px;
-            border-radius: 6px;
-          }
-        </style>
-      </head>
-      <body>
-        <div class="email-container">
-          <div class="email-card">
-            <div class="email-header">
-              <h1>🔄 Bulk Account Merge Request</h1>
-              <p>Combine multiple players at once</p>
-            </div>
-            
-            <div class="email-content">
-              <p style="font-size: 16px;">Hello <strong>${existingParent.fullName}</strong>,</p>
-              
-              <p><strong>${newParent.fullName}</strong> (${newParent.email}) has requested to merge their account with yours. They are trying to add <strong>${players.length} player${players.length !== 1 ? 's' : ''}</strong> that are already registered under your account.</p>
-              
-              <div class="players-section">
-                <h3>📋 Players to be merged:</h3>
-                ${playersListHtml}
-              </div>
-              
-              <p><strong>What happens when you merge accounts?</strong></p>
-              <ul style="margin: 15px 0; padding-left: 20px;">
-                <li>✓ Both accounts will be combined into one master account</li>
-                <li>✓ Each parent keeps their own login credentials</li>
-                <li>✓ All ${players.length} player${players.length !== 1 ? 's will' : ' will'} be accessible by both parents</li>
-                <li>✓ ${newParent.fullName} will be added as a guardian to your account</li>
-              </ul>
-              
-              <div style="text-align: center;">
-                <a href="${acceptLink}" class="button">
-                  ✓ Accept Merge Request
-                </a>
-              </div>
-              
-              <div class="link-text">
-                <strong>🔗 Or copy and paste this link into your browser:</strong><br>
-                ${acceptLink}
-              </div>
-              
-              <div class="info-box">
-                <strong>⚠️ Important Information:</strong><br>
-                • Each parent keeps their own login credentials after merge<br>
-                • Both parents can manage all players independently<br>
-                • This action cannot be undone once accepted<br>
-                • This merge request will expire in 48 hours
-              </div>
-              
-              <p style="margin-top: 20px;">
-                If you don't know ${newParent.fullName} or didn't expect this request, you can safely ignore this email.
-                No changes will be made to your account unless you approve this request.
-              </p>
-            </div>
-            
-            <div class="footer">
-              <p><strong>Bothell Select Basketball</strong><br>
-              <a href="mailto:bothellselect@proton.me" style="color: #506ee4; text-decoration: none;">bothellselect@proton.me</a></p>
-              <p>© ${new Date().getFullYear()} Bothell Select Basketball. All rights reserved.</p>
-              <p style="font-size: 11px;">This is an automated message, please do not reply to this email.</p>
-            </div>
-          </div>
+  <!DOCTYPE html>
+  <html>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Account Merge Request</title>
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        line-height: 1.6;
+        color: #333;
+        margin: 0;
+        padding: 0;
+        background-color: #f5f5f5;
+      }
+      .email-container {
+        max-width: 600px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+      .email-card {
+        background: white;
+        border-radius: 12px;
+        overflow: hidden;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+      }
+      .email-header {
+        background: linear-gradient(135deg, #506ee4 0%, #3a56c4 100%);
+        padding: 30px;
+        text-align: center;
+        color: white;
+      }
+      .logo-header { max-width: 180px; margin-bottom: 15px; background: white; padding: 10px; border-radius: 8px; }
+      .email-header h1 {
+        margin: 0;
+        font-size: 24px;
+        font-weight: 600;
+      }
+      .email-header p {
+        margin: 10px 0 0;
+        opacity: 0.9;
+      }
+      .email-content {
+        padding: 30px;
+      }
+      .players-section {
+        background: #f8f9fa;
+        border-radius: 8px;
+        padding: 15px;
+        margin: 20px 0;
+      }
+      .players-section h3 {
+        margin: 0 0 10px 0;
+        font-size: 16px;
+        color: #333;
+      }
+      .info-box {
+        background: #fff3cd;
+        border: 1px solid #ffeaa7;
+        padding: 15px;
+        border-radius: 8px;
+        margin: 20px 0;
+        font-size: 14px;
+      }
+      .button {
+        display: inline-block;
+        padding: 14px 32px;
+        background-color: #506ee4;
+        color: white !important;
+        text-decoration: none;
+        border-radius: 8px;
+        font-weight: 600;
+        margin: 20px 0;
+        font-size: 16px;
+        transition: all 0.3s ease;
+      }
+      .button:hover {
+        background-color: #3a56c4;
+        transform: translateY(-2px);
+      }
+      .footer {
+        text-align: center;
+        padding: 20px;
+        font-size: 12px;
+        color: #666;
+        border-top: 1px solid #eee;
+        background: #f9f9f9;
+      }
+      .link-text {
+        font-size: 12px;
+        color: #666;
+        margin-top: 15px;
+        word-break: break-all;
+        background: #f5f5f5;
+        padding: 10px;
+        border-radius: 6px;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="email-container">
+      <div class="email-card">
+        <div class="email-header">
+          <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" class="logo-header">
+          <h1>🔄 Bulk Account Merge Request</h1>
+          <p>Combine multiple players at once</p>
         </div>
-      </body>
-      </html>`;
+        <div class="email-content">
+          <p style="font-size: 16px;">Hello <strong>${existingParent.fullName}</strong>,</p>
+          <p><strong>${newParent.fullName}</strong> (${newParent.email}) has requested to merge their account with yours. They are trying to add <strong>${players.length} player${players.length !== 1 ? 's' : ''}</strong> that are already registered under your account.</p>
+          <div class="players-section">
+            <h3>📋 Players to be merged:</h3>
+            ${playersListHtml}
+          </div>
+          <p><strong>What happens when you merge accounts?</strong></p>
+          <ul style="margin: 15px 0; padding-left: 20px;">
+            <li>✓ Both accounts will be combined into one master account</li>
+            <li>✓ Each parent keeps their own login credentials</li>
+            <li>✓ All ${players.length} player${players.length !== 1 ? 's will' : ' will'} be accessible by both parents</li>
+            <li>✓ ${newParent.fullName} will be added as a guardian to your account</li>
+          </ul>
+          <div style="text-align: center;">
+            <a href="${acceptLink}" class="button">
+              ✓ Accept Merge Request
+            </a>
+          </div>
+          <div class="link-text">
+            <strong>🔗 Or copy and paste this link into your browser:</strong><br>
+            ${acceptLink}
+          </div>
+          <div class="info-box">
+            <strong>⚠️ Important Information:</strong><br>
+            • Each parent keeps their own login credentials after merge<br>
+            • Both parents can manage all players independently<br>
+            • This action cannot be undone once accepted<br>
+            • This merge request will expire in 48 hours
+          </div>
+          <p style="margin-top: 20px;">
+            If you don't know ${newParent.fullName} or didn't expect this request, you can safely ignore this email.
+            No changes will be made to your account unless you approve this request.
+          </p>
+        </div>
+        <div class="footer">
+          <p><strong>Bothell Select Basketball</strong><br>
+          <a href="mailto:bothellselect@proton.me" style="color: #506ee4; text-decoration: none;">bothellselect@proton.me</a></p>
+          <p>© ${new Date().getFullYear()} Bothell Select Basketball. All rights reserved.</p>
+          <p style="font-size: 11px;">This is an automated message, please do not reply to this email.</p>
+        </div>
+      </div>
+    </div>
+  </body>
+  </html>`;
 
     await sendEmail({
       to: existingParent.email,
