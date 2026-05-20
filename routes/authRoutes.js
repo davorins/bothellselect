@@ -6406,87 +6406,160 @@ router.delete('/parent/:id', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Parent not found' });
     }
 
+    // ✅ STEP 1: Identify owned vs shared players
+    // Owned players: where THIS parent is the primary owner (parentId matches)
+    const ownedPlayers = await Player.find({
+      parentId: id, // Only players where THIS parent is the owner
+    }).session(session);
+
+    // Shared players: players in parent.players array but owned by someone else
+    const allPlayerIdsInAccount = parent.players || [];
+    const ownedPlayerIds = ownedPlayers.map((p) => p._id.toString());
+    const sharedPlayerIds = allPlayerIdsInAccount.filter(
+      (id) => !ownedPlayerIds.includes(id.toString()),
+    );
+
+    console.log(`📊 Account deletion breakdown for ${parent.email}:`, {
+      totalPlayersInAccount: allPlayerIdsInAccount.length,
+      ownedPlayers: ownedPlayerIds.length,
+      sharedPlayers: sharedPlayerIds.length,
+      ownedPlayerNames: ownedPlayers.map((p) => p.fullName),
+    });
+
+    // ✅ STEP 2: Delete ONLY owned players (and their associated data)
+    for (const player of ownedPlayers) {
+      // Delete player avatar from R2 if it exists and is not a default
+      if (
+        player.avatar &&
+        isR2Url(player.avatar) &&
+        !player.avatar.includes('girl.png') &&
+        !player.avatar.includes('boy.png')
+      ) {
+        try {
+          await deleteFromR2(player.avatar);
+          console.log(`✅ Deleted owned player avatar: ${player.avatar}`);
+        } catch (deleteError) {
+          console.error('Error deleting owned player avatar:', deleteError);
+        }
+      }
+
+      // Delete all registrations for this player
+      await Registration.deleteMany({ player: player._id }).session(session);
+    }
+
+    // Delete owned players
+    if (ownedPlayerIds.length > 0) {
+      await Player.deleteMany({
+        _id: { $in: ownedPlayerIds },
+      }).session(session);
+      console.log(`✅ Deleted ${ownedPlayerIds.length} owned players`);
+    }
+
+    // ✅ STEP 3: Handle shared players - ONLY remove references, DON'T delete the actual players
+    if (sharedPlayerIds.length > 0) {
+      console.log(
+        `ℹ️ Removing references to ${sharedPlayerIds.length} shared players`,
+      );
+
+      // Remove this parent from each shared player's parent references (if any)
+      // Note: The player's primary parentId remains unchanged
+      for (const playerId of sharedPlayerIds) {
+        // Optional: Remove this parent from any secondary references
+        // For now, we just log that we're keeping the player
+        console.log(
+          `  - Keeping shared player ${playerId} (owned by another parent)`,
+        );
+      }
+    }
+
+    // ✅ STEP 4: Remove this parent from other parents' additionalGuardians
+    const parentsWithThisAsGuardian = await Parent.find({
+      'additionalGuardians._id': id,
+    }).session(session);
+
+    for (const otherParent of parentsWithThisAsGuardian) {
+      const guardianIndex = otherParent.additionalGuardians.findIndex(
+        (g) => g._id.toString() === id,
+      );
+      if (guardianIndex !== -1) {
+        otherParent.additionalGuardians.splice(guardianIndex, 1);
+        otherParent.markModified('additionalGuardians');
+        await otherParent.save({ session });
+        console.log(
+          `✅ Removed from additionalGuardians of ${otherParent.email}`,
+        );
+      }
+    }
+
+    // ✅ STEP 5: Remove this parent from linkedCredentials of other accounts
+    const parentsWithThisAsLinked = await Parent.find({
+      'linkedCredentials.email': parent.email,
+    }).session(session);
+
+    for (const otherParent of parentsWithThisAsLinked) {
+      const credIndex = otherParent.linkedCredentials.findIndex(
+        (cred) => cred.email === parent.email,
+      );
+      if (credIndex !== -1) {
+        otherParent.linkedCredentials.splice(credIndex, 1);
+        otherParent.markModified('linkedCredentials');
+        await otherParent.save({ session });
+        console.log(`✅ Removed linked credentials from ${otherParent.email}`);
+      }
+    }
+
+    // ✅ STEP 6: Delete guardian avatars if they exist
     if (parent.additionalGuardians && parent.additionalGuardians.length > 0) {
       for (const guardian of parent.additionalGuardians) {
         if (guardian.avatar && isR2Url(guardian.avatar)) {
           try {
             await deleteFromR2(guardian.avatar);
-            console.log(`Guardian avatar deleted from R2: ${guardian.avatar}`);
+            console.log(`✅ Deleted guardian avatar: ${guardian.avatar}`);
           } catch (deleteError) {
-            console.error(
-              `Error deleting guardian avatar from R2: ${guardian.avatar}`,
-              deleteError,
-            );
-            // Continue with deletion even if avatar delete fails
+            console.error('Error deleting guardian avatar:', deleteError);
           }
         }
       }
     }
 
-    if (parent.players && parent.players.length > 0) {
-      // Get all players associated with this parent
-      const players = await Player.find({
-        _id: { $in: parent.players },
-      }).session(session);
-
-      for (const player of players) {
-        // Delete player avatar if it exists and is not a default avatar
-        if (
-          player.avatar &&
-          isR2Url(player.avatar) &&
-          !player.avatar.includes('girl.png') &&
-          !player.avatar.includes('boy.png')
-        ) {
-          try {
-            await deleteFromR2(player.avatar);
-            console.log(`Player avatar deleted from R2: ${player.avatar}`);
-          } catch (deleteError) {
-            console.error(
-              `Error deleting player avatar from R2: ${player.avatar}`,
-              deleteError,
-            );
-            // Continue with deletion even if avatar delete fails
-          }
-        }
-      }
-
-      // Delete all players associated with this parent
-      await Player.deleteMany({
-        _id: { $in: parent.players },
-      }).session(session);
-    }
-
-    // Delete all registrations associated with this parent
-    await Registration.deleteMany({
-      parent: id,
-    }).session(session);
-
-    // Delete all payments associated with this parent
-    await Payment.deleteMany({
-      parentId: id,
-    }).session(session);
-
-    // Delete parent avatar from R2 if exists
+    // ✅ STEP 7: Delete parent's own avatar
     if (parent.avatar && isR2Url(parent.avatar)) {
       try {
         await deleteFromR2(parent.avatar);
-        console.log('Parent avatar deleted from R2');
+        console.log('✅ Deleted parent avatar');
       } catch (deleteError) {
-        console.error('Error deleting avatar from R2:', deleteError);
-        // Continue with deletion even if avatar delete fails
+        console.error('Error deleting parent avatar:', deleteError);
       }
     }
 
-    // Finally, delete the parent
+    // ✅ STEP 8: Delete parent's own registrations and payments
+    await Registration.deleteMany({ parent: id }).session(session);
+    await Payment.deleteMany({ parentId: id }).session(session);
+
+    // ✅ STEP 9: Finally, delete the parent account
     await Parent.findByIdAndDelete(id).session(session);
 
     await session.commitTransaction();
 
     console.log(`✅ Parent account deleted: ${id} (${parent.email})`);
+    console.log(`   📊 Summary:`);
+    console.log(`   - ${ownedPlayerIds.length} owned players DELETED`);
+    console.log(`   - ${sharedPlayerIds.length} shared players PRESERVED`);
+    console.log(
+      `   - Removed from ${parentsWithThisAsGuardian.length} guardian lists`,
+    );
+    console.log(
+      `   - Removed from ${parentsWithThisAsLinked.length} linked credential lists`,
+    );
 
     res.json({
       success: true,
-      message: 'Account and all associated data deleted successfully',
+      message:
+        'Account deleted successfully. Shared players remain with their original owners.',
+      details: {
+        ownedPlayersDeleted: ownedPlayerIds.length,
+        sharedPlayersPreserved: sharedPlayerIds.length,
+      },
     });
   } catch (error) {
     await session.abortTransaction();
