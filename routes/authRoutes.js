@@ -1162,10 +1162,80 @@ router.post('/players/register', authenticate, async (req, res) => {
 
         if (existingPlayer) {
           console.log(
-            '♻️ Duplicate prevented by unique index, returning existing player',
+            '♻️ Duplicate prevented by unique index, updating season for existing player',
           );
+
+          // ✅ ADD THIS BLOCK - Add the new season to existing player
+          const normalizedSeason = season ? season.trim() : null;
+          const finalTryoutId =
+            tryoutId ||
+            (season ? await generateTryoutId(season, registrationYear) : null);
+
+          if (!skipSeasonRegistration && normalizedSeason) {
+            const seasonExists = existingPlayer.seasons.some(
+              (s) =>
+                s.season === normalizedSeason &&
+                s.year === registrationYear &&
+                s.tryoutId === finalTryoutId,
+            );
+
+            if (!seasonExists) {
+              console.log(
+                `✅ Adding new season ${normalizedSeason} ${registrationYear} to existing player`,
+              );
+              existingPlayer.seasons.push({
+                season: normalizedSeason,
+                year: registrationYear,
+                tryoutId: finalTryoutId,
+                registrationDate: new Date(),
+                paymentStatus: 'pending',
+                paymentComplete: false,
+              });
+
+              // Update top-level fields if this is a newer season
+              if (registrationYear > existingPlayer.registrationYear) {
+                existingPlayer.registrationYear = registrationYear;
+                existingPlayer.season = normalizedSeason;
+              }
+
+              await existingPlayer.save();
+            } else {
+              console.log(
+                `ℹ️ Season ${normalizedSeason} ${registrationYear} already exists`,
+              );
+            }
+
+            // Also update/create the Registration document
+            await Registration.findOneAndUpdate(
+              {
+                player: existingPlayer._id,
+                parent: parentId,
+                season: normalizedSeason,
+                year: registrationYear,
+                tryoutId: finalTryoutId,
+              },
+              {
+                $setOnInsert: {
+                  player: existingPlayer._id,
+                  parent: parentId,
+                  season: normalizedSeason,
+                  year: registrationYear,
+                  tryoutId: finalTryoutId,
+                  registrationComplete: true,
+                  createdAt: new Date(),
+                },
+                $set: {
+                  paymentStatus: 'pending',
+                  paymentComplete: false,
+                  updatedAt: new Date(),
+                },
+              },
+              { upsert: true, runValidators: true },
+            );
+          }
+
           return res.status(200).json({
-            message: 'Player already exists',
+            message: 'Player already exists, season updated',
             player: existingPlayer,
           });
         }
