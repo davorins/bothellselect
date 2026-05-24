@@ -44,6 +44,7 @@ const pageBuilder = require('./routes/pageBuilderRoutes');
 const initCalendarEvents = require('./scripts/initCalendarEvents');
 const healthCheck = require('./health');
 const formFieldRoutes = require('./routes/formFieldRoutes');
+const advertisementRoutes = require('./routes/advertisementRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -111,6 +112,7 @@ app.use(
 app.use(express.json());
 
 // Use routes
+app.use('/api/ads', advertisementRoutes);
 app.use('/api', authRoutes);
 app.use('/api', notificationRoutes);
 app.use('/api/search', searchRoutes);
