@@ -21,9 +21,9 @@ const TrainingSessionSchema = new mongoose.Schema({
   id: { type: String, required: true },
   number: { type: Number, required: true },
   date: { type: String, default: '' },
-  startTime: { type: String, required: true },
-  endTime: { type: String, required: true },
-  grades: { type: String, required: true },
+  startTime: { type: String, required: false },
+  endTime: { type: String, required: false },
+  grades: { type: String, required: false },
   location: { type: TrainingLocationSchema, default: () => ({}) },
 });
 
