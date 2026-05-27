@@ -55,99 +55,145 @@ const parseArrayField = (value) => {
 // GET /ads/active
 exports.getActiveAds = async (req, res) => {
   try {
-    const { placement, role, pageSlug } = req.query;
+    const { placement, role, pageSlug, preview } = req.query;
     const userId = getUserId(req);
     const now = new Date();
     const userRole = role || req.user?.role || 'guest';
 
-    // ── Build query using $and for ALL conditions ──────────────────────────
-    // This avoids the previous bug where Object.assign clobbered an existing
-    // $or key, causing page-targeting to silently drop.
-    const andClauses = [
-      // Date range: not started yet
-      {
-        $or: [{ startDate: { $exists: false } }, { startDate: { $lte: now } }],
-      },
-      // Date range: already expired
-      {
-        $or: [{ endDate: { $exists: false } }, { endDate: { $gte: now } }],
-      },
-      // Role targeting: empty array = show to all
-      {
-        $or: [
-          { targetRoles: { $in: [userRole] } },
-          { targetRoles: { $size: 0 } },
-          { targetRoles: { $exists: false } },
-        ],
-      },
-    ];
+    const isAdmin = req.user?.role === 'admin' || req.user?.isSuperAdmin;
+    const isLocalDev = process.env.NODE_ENV === 'development';
 
-    // Page targeting (only restrict when a specific slug is given)
-    if (pageSlug && pageSlug !== 'all') {
-      andClauses.push({
-        $or: [
-          { targetPages: pageSlug },
-          { targetPages: 'all' },
-          { targetPages: { $size: 0 } },
-          { targetPages: { $exists: false } },
-        ],
-      });
-    }
+    // Preview mode: admins always, or anyone in local dev
+    const isPreviewMode = preview === 'true' && (isAdmin || isLocalDev);
 
-    const query = {
-      isActive: true,
-      $and: andClauses,
-    };
+    console.log('=========================================');
+    console.log(`📢 getActiveAds called`);
+    console.log(`   placement: ${placement}`);
+    console.log(`   preview param: ${preview}`);
+    console.log(`   isLocalDev: ${isLocalDev}`);
+    console.log(`   isPreviewMode: ${isPreviewMode}`);
+    console.log(`   user authenticated: ${!!req.user}`);
+    console.log('=========================================');
 
-    if (placement) query.placement = placement;
+    let ads = [];
 
-    let ads = await Advertisement.find(query).sort('displayOrder').lean();
+    if (isPreviewMode) {
+      // PREVIEW MODE: Get ALL ads regardless of status
+      const query = {};
+      if (placement) query.placement = placement;
 
-    // ── Frequency capping ─────────────────────────────────────────────────
-    const cappedAds = [];
-    for (const ad of ads) {
-      if (!ad.showOnceOnly) {
-        cappedAds.push(ad);
-        continue;
+      console.log(`🔍 PREVIEW MODE Query:`, JSON.stringify(query));
+
+      ads = await Advertisement.find(query).sort('displayOrder').lean();
+
+      console.log(`🔍 PREVIEW MODE: Found ${ads.length} total ads`);
+      if (ads.length > 0) {
+        ads.forEach((ad, index) => {
+          console.log(
+            `   ${index + 1}. ${ad.businessName} - isActive: ${ad.isActive}, placement: ${ad.placement}`,
+          );
+        });
+      }
+    } else {
+      // PRODUCTION MODE: Only active, in-date ads
+      console.log('🏭 PRODUCTION MODE: Applying filters');
+
+      const andClauses = [
+        { isActive: true },
+        {
+          $or: [
+            { startDate: { $exists: false } },
+            { startDate: { $lte: now } },
+          ],
+        },
+        {
+          $or: [{ endDate: { $exists: false } }, { endDate: { $gte: now } }],
+        },
+        {
+          $or: [
+            { targetRoles: { $in: [userRole] } },
+            { targetRoles: { $size: 0 } },
+            { targetRoles: { $exists: false } },
+          ],
+        },
+      ];
+
+      if (pageSlug && pageSlug !== 'all') {
+        andClauses.push({
+          $or: [
+            { targetPages: pageSlug },
+            { targetPages: 'all' },
+            { targetPages: { $size: 0 } },
+            { targetPages: { $exists: false } },
+          ],
+        });
       }
 
-      const existing = await AdImpression.findOne({ adId: ad._id, userId });
+      if (placement) andClauses.push({ placement });
 
-      if (!existing) {
-        cappedAds.push(ad);
-        continue;
-      }
+      ads = await Advertisement.find({ $and: andClauses })
+        .sort('displayOrder')
+        .lean();
 
-      // Cooldown: show again after N days
-      if (ad.cooldownDays > 0) {
-        const daysSince = (now - existing.viewedAt) / (1000 * 60 * 60 * 24);
-        if (daysSince >= ad.cooldownDays) {
+      console.log(`🏭 PRODUCTION MODE: Found ${ads.length} active ads`);
+
+      // Apply frequency capping for production
+      const cappedAds = [];
+      for (const ad of ads) {
+        if (!ad.showOnceOnly) {
           cappedAds.push(ad);
+          continue;
+        }
+
+        const existing = await AdImpression.findOne({ adId: ad._id, userId });
+
+        if (!existing) {
+          cappedAds.push(ad);
+          continue;
+        }
+
+        if (ad.cooldownDays > 0) {
+          const daysSince = (now - existing.viewedAt) / (1000 * 60 * 60 * 24);
+          if (daysSince >= ad.cooldownDays) {
+            cappedAds.push(ad);
+          }
         }
       }
-      // else: showOnceOnly + no cooldown = never show again after first view
+      ads = cappedAds;
+
+      // Record impressions for production
+      for (const ad of ads) {
+        AdImpression.create({
+          adId: ad._id,
+          userId,
+          userType: req.user ? 'authenticated' : 'guest',
+          userRole,
+          ipAddress: req.ip || req.headers['x-forwarded-for'] || 'unknown',
+          userAgent: req.headers['user-agent'],
+          pageUrl: req.headers.referer || req.headers.origin,
+        }).catch((err) => console.error('Error recording impression:', err));
+
+        Advertisement.findByIdAndUpdate(ad._id, {
+          $inc: { impressions: 1 },
+        }).catch((err) =>
+          console.error('Error incrementing impressions:', err),
+        );
+      }
     }
 
-    // ── Record impressions (fire-and-forget) ──────────────────────────────
-    for (const ad of cappedAds) {
-      AdImpression.create({
-        adId: ad._id,
-        userId,
-        userType: req.user ? 'authenticated' : 'guest',
-        userRole,
-        ipAddress: req.ip || req.headers['x-forwarded-for'] || 'unknown',
-        userAgent: req.headers['user-agent'],
-        pageUrl: req.headers.referer || req.headers.origin,
-      }).catch((err) => console.error('Error recording impression:', err));
+    console.log(
+      `✅ Returning ${ads.length} ads (previewMode: ${isPreviewMode})`,
+    );
+    console.log('=========================================\n');
 
-      Advertisement.findByIdAndUpdate(ad._id, {
-        $inc: { impressions: 1 },
-      }).catch((err) => console.error('Error incrementing impressions:', err));
-    }
-
-    res.json({ success: true, ads: cappedAds, count: cappedAds.length });
+    res.json({
+      success: true,
+      ads,
+      count: ads.length,
+      previewMode: isPreviewMode,
+    });
   } catch (error) {
-    console.error('Error fetching ads:', error);
+    console.error('❌ Error fetching ads:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 };
@@ -182,10 +228,22 @@ exports.recordClick = async (req, res) => {
 // GET /ads/admin
 exports.getAllAds = async (req, res) => {
   try {
-    const { page = 1, limit = 20, status, placement } = req.query;
+    const { page = 1, limit = 20, status, placement, preview } = req.query;
     const query = {};
-    if (status === 'active') query.isActive = true;
-    if (status === 'inactive') query.isActive = false;
+
+    // For admin viewing, preview mode shows all ads without filtering
+    const isPreviewMode =
+      preview === 'true' &&
+      (process.env.NODE_ENV === 'development' ||
+        req.headers['x-preview-mode'] === 'true');
+
+    if (!isPreviewMode) {
+      // Normal filtering for production
+      if (status === 'active') query.isActive = true;
+      if (status === 'inactive') query.isActive = false;
+    }
+    // In preview mode, no status filtering - show everything
+
     if (placement) query.placement = placement;
 
     const ads = await Advertisement.find(query)
@@ -205,6 +263,7 @@ exports.getAllAds = async (req, res) => {
         total,
         totalPages: Math.ceil(total / limit),
       },
+      previewMode: isPreviewMode,
     });
   } catch (error) {
     console.error('Error fetching ads:', error);
@@ -297,13 +356,11 @@ exports.createAd = async (req, res) => {
     });
     await ad.save();
 
-    res
-      .status(201)
-      .json({
-        success: true,
-        message: 'Advertisement created successfully',
-        data: ad,
-      });
+    res.status(201).json({
+      success: true,
+      message: 'Advertisement created successfully',
+      data: ad,
+    });
   } catch (error) {
     console.error('Error creating ad:', error);
     res.status(500).json({ success: false, error: error.message });
@@ -376,6 +433,45 @@ exports.deleteAd = async (req, res) => {
     res.json({ success: true, message: 'Advertisement deleted successfully' });
   } catch (error) {
     console.error('Error deleting ad:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+// GET /ads/preview - Special endpoint for preview mode (development only)
+exports.getPreviewAds = async (req, res) => {
+  try {
+    // Only allow in development environment or for super admin users
+    if (process.env.NODE_ENV !== 'development' && !req.user?.isSuperAdmin) {
+      return res.status(403).json({
+        success: false,
+        error: 'Preview mode only available in development environment',
+      });
+    }
+
+    const { placement } = req.query;
+    const query = {};
+
+    if (placement) query.placement = placement;
+
+    // Show ALL ads for preview - no date, status, or frequency capping
+    const ads = await Advertisement.find(query).sort('displayOrder').lean();
+
+    // Add a flag to indicate this is preview mode
+    const adsWithPreviewFlag = ads.map((ad) => ({
+      ...ad,
+      isPreviewMode: true,
+    }));
+
+    res.json({
+      success: true,
+      ads: adsWithPreviewFlag,
+      count: adsWithPreviewFlag.length,
+      previewMode: true,
+      message:
+        'Preview mode active - showing all ads regardless of status/date',
+    });
+  } catch (error) {
+    console.error('Error fetching preview ads:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 };

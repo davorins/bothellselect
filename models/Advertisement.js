@@ -107,6 +107,10 @@ const adSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Parent',
   },
+  isPreview: {
+    type: Boolean,
+    default: false,
+  },
 });
 
 // Index for efficient queries

@@ -88,4 +88,13 @@ router.delete(
   advertisementController.deleteAd,
 );
 
+// Preview route - for local development testing
+// Only available in development environment
+router.get(
+  '/preview',
+  requireAuth,
+  requireAdmin,
+  advertisementController.getPreviewAds,
+);
+
 module.exports = router;
