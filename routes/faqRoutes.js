@@ -82,9 +82,8 @@ router.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
     console.log('Updating FAQ with ID:', id);
-    console.log('Update data:', req.body);
 
-    const updated = await Faq.findByIdAndUpdate(id, req.body, {
+    const updated = await Faq.findOneAndUpdate({ _id: id }, req.body, {
       new: true,
       runValidators: true,
     });
@@ -93,7 +92,6 @@ router.put('/:id', async (req, res) => {
       return res.status(404).json({ error: 'FAQ not found' });
     }
 
-    console.log('FAQ updated successfully:', updated);
     res.json(updated);
   } catch (err) {
     console.error('Error updating FAQ:', err);
@@ -107,13 +105,12 @@ router.delete('/:id', async (req, res) => {
     const { id } = req.params;
     console.log('Deleting FAQ with ID:', id);
 
-    const deleted = await Faq.findByIdAndDelete(id);
+    const deleted = await Faq.findOneAndDelete({ _id: id });
 
     if (!deleted) {
       return res.status(404).json({ error: 'FAQ not found' });
     }
 
-    console.log('FAQ deleted successfully:', deleted);
     res.json({ message: 'FAQ deleted', id });
   } catch (err) {
     console.error('Error deleting FAQ:', err);
