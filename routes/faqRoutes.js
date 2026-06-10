@@ -47,7 +47,6 @@ router.get('/', async (req, res) => {
 
 // Add new FAQ
 router.post('/', async (req, res) => {
-  console.log('POST /api/faqs body:', req.body);
   try {
     const { category, questions, answers } = req.body;
 
@@ -57,19 +56,8 @@ router.post('/', async (req, res) => {
         .json({ error: 'Category, questions, and answers are required' });
     }
 
-    // Generate a custom ID
-    const count = await Faq.countDocuments();
-    const newId = `bothellselect_faq_${String(count + 1).padStart(3, '0')}`;
-
-    const newFaq = new Faq({
-      _id: newId,
-      category,
-      questions,
-      answers,
-    });
-
+    const newFaq = new Faq({ category, questions, answers });
     await newFaq.save();
-    console.log('New FAQ saved:', newFaq);
     res.status(201).json(newFaq);
   } catch (err) {
     console.error('Error saving FAQ:', err);
@@ -81,12 +69,13 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    console.log('Updating FAQ with ID:', id);
+    const { category, questions, answers } = req.body;
 
-    const updated = await Faq.findOneAndUpdate({ _id: id }, req.body, {
-      new: true,
-      runValidators: true,
-    });
+    const updated = await Faq.findOneAndUpdate(
+      { _id: id },
+      { category, questions, answers },
+      { new: true, runValidators: true },
+    );
 
     if (!updated) {
       return res.status(404).json({ error: 'FAQ not found' });
