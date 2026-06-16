@@ -929,13 +929,22 @@ router.post(
         const normalizedSeason = playerData.season.trim();
         const normalizedTryoutId = playerData.tryoutId.trim();
 
-        const player = await Player.findOne({
-          _id: playerData.playerId,
-          parentId: parent._id,
-        }).session(session);
+        const player = await Player.findById(playerData.playerId).session(
+          session,
+        );
 
         if (!player) {
           throw new Error(`Player not found for ID: ${playerData.playerId}`);
+        }
+
+        const parentHasPlayer = parent.players.some(
+          (pid) => pid.toString() === player._id.toString(),
+        );
+
+        if (!parentHasPlayer && req.user.role !== 'admin') {
+          throw new Error(
+            `Unauthorized access to player: ${playerData.playerId}`,
+          );
         }
 
         // Look for pending seasons
@@ -1365,13 +1374,22 @@ router.post(
         const normalizedSeason = playerData.season.trim();
         const normalizedTryoutId = playerData.tryoutId?.trim() || 'training';
 
-        const player = await Player.findOne({
-          _id: playerData.playerId,
-          parentId: parent._id,
-        }).session(session);
+        const player = await Player.findById(playerData.playerId).session(
+          session,
+        );
 
         if (!player) {
           throw new Error(`Player not found for ID: ${playerData.playerId}`);
+        }
+
+        const parentHasPlayer = parent.players.some(
+          (pid) => pid.toString() === player._id.toString(),
+        );
+
+        if (!parentHasPlayer && req.user.role !== 'admin') {
+          throw new Error(
+            `Unauthorized access to player: ${playerData.playerId}`,
+          );
         }
 
         // Check for pending training seasons
@@ -1688,13 +1706,22 @@ router.post('/process', authenticate, async (req, res) => {
     const updatedPlayers = [];
 
     for (const playerData of players) {
-      const player = await Player.findOne({
-        _id: playerData.playerId,
-        parentId: parent._id,
-      }).session(session);
+      const player = await Player.findById(playerData.playerId).session(
+        session,
+      );
 
       if (!player) {
-        continue;
+        throw new Error(`Player not found for ID: ${playerData.playerId}`);
+      }
+
+      const parentHasPlayer = parent.players.some(
+        (pid) => pid.toString() === player._id.toString(),
+      );
+
+      if (!parentHasPlayer && req.user.role !== 'admin') {
+        throw new Error(
+          `Unauthorized access to player: ${playerData.playerId}`,
+        );
       }
 
       // Check for pending season
