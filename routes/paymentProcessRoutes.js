@@ -16,12 +16,65 @@ const {
 const crypto = require('crypto');
 const { body, validationResult } = require('express-validator');
 
-// Helper to get payment service
+// ============================================
+// DUPLICATE PAYMENT PREVENTION SYSTEM
+// ============================================
+
+// In-memory request tracking for duplicate prevention
+const requestTracker = new Map();
+
+// Clean up old entries every hour
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of requestTracker.entries()) {
+    if (now - entry.timestamp > 3600000) {
+      // 1 hour
+      requestTracker.delete(key);
+    }
+  }
+}, 60000);
+
+// Helper to generate request key
+function generateRequestKey(parentId, amount, teamIds, players) {
+  const data = {
+    parentId,
+    amount,
+    teamIds: teamIds ? JSON.stringify(teamIds.sort()) : null,
+    players: players
+      ? JSON.stringify(players.map((p) => p.playerId).sort())
+      : null,
+  };
+  return crypto.createHash('sha256').update(JSON.stringify(data)).digest('hex');
+}
+
+// Helper to check for duplicate request
+function isDuplicateRequest(requestKey) {
+  if (requestTracker.has(requestKey)) {
+    const entry = requestTracker.get(requestKey);
+    // If the request is already processing or completed within last 30 seconds
+    if (
+      entry.status === 'processing' ||
+      (entry.status === 'completed' && Date.now() - entry.timestamp < 30000)
+    ) {
+      return true;
+    }
+    // If it's been more than 30 seconds, allow retry
+    if (entry.status === 'completed' && Date.now() - entry.timestamp >= 30000) {
+      requestTracker.delete(requestKey);
+      return false;
+    }
+  }
+  return false;
+}
+
+// ============================================
+// PAYMENT HELPERS
+// ============================================
+
 async function getPaymentService(paymentSystem = null) {
   return await PaymentServiceFactory.getService(paymentSystem);
 }
 
-// Helper to get active configuration
 async function getActivePaymentConfig() {
   return await PaymentConfiguration.findOne({ isActive: true }).sort({
     isDefault: -1,
@@ -29,13 +82,11 @@ async function getActivePaymentConfig() {
   });
 }
 
-// Helper to validate configuration
 function validateConfigForPayment(config, paymentType = 'tournament') {
   console.log('validateConfigForPayment called with:', {
     hasConfig: !!config,
     configId: config?._id,
     paymentSystem: config?.paymentSystem,
-    configJSON: JSON.stringify(config, null, 2),
   });
 
   if (!config) {
@@ -48,12 +99,6 @@ function validateConfigForPayment(config, paymentType = 'tournament') {
 
   switch (paymentSystem) {
     case 'square':
-      console.log('Square config check:', {
-        squareConfig: config.squareConfig,
-        accessToken: config.squareConfig?.accessToken,
-        locationId: config.squareConfig?.locationId,
-      });
-
       if (!config.squareConfig?.accessToken) {
         console.error('❌ Square validation failed: Missing accessToken');
         throw new Error(
@@ -66,12 +111,6 @@ function validateConfigForPayment(config, paymentType = 'tournament') {
       }
       break;
     case 'clover':
-      console.log('Clover config check:', {
-        cloverConfig: config.cloverConfig,
-        accessToken: config.cloverConfig?.accessToken,
-        merchantId: config.cloverConfig?.merchantId,
-      });
-
       if (!config.cloverConfig?.accessToken) {
         console.error('❌ Clover validation failed: Missing accessToken');
         throw new Error('Clover access token not configured');
@@ -90,13 +129,11 @@ function validateConfigForPayment(config, paymentType = 'tournament') {
   return true;
 }
 
-// Helper to create payment data based on payment system
 function createPaymentData(paymentService, paymentResult, baseData) {
   const paymentData = {
     ...baseData,
     paymentSystem: paymentService.type,
     configurationId: paymentService.configurationId,
-    // Store system-specific IDs
     ...(paymentService.type === 'square' && {
       locationId: paymentService.config.locationId,
     }),
@@ -109,7 +146,10 @@ function createPaymentData(paymentService, paymentResult, baseData) {
   return paymentData;
 }
 
-// PROCESS TOURNAMENT TEAM PAYMENT
+// ============================================
+// TOURNAMENT TEAM PAYMENT - SINGLE TEAM
+// ============================================
+
 router.post('/tournament-team', authenticate, async (req, res) => {
   console.log('=== TOURNAMENT PAYMENT REQUEST RECEIVED ===');
 
@@ -125,35 +165,78 @@ router.post('/tournament-team', authenticate, async (req, res) => {
       teamId,
       tournament,
       year,
-      tournamentId,
       cardDetails,
-      cardLastFour,
-      cardBrand,
-      cardExpMonth,
-      cardExpYear,
-      tournaments,
-      paymentSystem, // Optional: specify payment system
+      paymentSystem,
       isAdmin = false,
+      idempotencyKey,
     } = req.body;
 
     const parentId = req.user.id;
+    const cardLastFour = cardDetails?.last_4 || req.body.cardLastFour || 'N/A';
+    const cardBrand = cardDetails?.card_brand || req.body.cardBrand || 'N/A';
+    const cardExpMonth = cardDetails?.exp_month || req.body.cardExpMonth || '0';
+    const cardExpYear = cardDetails?.exp_year || req.body.cardExpYear || '0';
+
+    // Generate unique request key for duplicate detection
+    const requestKey = generateRequestKey(parentId, amount, [teamId], null);
+
+    // Check for duplicate request
+    if (isDuplicateRequest(requestKey)) {
+      console.warn(
+        '⚠️ Duplicate tournament payment request detected:',
+        requestKey,
+      );
+
+      // Check if we already have a successful payment for this request
+      const existingPayment = await Payment.findOne({
+        parentId: parentId,
+        teamId: teamId,
+        tournamentName: tournament,
+        year: parseInt(year),
+        status: 'completed',
+      }).sort({ createdAt: -1 });
+
+      if (existingPayment) {
+        return res.status(409).json({
+          success: true,
+          message: 'Payment already processed successfully',
+          paymentId: existingPayment._id,
+          externalPaymentId: existingPayment.paymentId,
+          paymentSystem: existingPayment.paymentSystem,
+          duplicate: true,
+          receiptUrl: existingPayment.receiptUrl,
+          amount: existingPayment.amount,
+        });
+      }
+
+      return res.status(409).json({
+        success: false,
+        error:
+          'Duplicate payment request detected. Please check your payment status.',
+        duplicate: true,
+      });
+    }
+
+    // Mark request as processing
+    requestTracker.set(requestKey, {
+      status: 'processing',
+      timestamp: Date.now(),
+    });
 
     console.log('Processing tournament team payment:', {
       teamId,
       tournament,
       year,
-      tournamentId,
       amount,
       parentId,
       email: buyerEmailAddress,
-      hasToken: !!token,
-      hasSourceId: !!sourceId,
-      tournamentsCount: tournaments?.length || 0,
-      requestedPaymentSystem: paymentSystem,
+      idempotencyKey,
+      requestKey,
     });
 
     // Validate required fields
     if (!teamId) {
+      requestTracker.delete(requestKey);
       return res.status(400).json({
         success: false,
         error: 'Team ID is required',
@@ -161,6 +244,7 @@ router.post('/tournament-team', authenticate, async (req, res) => {
     }
 
     if (!tournament) {
+      requestTracker.delete(requestKey);
       return res.status(400).json({
         success: false,
         error: 'Tournament name is required',
@@ -168,6 +252,7 @@ router.post('/tournament-team', authenticate, async (req, res) => {
     }
 
     if (!year) {
+      requestTracker.delete(requestKey);
       return res.status(400).json({
         success: false,
         error: 'Year is required',
@@ -175,6 +260,7 @@ router.post('/tournament-team', authenticate, async (req, res) => {
     }
 
     if (!amount || amount <= 0) {
+      requestTracker.delete(requestKey);
       return res.status(400).json({
         success: false,
         error: 'Valid payment amount is required',
@@ -182,6 +268,7 @@ router.post('/tournament-team', authenticate, async (req, res) => {
     }
 
     if (!token && !sourceId) {
+      requestTracker.delete(requestKey);
       return res.status(400).json({
         success: false,
         error: 'Payment token is required',
@@ -202,6 +289,7 @@ router.post('/tournament-team', authenticate, async (req, res) => {
     }).session(session);
 
     if (!team) {
+      requestTracker.delete(requestKey);
       return res.status(404).json({
         success: false,
         error: 'Team not found or unauthorized',
@@ -210,16 +298,31 @@ router.post('/tournament-team', authenticate, async (req, res) => {
 
     console.log('Team found:', team.name);
 
+    // Check if tournament already paid
+    const existingTournament = team.tournaments?.find(
+      (t) =>
+        t.tournamentName === tournament &&
+        t.year === parseInt(year) &&
+        t.paymentStatus === 'paid',
+    );
+
+    if (existingTournament) {
+      requestTracker.delete(requestKey);
+      return res.status(400).json({
+        success: false,
+        error: 'This tournament is already paid for this team',
+      });
+    }
+
     // Get parent for customer ID
     const parent = await Parent.findById(parentId).session(session);
     if (!parent) {
+      requestTracker.delete(requestKey);
       return res.status(404).json({
         success: false,
         error: 'Parent not found',
       });
     }
-
-    console.log('Parent found:', parent.email);
 
     // Use existing customer ID or create new one
     let customerId;
@@ -237,7 +340,6 @@ router.post('/tournament-team', authenticate, async (req, res) => {
         customerId = customerResult.customer?.id;
         console.log('Created customer:', customerId);
 
-        // Update parent with new customer ID
         await Parent.updateOne(
           { _id: parentId },
           { $set: { [customerField]: customerId } },
@@ -245,23 +347,22 @@ router.post('/tournament-team', authenticate, async (req, res) => {
         );
       } catch (customerError) {
         console.error('Error creating customer:', customerError);
-        // Continue without customer ID
       }
     }
 
     // Process payment with the service
     let paymentResult;
     const amountInCents = parseInt(amount);
+    const finalIdempotencyKey = idempotencyKey || crypto.randomUUID();
 
     if (paymentService.type === 'square') {
-      // Square payment
       const paymentRequest = {
         sourceId: sourceId || token,
         amountMoney: {
           amount: amountInCents,
           currency: paymentService.settings?.currency || 'USD',
         },
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: finalIdempotencyKey,
         locationId: paymentService.config.locationId,
         referenceId: `t:${teamId.slice(-12)}:${year}`,
         note: `Tournament registration: ${tournament} ${year} - Team: ${team.name}`,
@@ -277,13 +378,13 @@ router.post('/tournament-team', authenticate, async (req, res) => {
         paymentSystem: paymentService.type,
         locationId: paymentService.config.locationId,
         amount: amountInCents,
+        idempotencyKey: finalIdempotencyKey,
       });
 
       const { result } =
         await paymentService.client.paymentsApi.createPayment(paymentRequest);
       paymentResult = result.payment;
     } else if (paymentService.type === 'clover') {
-      // Clover payment
       const paymentData = {
         sourceId: sourceId || token,
         amount: amountInCents,
@@ -296,6 +397,7 @@ router.post('/tournament-team', authenticate, async (req, res) => {
     }
 
     if (!paymentResult) {
+      requestTracker.delete(requestKey);
       throw new Error('No payment result received');
     }
 
@@ -303,6 +405,7 @@ router.post('/tournament-team', authenticate, async (req, res) => {
       paymentResult.status !== 'COMPLETED' &&
       paymentResult.status !== 'PAID'
     ) {
+      requestTracker.delete(requestKey);
       throw new Error(`Payment failed with status: ${paymentResult.status}`);
     }
 
@@ -311,15 +414,8 @@ router.post('/tournament-team', authenticate, async (req, res) => {
       status: paymentResult.status,
     });
 
-    // Extract card details
-    const cardLast4 = cardDetails?.last_4 || cardLastFour || 'N/A';
-    const finalCardBrand = cardDetails?.card_brand || cardBrand || 'N/A';
-    const finalCardExpMonth = cardDetails?.exp_month || cardExpMonth || '0';
-    const finalCardExpYear = cardDetails?.exp_year || cardExpYear || '0';
-
     // Prepare tournament data
     const tournamentData = {
-      tournamentId: new mongoose.Types.ObjectId(tournamentId),
       tournamentName: tournament,
       year: parseInt(year),
       registrationDate: new Date(),
@@ -328,8 +424,8 @@ router.post('/tournament-team', authenticate, async (req, res) => {
       amountPaid: amount / 100,
       paymentId: paymentResult.id,
       paymentMethod: 'card',
-      cardLast4: cardLast4,
-      cardBrand: finalCardBrand,
+      cardLast4: cardLastFour,
+      cardBrand: cardBrand,
       levelOfCompetition: team.levelOfCompetition || 'Gold',
     };
 
@@ -354,16 +450,16 @@ router.post('/tournament-team', authenticate, async (req, res) => {
 
     await team.save({ session });
 
-    // Create Payment record using helper
+    // Create Payment record
     const basePaymentData = {
       parentId: parent._id,
       teamId: teamId,
       paymentId: paymentResult.id,
       buyerEmail: buyerEmailAddress,
-      cardLastFour: cardLast4,
-      cardBrand: finalCardBrand,
-      cardExpMonth: finalCardExpMonth,
-      cardExpYear: finalCardExpYear,
+      cardLastFour: cardLastFour,
+      cardBrand: cardBrand,
+      cardExpMonth: cardExpMonth,
+      cardExpYear: cardExpYear,
       amount: amount / 100,
       currency: paymentService.settings?.currency || 'USD',
       status: 'completed',
@@ -373,12 +469,20 @@ router.post('/tournament-team', authenticate, async (req, res) => {
       tournamentName: tournament,
       year: parseInt(year),
       paymentType: 'tournament',
+      idempotencyKey: finalIdempotencyKey,
     };
 
     const payment = new Payment(
       createPaymentData(paymentService, paymentResult, basePaymentData),
     );
     await payment.save({ session });
+
+    // Mark request as completed
+    requestTracker.set(requestKey, {
+      status: 'completed',
+      timestamp: Date.now(),
+      paymentId: payment._id,
+    });
 
     // Send confirmation email
     try {
@@ -424,6 +528,18 @@ router.post('/tournament-team', authenticate, async (req, res) => {
       user: req.user?.id,
     });
 
+    // Clean up request tracker on error
+    const parentId = req.user?.id;
+    if (parentId && req.body.teamId && req.body.amount) {
+      const requestKey = generateRequestKey(
+        parentId,
+        req.body.amount,
+        [req.body.teamId],
+        null,
+      );
+      requestTracker.delete(requestKey);
+    }
+
     res.status(400).json({
       success: false,
       error: 'Payment processing failed',
@@ -435,7 +551,10 @@ router.post('/tournament-team', authenticate, async (req, res) => {
   }
 });
 
-// MULTIPLE TOURNAMENT TEAMS PAYMENT - UPDATED
+// ============================================
+// TOURNAMENT TEAMS PAYMENT - MULTIPLE TEAMS
+// ============================================
+
 router.post('/tournament-teams', authenticate, async (req, res) => {
   console.log('=== MULTIPLE TEAMS TOURNAMENT PAYMENT REQUEST RECEIVED ===');
 
@@ -452,11 +571,61 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
       tournament,
       year,
       cardDetails,
-      paymentSystem, // Optional: specify payment system
+      paymentSystem,
       isAdmin = false,
+      idempotencyKey,
     } = req.body;
 
     const parentId = req.user.id;
+    const cardLastFour = cardDetails?.last_4 || req.body.cardLastFour || 'N/A';
+    const cardBrand = cardDetails?.card_brand || req.body.cardBrand || 'N/A';
+    const cardExpMonth = cardDetails?.exp_month || req.body.cardExpMonth || '0';
+    const cardExpYear = cardDetails?.exp_year || req.body.cardExpYear || '0';
+
+    // Generate unique request key for duplicate detection
+    const requestKey = generateRequestKey(parentId, amount, teamIds, null);
+
+    // Check for duplicate request
+    if (isDuplicateRequest(requestKey)) {
+      console.warn(
+        '⚠️ Duplicate multiple teams tournament payment request detected:',
+        requestKey,
+      );
+
+      // Check if we already have a successful payment for this request
+      const existingPayment = await Payment.findOne({
+        parentId: parentId,
+        tournamentName: tournament,
+        year: parseInt(year),
+        status: 'completed',
+      }).sort({ createdAt: -1 });
+
+      if (existingPayment) {
+        return res.status(409).json({
+          success: true,
+          message: 'Payment already processed successfully',
+          paymentId: existingPayment._id,
+          externalPaymentId: existingPayment.paymentId,
+          paymentSystem: existingPayment.paymentSystem,
+          duplicate: true,
+          receiptUrl: existingPayment.receiptUrl,
+          amount: existingPayment.amount,
+        });
+      }
+
+      return res.status(409).json({
+        success: false,
+        error:
+          'Duplicate payment request detected. Please check your payment status.',
+        duplicate: true,
+      });
+    }
+
+    // Mark request as processing
+    requestTracker.set(requestKey, {
+      status: 'processing',
+      timestamp: Date.now(),
+    });
 
     console.log('Processing multiple teams tournament payment:', {
       teamIds,
@@ -465,14 +634,13 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
       amount,
       parentId,
       email: buyerEmailAddress,
-      hasToken: !!token,
-      hasSourceId: !!sourceId,
-      teamCount: teamIds?.length || 0,
-      requestedPaymentSystem: paymentSystem,
+      idempotencyKey,
+      requestKey,
     });
 
     // Validate required fields
     if (!teamIds || !Array.isArray(teamIds) || teamIds.length === 0) {
+      requestTracker.delete(requestKey);
       return res.status(400).json({
         success: false,
         error: 'Team IDs are required',
@@ -480,6 +648,7 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
     }
 
     if (!tournament) {
+      requestTracker.delete(requestKey);
       return res.status(400).json({
         success: false,
         error: 'Tournament name is required',
@@ -487,6 +656,7 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
     }
 
     if (!year) {
+      requestTracker.delete(requestKey);
       return res.status(400).json({
         success: false,
         error: 'Year is required',
@@ -494,6 +664,7 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
     }
 
     if (!amount || amount <= 0) {
+      requestTracker.delete(requestKey);
       return res.status(400).json({
         success: false,
         error: 'Valid payment amount is required',
@@ -501,6 +672,7 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
     }
 
     if (!token && !sourceId) {
+      requestTracker.delete(requestKey);
       return res.status(400).json({
         success: false,
         error: 'Payment token is required',
@@ -520,6 +692,7 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
     // Get parent
     const parent = await Parent.findById(parentId).session(session);
     if (!parent) {
+      requestTracker.delete(requestKey);
       return res.status(404).json({
         success: false,
         error: 'Parent not found',
@@ -531,19 +704,21 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
     const customerField = `${paymentService.type}CustomerId`;
     customerId = parent[customerField];
 
+    // Generate a unique idempotency key if not provided
+    const finalIdempotencyKey = idempotencyKey || crypto.randomUUID();
+
     // Process payment
     let paymentResult;
     const amountInCents = parseInt(amount);
 
     if (paymentService.type === 'square') {
-      // Square payment for multiple teams
       const paymentRequest = {
         sourceId: sourceId || token,
         amountMoney: {
           amount: amountInCents,
           currency: paymentService.settings?.currency || 'USD',
         },
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: finalIdempotencyKey,
         locationId: paymentService.config.locationId,
         referenceId: `t:${parentId.slice(-12)}:${year}`,
         note: `Tournament registration: ${tournament} ${year} - ${teamIds.length} team(s)`,
@@ -559,7 +734,6 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
         await paymentService.client.paymentsApi.createPayment(paymentRequest);
       paymentResult = result.payment;
     } else if (paymentService.type === 'clover') {
-      // Clover payment for multiple teams
       const paymentData = {
         sourceId: sourceId || token,
         amount: amountInCents,
@@ -575,6 +749,7 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
       !paymentResult ||
       (paymentResult.status !== 'COMPLETED' && paymentResult.status !== 'PAID')
     ) {
+      requestTracker.delete(requestKey);
       throw new Error(`Payment failed with status: ${paymentResult?.status}`);
     }
 
@@ -599,6 +774,19 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
         continue;
       }
 
+      // Check if tournament already paid
+      const existingTournament = team.tournaments?.find(
+        (t) =>
+          t.tournament === tournament &&
+          t.year === parseInt(year) &&
+          t.paymentStatus === 'paid',
+      );
+
+      if (existingTournament) {
+        // Skip this team but continue with others
+        continue;
+      }
+
       // Update team tournament payment status
       const tournamentIndex = team.tournaments.findIndex(
         (t) => t.tournament === tournament && t.year === parseInt(year),
@@ -611,8 +799,8 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
         paymentComplete: true,
         paymentDate: new Date(),
         paymentId: paymentResult.id,
-        cardLast4: cardDetails?.last_4 || 'N/A',
-        cardBrand: cardDetails?.card_brand || 'N/A',
+        cardLast4: cardLastFour,
+        cardBrand: cardBrand,
         amountPaid: amountPerTeam,
         levelOfCompetition: team.levelOfCompetition || 'Silver',
       };
@@ -629,6 +817,7 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
     }
 
     if (updatedTeams.length === 0) {
+      requestTracker.delete(requestKey);
       await session.abortTransaction();
       return res.status(400).json({
         success: false,
@@ -637,16 +826,16 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
       });
     }
 
-    // Create Payment record using helper
+    // Create Payment record
     const basePaymentData = {
       parentId: parent._id,
       teamIds: updatedTeams.map((team) => team._id),
       paymentId: paymentResult.id,
       buyerEmail: buyerEmailAddress,
-      cardLastFour: cardDetails?.last_4 || 'N/A',
-      cardBrand: cardDetails?.card_brand || 'N/A',
-      cardExpMonth: cardDetails?.exp_month || 0,
-      cardExpYear: cardDetails?.exp_year || 0,
+      cardLastFour: cardLastFour,
+      cardBrand: cardBrand,
+      cardExpMonth: cardExpMonth,
+      cardExpYear: cardExpYear,
       amount: amount / 100,
       currency: paymentService.settings?.currency || 'USD',
       status: 'completed',
@@ -656,11 +845,13 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
       tournamentName: tournament,
       year: parseInt(year),
       paymentType: 'tournament',
+      idempotencyKey: finalIdempotencyKey,
       metadata: {
         teamCount: teamIds.length,
         tournament,
         year,
         amountPerTeam: amountPerTeam,
+        teamIds: teamIds,
       },
     };
 
@@ -668,6 +859,13 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
       createPaymentData(paymentService, paymentResult, basePaymentData),
     );
     await payment.save({ session });
+
+    // Mark request as completed
+    requestTracker.set(requestKey, {
+      status: 'completed',
+      timestamp: Date.now(),
+      paymentId: payment._id,
+    });
 
     // Send confirmation email
     try {
@@ -705,6 +903,19 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
   } catch (error) {
     await session.abortTransaction();
     console.error('Multiple teams tournament payment error:', error);
+
+    // Clean up request tracker on error
+    const parentId = req.user?.id;
+    if (parentId && req.body.teamIds && req.body.amount) {
+      const requestKey = generateRequestKey(
+        parentId,
+        req.body.amount,
+        req.body.teamIds,
+        null,
+      );
+      requestTracker.delete(requestKey);
+    }
+
     res.status(400).json({
       success: false,
       error: 'Payment processing failed',
@@ -715,7 +926,10 @@ router.post('/tournament-teams', authenticate, async (req, res) => {
   }
 });
 
-// TRYOUT PAYMENT ENDPOINT
+// ============================================
+// TRYOUT PAYMENT
+// ============================================
+
 router.post(
   '/tryout',
   authenticate,
@@ -757,39 +971,12 @@ router.post(
       .optional()
       .isIn(['square', 'clover'])
       .withMessage('Payment system must be square or clover'),
+    body('idempotencyKey')
+      .optional()
+      .isString()
+      .withMessage('idempotencyKey must be a string'),
   ],
   async (req, res) => {
-    console.log('🔍 DEBUG Tryout payment request:', {
-      bodyKeys: Object.keys(req.body),
-      hasToken: !!req.body.token,
-      hasSourceId: !!req.body.sourceId,
-      amount: req.body.amount,
-      email: req.body.email,
-      playersCount: req.body.players?.length || 0,
-      players: req.body.players?.map((p) => ({
-        playerId: p.playerId,
-        playerIdIsValid: mongoose.Types.ObjectId.isValid(p.playerId || ''),
-        season: p.season,
-        year: p.year,
-        tryoutId: p.tryoutId,
-        tryoutIdLength: p.tryoutId?.length || 0,
-      })),
-      cardDetails: req.body.cardDetails
-        ? {
-            last_4: req.body.cardDetails.last_4,
-            last_4Length: req.body.cardDetails.last_4?.length || 0,
-            card_brand: req.body.cardDetails.card_brand,
-            exp_month: req.body.cardDetails.exp_month,
-            exp_year: req.body.cardDetails.exp_year,
-            currentYear: new Date().getFullYear(),
-            expYearValid:
-              req.body.cardDetails.exp_year >= new Date().getFullYear(),
-          }
-        : 'No cardDetails',
-      paymentSystem: req.body.paymentSystem,
-      user: req.user?.id,
-    });
-
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       console.log('❌ VALIDATION ERRORS:', errors.array());
@@ -800,15 +987,6 @@ router.post(
           .array()
           .map((err) => err.msg)
           .join(', ')}`,
-        debug: {
-          receivedPlayers: req.body.players?.map((p) => ({
-            playerId: p.playerId,
-            season: p.season,
-            year: p.year,
-            tryoutId: p.tryoutId,
-          })),
-          receivedCardDetails: req.body.cardDetails,
-        },
       });
     }
 
@@ -820,19 +998,71 @@ router.post(
       players,
       cardDetails,
       paymentSystem,
+      idempotencyKey,
     } = req.body;
+
     const perPlayerAmount = amount / 100 / players.length;
+    const parentId = req.user.id;
+    const cardLastFour = cardDetails?.last_4 || '';
+    const cardBrand = cardDetails?.card_brand || '';
+    const cardExpMonth = cardDetails?.exp_month || 0;
+    const cardExpYear = cardDetails?.exp_year || 0;
 
     const session = await mongoose.startSession();
     session.startTransaction();
 
     try {
-      console.log('✅ Validation passed, processing tryout payment:', {
-        parentId: req.user.id,
+      // Generate unique request key for duplicate detection
+      const requestKey = generateRequestKey(parentId, amount, null, players);
+
+      // Check for duplicate request
+      if (isDuplicateRequest(requestKey)) {
+        console.warn(
+          '⚠️ Duplicate tryout payment request detected:',
+          requestKey,
+        );
+
+        // Check if we already have a successful payment for this request
+        const playerIds = players.map((p) => p.playerId).sort();
+        const existingPayment = await Payment.findOne({
+          parentId: parentId,
+          paymentType: 'tryout',
+          status: 'completed',
+          'players.playerId': { $all: playerIds },
+          'players.tryoutId': players[0].tryoutId,
+          'players.year': players[0].year,
+        }).sort({ createdAt: -1 });
+
+        if (existingPayment) {
+          return res.status(409).json({
+            success: true,
+            message: 'Payment already processed successfully',
+            paymentId: existingPayment._id,
+            externalPaymentId: existingPayment.paymentId,
+            paymentSystem: existingPayment.paymentSystem,
+            duplicate: true,
+            receiptUrl: existingPayment.receiptUrl,
+            amount: existingPayment.amount,
+          });
+        }
+
+        return res.status(409).json({
+          success: false,
+          error:
+            'Duplicate payment request detected. Please check your payment status.',
+          duplicate: true,
+        });
+      }
+
+      // Mark request as processing
+      requestTracker.set(requestKey, {
+        status: 'processing',
+        timestamp: Date.now(),
+      });
+
+      console.log('Processing tryout payment:', {
+        parentId,
         playerIds: players.map((p) => p.playerId),
-        season: players[0]?.season,
-        year: players[0]?.year,
-        tryoutId: players[0]?.tryoutId,
         amount: amount / 100,
         playerCount: players.length,
         requestedPaymentSystem: paymentSystem,
@@ -848,8 +1078,12 @@ router.post(
       // Verify parent exists
       const parent = await Parent.findById(req.user.id).session(session);
       if (!parent) {
+        requestTracker.delete(requestKey);
         throw new Error('Parent not found');
       }
+
+      // Generate a unique idempotency key if not provided
+      const finalIdempotencyKey = idempotencyKey || crypto.randomUUID();
 
       // Process payment
       let paymentResult;
@@ -862,12 +1096,13 @@ router.post(
             amount: amountInCents,
             currency: paymentService.settings?.currency || 'USD',
           },
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey: finalIdempotencyKey,
           locationId: paymentService.config.locationId,
           customerId: parent.squareCustomerId,
           referenceId: `parent:${parent._id}`,
           note: `Tryout payment for ${players.length} player(s)`,
           buyerEmailAddress: email,
+          autocomplete: true,
         };
 
         const { result } =
@@ -890,20 +1125,21 @@ router.post(
         (paymentResult.status !== 'COMPLETED' &&
           paymentResult.status !== 'PAID')
       ) {
+        requestTracker.delete(requestKey);
         throw new Error(`Payment failed with status: ${paymentResult?.status}`);
       }
 
-      // Create Payment record using helper
+      // Create Payment record
       const basePaymentData = {
         parentId: parent._id,
         playerCount: players.length,
         playerIds: players.map((p) => p.playerId),
         paymentId: paymentResult.id,
         buyerEmail: email,
-        cardLastFour: cardDetails.last_4 || '',
-        cardBrand: cardDetails.card_brand || '',
-        cardExpMonth: cardDetails.exp_month,
-        cardExpYear: cardDetails.exp_year,
+        cardLastFour: cardLastFour,
+        cardBrand: cardBrand,
+        cardExpMonth: cardExpMonth,
+        cardExpYear: cardExpYear,
         amount: amount / 100,
         currency: paymentService.settings?.currency || 'USD',
         status: 'completed',
@@ -916,6 +1152,7 @@ router.post(
           tryoutId: p.tryoutId.trim(),
         })),
         paymentType: 'tryout',
+        idempotencyKey: finalIdempotencyKey,
       };
 
       const payment = new Payment(
@@ -967,8 +1204,8 @@ router.post(
             paymentComplete: true,
             paymentId: paymentResult.id,
             amountPaid: perPlayerAmount,
-            cardLast4: cardDetails.last_4 || '',
-            cardBrand: cardDetails.card_brand || '',
+            cardLast4: cardLastFour,
+            cardBrand: cardBrand,
             paymentDate: new Date(),
             registrationDate:
               player.seasons[pendingSeasonIndex].registrationDate || new Date(),
@@ -983,8 +1220,8 @@ router.post(
             paymentComplete: true,
             paymentId: paymentResult.id,
             amountPaid: perPlayerAmount,
-            cardLast4: cardDetails.last_4 || '',
-            cardBrand: cardDetails.card_brand || '',
+            cardLast4: cardLastFour,
+            cardBrand: cardBrand,
             paymentDate: new Date(),
             registrationDate: new Date(),
           });
@@ -1014,8 +1251,8 @@ router.post(
               paymentComplete: true,
               paymentId: paymentResult.id,
               amountPaid: perPlayerAmount,
-              cardLast4: cardDetails.last_4 || '',
-              cardBrand: cardDetails.card_brand || '',
+              cardLast4: cardLastFour,
+              cardBrand: cardBrand,
               paymentDate: new Date(),
               registrationComplete: true,
               updatedAt: new Date(),
@@ -1038,6 +1275,13 @@ router.post(
         { session },
       );
 
+      // Mark request as completed
+      requestTracker.set(requestKey, {
+        status: 'completed',
+        timestamp: Date.now(),
+        paymentId: payment._id,
+      });
+
       // Send receipt email
       try {
         await sendEmail({
@@ -1057,20 +1301,13 @@ router.post(
                 <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
                   <h3 style="margin-top: 0; color: rgba(0, 0, 0, .7);">Payment Details</h3>
                   <p style="margin: 8px 0;"><strong>Number of Players:</strong> ${players.length}</p>
-                  <p style="margin: 8px 0;"><strong>Fee per Player:</strong> $${perPlayerAmount}</p>
                   <p style="margin: 8px 0;"><strong>Total Amount Paid:</strong> $${amount / 100}</p>
-                  <p style="margin: 8px 0;"><strong>Season:</strong> ${players[0]?.season || 'Bothell Select Team'} ${players[0]?.year || new Date().getFullYear()}</p>
+                  <p style="margin: 8px 0;"><strong>Payment ID:</strong> ${paymentResult.id}</p>
                   <p style="margin: 8px 0;"><strong>Players Registered:</strong></p>
                   <ul style="margin: 8px 0;">
                     ${updatedPlayers.map((p) => `<li>${p.fullName}</li>`).join('')}
                   </ul>
                 </div>
-                <p style="font-size: 16px;"><strong>What's Next?</strong></p>
-                <ul style="font-size: 14px;">
-                  <li>You will receive team assignment and practice schedule information within the next week</li>
-                  <li>Look out for welcome materials from your coach</li>
-                  <li>Practice schedules will be shared via email and the team portal</li>
-                </ul>
                 <p style="font-size: 14px; color: #555;">If you have any questions, please contact us at bothellselect@proton.me</p>
                 <p style="font-size: 16px; font-weight: bold;">Welcome to the Bothell Select family! 🏀</p>
               </div>
@@ -1113,6 +1350,19 @@ router.post(
     } catch (error) {
       await session.abortTransaction();
       console.error('Payment processing error:', error);
+
+      // Clean up request tracker on error
+      const parentId = req.user?.id;
+      if (parentId && req.body.players && req.body.amount) {
+        const requestKey = generateRequestKey(
+          parentId,
+          req.body.amount,
+          null,
+          req.body.players,
+        );
+        requestTracker.delete(requestKey);
+      }
+
       res.status(400).json({
         success: false,
         error: 'Tryout payment processing failed',
@@ -1125,38 +1375,32 @@ router.post(
   },
 );
 
-// TRAINING PAYMENT ENDPOINT - UPDATED
+// ============================================
+// TRAINING PAYMENT
+// ============================================
+
 router.post(
   '/training',
   authenticate,
   [
-    // Payment token validation
     body('token')
-      .optional() // Make token optional since sourceId might be used
+      .optional()
       .notEmpty()
       .withMessage('Payment token is required if sourceId is not provided'),
     body('sourceId')
       .optional()
       .notEmpty()
       .withMessage('Payment sourceId is required if token is not provided'),
-
-    // Validate at least one payment method exists
     body().custom((value, { req }) => {
       if (!req.body.token && !req.body.sourceId) {
         throw new Error('Either token or sourceId must be provided');
       }
       return true;
     }),
-
-    // Amount validation
     body('amount')
       .isInt({ min: 1 })
       .withMessage('Amount must be a positive integer'),
-
-    // Email validation
     body('email').isEmail().withMessage('Valid email is required'),
-
-    // Players validation
     body('players')
       .isArray({ min: 1 })
       .withMessage('At least one player is required'),
@@ -1169,11 +1413,9 @@ router.post(
       .isInt({ min: 2020, max: 2030 })
       .withMessage('Year must be between 2020 and 2030'),
     body('players.*.tryoutId')
-      .optional() // Make tryoutId optional for training
+      .optional()
       .isString()
       .withMessage('Tryout ID must be a string'),
-
-    // Card details validation - make it optional to match frontend
     body('cardDetails')
       .optional()
       .isObject()
@@ -1194,32 +1436,16 @@ router.post(
       .optional()
       .isInt({ min: new Date().getFullYear() })
       .withMessage('Invalid expiration year'),
-
-    // Payment system validation
     body('paymentSystem')
       .optional()
       .isIn(['square', 'clover'])
       .withMessage('Payment system must be square or clover'),
+    body('idempotencyKey')
+      .optional()
+      .isString()
+      .withMessage('idempotencyKey must be a string'),
   ],
   async (req, res) => {
-    console.log('🔍 DEBUG Training payment request received:', {
-      bodyKeys: Object.keys(req.body),
-      hasToken: !!req.body.token,
-      hasSourceId: !!req.body.sourceId,
-      amount: req.body.amount,
-      email: req.body.email,
-      playersCount: req.body.players?.length || 0,
-      players: req.body.players?.map((p) => ({
-        playerId: p.playerId,
-        season: p.season,
-        year: p.year,
-        tryoutId: p.tryoutId,
-      })),
-      cardDetails: req.body.cardDetails,
-      paymentSystem: req.body.paymentSystem,
-      user: req.user?.id,
-    });
-
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       console.log('❌ TRAINING PAYMENT VALIDATION ERRORS:', errors.array());
@@ -1230,16 +1456,6 @@ router.post(
           .array()
           .map((err) => err.msg)
           .join(', ')}`,
-        debug: {
-          receivedBody: {
-            amount: req.body.amount,
-            email: req.body.email,
-            token: req.body.token ? 'Provided' : 'Missing',
-            sourceId: req.body.sourceId ? 'Provided' : 'Missing',
-            players: req.body.players,
-            cardDetails: req.body.cardDetails,
-          },
-        },
       });
     }
 
@@ -1249,38 +1465,88 @@ router.post(
       amount,
       email,
       players,
-      cardDetails = {}, // Default to empty object
+      cardDetails = {},
       paymentSystem,
+      idempotencyKey,
     } = req.body;
 
-    // Calculate per player amount
     const perPlayerAmount = amount / 100 / players.length;
+    const parentId = req.user.id;
+    const cardLastFour = cardDetails?.last_4 || '';
+    const cardBrand = cardDetails?.card_brand || '';
+    const cardExpMonth = cardDetails?.exp_month || 0;
+    const cardExpYear = cardDetails?.exp_year || 0;
 
     const session = await mongoose.startSession();
     session.startTransaction();
 
     try {
-      console.log('✅ Training payment validation passed, processing...');
+      // Generate unique request key for duplicate detection
+      const requestKey = generateRequestKey(parentId, amount, null, players);
 
-      // Get payment service
+      if (isDuplicateRequest(requestKey)) {
+        console.warn(
+          '⚠️ Duplicate training payment request detected:',
+          requestKey,
+        );
+        const playerIds = players.map((p) => p.playerId).sort();
+        const existingPayment = await Payment.findOne({
+          parentId: parentId,
+          paymentType: 'training',
+          status: 'completed',
+          'players.playerId': { $all: playerIds },
+          'players.year': players[0].year,
+        }).sort({ createdAt: -1 });
+
+        if (existingPayment) {
+          return res.status(409).json({
+            success: true,
+            message: 'Payment already processed successfully',
+            paymentId: existingPayment._id,
+            externalPaymentId: existingPayment.paymentId,
+            paymentSystem: existingPayment.paymentSystem,
+            duplicate: true,
+            receiptUrl: existingPayment.receiptUrl,
+            amount: existingPayment.amount,
+          });
+        }
+        return res.status(409).json({
+          success: false,
+          error:
+            'Duplicate payment request detected. Please check your payment status.',
+          duplicate: true,
+        });
+      }
+
+      requestTracker.set(requestKey, {
+        status: 'processing',
+        timestamp: Date.now(),
+      });
+
+      console.log('Processing training payment:', {
+        parentId,
+        playerIds: players.map((p) => p.playerId),
+        amount: amount / 100,
+        playerCount: players.length,
+      });
+
       const paymentService = await getPaymentService(paymentSystem);
       console.log('Using payment service for training:', paymentService.type);
 
-      // Validate configuration
       validateConfigForPayment(paymentService.configuration, 'training');
 
-      // Verify parent exists
       const parent = await Parent.findById(req.user.id).session(session);
       if (!parent) {
+        requestTracker.delete(requestKey);
         throw new Error('Parent not found');
       }
 
-      // Process payment
+      const finalIdempotencyKey = idempotencyKey || crypto.randomUUID();
+
       let paymentResult;
       const amountInCents = parseInt(amount);
 
       if (paymentService.type === 'square') {
-        // Create a shorter reference ID for Square only (max 40 chars)
         const shortRefId =
           `tr:${parent._id.toString().slice(-12)}:${Date.now().toString().slice(-8)}`.slice(
             0,
@@ -1293,7 +1559,7 @@ router.post(
             amount: amountInCents,
             currency: paymentService.settings?.currency || 'USD',
           },
-          idempotencyKey: crypto.randomUUID(),
+          idempotencyKey: finalIdempotencyKey,
           locationId: paymentService.config.locationId,
           customerId: parent.squareCustomerId,
           referenceId: shortRefId,
@@ -1301,12 +1567,6 @@ router.post(
           buyerEmailAddress: email,
           autocomplete: true,
         };
-
-        console.log('Square payment request:', {
-          locationId: paymentService.config.locationId,
-          amount: amountInCents,
-          referenceId: shortRefId,
-        });
 
         const { result } =
           await paymentService.client.paymentsApi.createPayment(paymentRequest);
@@ -1320,7 +1580,6 @@ router.post(
           note: `Training payment for ${players.length} player(s)`,
         };
 
-        console.log('Clover payment request:', paymentData);
         paymentResult = await paymentService.processPayment(paymentData);
       }
 
@@ -1329,26 +1588,20 @@ router.post(
         (paymentResult.status !== 'COMPLETED' &&
           paymentResult.status !== 'PAID')
       ) {
-        console.error('Payment failed:', paymentResult);
+        requestTracker.delete(requestKey);
         throw new Error(`Payment failed with status: ${paymentResult?.status}`);
       }
 
-      console.log(`${paymentService.type} payment successful:`, {
-        paymentId: paymentResult.id,
-        status: paymentResult.status,
-      });
-
-      // Create Payment record using helper
       const basePaymentData = {
         parentId: parent._id,
         playerCount: players.length,
         playerIds: players.map((p) => p.playerId),
         paymentId: paymentResult.id,
         buyerEmail: email,
-        cardLastFour: cardDetails?.last_4 || '',
-        cardBrand: cardDetails?.card_brand || '',
-        cardExpMonth: cardDetails?.exp_month || 0,
-        cardExpYear: cardDetails?.exp_year || 0,
+        cardLastFour: cardLastFour,
+        cardBrand: cardBrand,
+        cardExpMonth: cardExpMonth,
+        cardExpYear: cardExpYear,
         amount: amount / 100,
         currency: paymentService.settings?.currency || 'USD',
         status: 'completed',
@@ -1361,6 +1614,7 @@ router.post(
           tryoutId: p.tryoutId?.trim() || 'training',
         })),
         paymentType: 'training',
+        idempotencyKey: finalIdempotencyKey,
       };
 
       const payment = new Payment(
@@ -1368,7 +1622,6 @@ router.post(
       );
       await payment.save({ session });
 
-      // Update all players and their seasons for training
       const updatedPlayers = [];
       for (const playerData of players) {
         const normalizedSeason = playerData.season.trim();
@@ -1392,7 +1645,6 @@ router.post(
           );
         }
 
-        // Check for pending training seasons
         const pendingTrainingSeasonIndex = player.seasons.findIndex((s) => {
           const isTrainingSeason =
             s.season?.toLowerCase().includes('training') ||
@@ -1416,15 +1668,14 @@ router.post(
             paymentComplete: true,
             paymentId: paymentResult.id,
             amountPaid: perPlayerAmount,
-            cardLast4: cardDetails?.last_4 || '',
-            cardBrand: cardDetails?.card_brand || '',
+            cardLast4: cardLastFour,
+            cardBrand: cardBrand,
             paymentDate: new Date(),
             registrationDate:
               player.seasons[pendingTrainingSeasonIndex].registrationDate ||
               new Date(),
           };
         } else {
-          // Add new training season
           player.seasons.push({
             season: normalizedSeason,
             year: playerData.year,
@@ -1433,8 +1684,8 @@ router.post(
             paymentComplete: true,
             paymentId: paymentResult.id,
             amountPaid: perPlayerAmount,
-            cardLast4: cardDetails?.last_4 || '',
-            cardBrand: cardDetails?.card_brand || '',
+            cardLast4: cardLastFour,
+            cardBrand: cardBrand,
             paymentDate: new Date(),
             registrationDate: new Date(),
           });
@@ -1449,7 +1700,6 @@ router.post(
         const updatedPlayer = await player.save({ session });
         updatedPlayers.push(updatedPlayer);
 
-        // Update registration
         await Registration.findOneAndUpdate(
           {
             player: updatedPlayer._id,
@@ -1464,8 +1714,8 @@ router.post(
               paymentComplete: true,
               paymentId: paymentResult.id,
               amountPaid: perPlayerAmount,
-              cardLast4: cardDetails?.last_4 || '',
-              cardBrand: cardDetails?.card_brand || '',
+              cardLast4: cardLastFour,
+              cardBrand: cardBrand,
               paymentDate: new Date(),
               registrationComplete: true,
               updatedAt: new Date(),
@@ -1476,7 +1726,6 @@ router.post(
         );
       }
 
-      // Update parent
       await Parent.findByIdAndUpdate(
         parent._id,
         {
@@ -1488,7 +1737,12 @@ router.post(
         { session },
       );
 
-      // Send training confirmation email
+      requestTracker.set(requestKey, {
+        status: 'completed',
+        timestamp: Date.now(),
+        paymentId: payment._id,
+      });
+
       try {
         await sendEmail({
           to: email,
@@ -1506,8 +1760,6 @@ router.post(
                 <p style="font-size: 16px;">Thank you for your training payment! Your registration has been confirmed.</p>
                 <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
                   <h3 style="margin-top: 0; color: rgba(0, 0, 0, .7);">Training Payment Details</h3>
-                  <p style="margin: 8px 0;"><strong>Training Program:</strong> ${players[0]?.season || 'Basketball Training'}</p>
-                  <p style="margin: 8px 0;"><strong>Year:</strong> ${players[0]?.year || new Date().getFullYear()}</p>
                   <p style="margin: 8px 0;"><strong>Number of Players:</strong> ${players.length}</p>
                   <p style="margin: 8px 0;"><strong>Total Amount Paid:</strong> $${amount / 100}</p>
                   <p style="margin: 8px 0;"><strong>Payment ID:</strong> ${paymentResult.id}</p>
@@ -1516,20 +1768,12 @@ router.post(
                     ${updatedPlayers.map((p) => `<li>${p.fullName}</li>`).join('')}
                   </ul>
                 </div>
-                <p style="font-size: 16px;"><strong>Training Information:</strong></p>
-                <ul style="font-size: 14px;">
-                  <li>You will receive training schedule information within the next week</li>
-                  <li>Training sessions will focus on skill development and fundamentals</li>
-                  <li>Please arrive 15 minutes early for your first session</li>
-                  <li>Bring basketball shoes, water bottle, and appropriate workout attire</li>
-                </ul>
-                <p style="font-size: 14px; color: #555;">If you have any questions about the training program, please contact us at bothellselect@proton.me</p>
+                <p style="font-size: 14px; color: #555;">If you have any questions, please contact us at bothellselect@proton.me</p>
                 <p style="font-size: 16px; font-weight: bold;">We look forward to training with you! 🏀</p>
               </div>
             </div>
           `,
         });
-        console.log('✅ Training confirmation email sent');
       } catch (emailError) {
         console.error(
           'Failed to send training confirmation email:',
@@ -1567,6 +1811,18 @@ router.post(
     } catch (error) {
       await session.abortTransaction();
       console.error('Training payment processing error:', error);
+
+      const parentId = req.user?.id;
+      if (parentId && req.body.players && req.body.amount) {
+        const requestKey = generateRequestKey(
+          parentId,
+          req.body.amount,
+          null,
+          req.body.players,
+        );
+        requestTracker.delete(requestKey);
+      }
+
       res.status(400).json({
         success: false,
         error: 'Training payment processing failed',
@@ -1580,7 +1836,10 @@ router.post(
   },
 );
 
-// PROCESS PAYMENTS FOR LOGGED-IN USERS - UPDATED
+// ============================================
+// GENERAL PAYMENT PROCESS
+// ============================================
+
 router.post('/process', authenticate, async (req, res) => {
   console.log('=== PAYMENT PROCESS REQUEST RECEIVED ===');
 
@@ -1595,12 +1854,58 @@ router.post('/process', authenticate, async (req, res) => {
       email: buyerEmailAddress,
       players,
       cardDetails,
-      paymentSystem, // Optional: specify payment system
+      paymentSystem,
+      idempotencyKey,
     } = req.body;
 
     const parentId = req.user.id;
+    const cardLastFour = cardDetails?.last_4 || req.body.cardLastFour || 'N/A';
+    const cardBrand = cardDetails?.card_brand || req.body.cardBrand || 'N/A';
+    const cardExpMonth = cardDetails?.exp_month || req.body.cardExpMonth || '0';
+    const cardExpYear = cardDetails?.exp_year || req.body.cardExpYear || '0';
 
-    console.log('Processing payment for logged-in user:', {
+    // Generate unique request key for duplicate detection
+    const requestKey = generateRequestKey(parentId, amount, null, players);
+
+    if (isDuplicateRequest(requestKey)) {
+      console.warn(
+        '⚠️ Duplicate general payment request detected:',
+        requestKey,
+      );
+      const playerIds = players.map((p) => p.playerId).sort();
+      const existingPayment = await Payment.findOne({
+        parentId: parentId,
+        paymentType: 'general',
+        status: 'completed',
+        'players.playerId': { $all: playerIds },
+      }).sort({ createdAt: -1 });
+
+      if (existingPayment) {
+        return res.status(409).json({
+          success: true,
+          message: 'Payment already processed successfully',
+          paymentId: existingPayment._id,
+          externalPaymentId: existingPayment.paymentId,
+          paymentSystem: existingPayment.paymentSystem,
+          duplicate: true,
+          receiptUrl: existingPayment.receiptUrl,
+          amount: existingPayment.amount,
+        });
+      }
+      return res.status(409).json({
+        success: false,
+        error:
+          'Duplicate payment request detected. Please check your payment status.',
+        duplicate: true,
+      });
+    }
+
+    requestTracker.set(requestKey, {
+      status: 'processing',
+      timestamp: Date.now(),
+    });
+
+    console.log('Processing general payment:', {
       parentId,
       playerCount: players?.length,
       amount,
@@ -1608,8 +1913,8 @@ router.post('/process', authenticate, async (req, res) => {
       requestedPaymentSystem: paymentSystem,
     });
 
-    // Validate required fields
     if (!players || !Array.isArray(players) || players.length === 0) {
+      requestTracker.delete(requestKey);
       return res.status(400).json({
         success: false,
         error: 'Players data is required',
@@ -1617,6 +1922,7 @@ router.post('/process', authenticate, async (req, res) => {
     }
 
     if (!amount || amount <= 0) {
+      requestTracker.delete(requestKey);
       return res.status(400).json({
         success: false,
         error: 'Valid payment amount is required',
@@ -1624,40 +1930,38 @@ router.post('/process', authenticate, async (req, res) => {
     }
 
     if (!token && !sourceId) {
+      requestTracker.delete(requestKey);
       return res.status(400).json({
         success: false,
         error: 'Payment token is required',
       });
     }
 
-    // Get payment service
     const paymentService = await getPaymentService(paymentSystem);
     console.log(
       'Using payment service for general payment:',
       paymentService.type,
     );
 
-    // Validate configuration
     validateConfigForPayment(paymentService.configuration, 'general');
 
-    // Get parent
     const parent = await Parent.findById(parentId).session(session);
     if (!parent) {
+      requestTracker.delete(requestKey);
       return res.status(404).json({
         success: false,
         error: 'Parent not found',
       });
     }
 
-    // Use existing customer ID
     let customerId;
     const customerField = `${paymentService.type}CustomerId`;
     customerId = parent[customerField];
 
-    // Process payment
     let paymentResult;
     const amountInCents = parseInt(amount);
     const perPlayerAmount = amount / 100 / players.length;
+    const finalIdempotencyKey = idempotencyKey || crypto.randomUUID();
 
     if (paymentService.type === 'square') {
       const paymentRequest = {
@@ -1666,7 +1970,7 @@ router.post('/process', authenticate, async (req, res) => {
           amount: amountInCents,
           currency: paymentService.settings?.currency || 'USD',
         },
-        idempotencyKey: crypto.randomUUID(),
+        idempotencyKey: finalIdempotencyKey,
         locationId: paymentService.config.locationId,
         referenceId: `parent:${parent._id}`,
         note: `Payment for ${players.length} player(s)`,
@@ -1697,12 +2001,12 @@ router.post('/process', authenticate, async (req, res) => {
       !paymentResult ||
       (paymentResult.status !== 'COMPLETED' && paymentResult.status !== 'PAID')
     ) {
+      requestTracker.delete(requestKey);
       throw new Error(`Payment failed with status: ${paymentResult?.status}`);
     }
 
     console.log(`${paymentService.type} payment completed successfully`);
 
-    // Update players and registrations
     const updatedPlayers = [];
 
     for (const playerData of players) {
@@ -1724,7 +2028,6 @@ router.post('/process', authenticate, async (req, res) => {
         );
       }
 
-      // Check for pending season
       const pendingSeasonIndex = player.seasons.findIndex(
         (s) =>
           s.season === playerData.season &&
@@ -1740,8 +2043,8 @@ router.post('/process', authenticate, async (req, res) => {
         paymentComplete: true,
         paymentId: paymentResult.id,
         amountPaid: perPlayerAmount,
-        cardLast4: cardDetails?.last_4 || 'N/A',
-        cardBrand: cardDetails?.card_brand || 'N/A',
+        cardLast4: cardLastFour,
+        cardBrand: cardBrand,
         paymentDate: new Date(),
       };
 
@@ -1761,7 +2064,6 @@ router.post('/process', authenticate, async (req, res) => {
       const savedPlayer = await player.save({ session });
       updatedPlayers.push(savedPlayer);
 
-      // Update registration
       await Registration.findOneAndUpdate(
         {
           player: player._id,
@@ -1775,8 +2077,8 @@ router.post('/process', authenticate, async (req, res) => {
             paymentComplete: true,
             paymentId: paymentResult.id,
             amountPaid: perPlayerAmount,
-            cardLast4: cardDetails?.last_4 || 'N/A',
-            cardBrand: cardDetails?.card_brand || 'N/A',
+            cardLast4: cardLastFour,
+            cardBrand: cardBrand,
             paymentDate: new Date(),
             registrationComplete: true,
           },
@@ -1785,21 +2087,21 @@ router.post('/process', authenticate, async (req, res) => {
       );
     }
 
-    // Create payment record using helper
     const basePaymentData = {
       parentId: parent._id,
       playerCount: players.length,
       playerIds: players.map((p) => p.playerId),
       paymentId: paymentResult.id,
       buyerEmail: buyerEmailAddress,
-      cardLastFour: cardDetails?.last_4 || 'N/A',
-      cardBrand: cardDetails?.card_brand || 'N/A',
+      cardLastFour: cardLastFour,
+      cardBrand: cardBrand,
       amount: amount / 100,
       currency: paymentService.settings?.currency || 'USD',
       status: 'completed',
       processedAt: new Date(),
       receiptUrl: paymentResult.receiptUrl || paymentResult.receipt_url,
       paymentType: 'general',
+      idempotencyKey: finalIdempotencyKey,
     };
 
     const payment = new Payment(
@@ -1807,7 +2109,12 @@ router.post('/process', authenticate, async (req, res) => {
     );
     await payment.save({ session });
 
-    // Send confirmation email
+    requestTracker.set(requestKey, {
+      status: 'completed',
+      timestamp: Date.now(),
+      paymentId: payment._id,
+    });
+
     try {
       await sendEmail({
         to: buyerEmailAddress,
@@ -1857,6 +2164,18 @@ router.post('/process', authenticate, async (req, res) => {
   } catch (error) {
     await session.abortTransaction();
     console.error('Payment processing error:', error);
+
+    const parentId = req.user?.id;
+    if (parentId && req.body.players && req.body.amount) {
+      const requestKey = generateRequestKey(
+        parentId,
+        req.body.amount,
+        null,
+        req.body.players,
+      );
+      requestTracker.delete(requestKey);
+    }
+
     res.status(400).json({
       success: false,
       error: 'Payment processing failed',
@@ -1867,13 +2186,15 @@ router.post('/process', authenticate, async (req, res) => {
   }
 });
 
+// ============================================
 // VERIFY PAYMENT STATUS
+// ============================================
+
 router.get('/verify/:paymentId', authenticate, async (req, res) => {
   try {
     const { paymentId } = req.params;
     const { paymentSystem } = req.query;
 
-    // Get payment record from database
     const paymentRecord = await Payment.findOne({
       $or: [{ paymentId }, { _id: paymentId }],
     });
@@ -1885,12 +2206,10 @@ router.get('/verify/:paymentId', authenticate, async (req, res) => {
       });
     }
 
-    // Get payment service
     const paymentService = await getPaymentService(
       paymentSystem || paymentRecord.paymentSystem,
     );
 
-    // Get payment details from payment processor
     const paymentDetails = await paymentService.getPaymentDetails(paymentId);
 
     res.json({
@@ -1912,6 +2231,10 @@ router.get('/verify/:paymentId', authenticate, async (req, res) => {
   }
 });
 
+// ============================================
+// WEBHOOKS
+// ============================================
+
 router.post('/clover/webhook', express.json(), async (req, res) => {
   try {
     const { type, data, merchantId } = req.body;
@@ -1928,7 +2251,6 @@ router.post('/clover/webhook', express.json(), async (req, res) => {
         : 'No data',
     });
 
-    // Validate merchant ID matches your configuration
     const config = await getActivePaymentConfig();
     if (!config || config.paymentSystem !== 'clover') {
       console.warn('⚠️ Clover webhook received but Clover is not active');
@@ -1943,11 +2265,9 @@ router.post('/clover/webhook', express.json(), async (req, res) => {
       return res.status(400).send('Invalid merchant ID');
     }
 
-    // Handle different webhook events
     switch (type) {
       case 'PAYMENT_PAID':
       case 'ORDER_PAID':
-        // Update payment status to paid
         if (data.paymentId) {
           await Payment.findOneAndUpdate(
             { paymentId: data.paymentId },
@@ -1965,7 +2285,6 @@ router.post('/clover/webhook', express.json(), async (req, res) => {
 
       case 'PAYMENT_REFUNDED':
       case 'REFUND_SUCCEEDED':
-        // Handle refunds
         if (data.paymentId && data.refundId) {
           await Payment.findOneAndUpdate(
             { paymentId: data.paymentId },
@@ -1989,7 +2308,6 @@ router.post('/clover/webhook', express.json(), async (req, res) => {
         break;
 
       case 'PAYMENT_FAILED':
-        // Update payment status to failed
         if (data.paymentId) {
           await Payment.findOneAndUpdate(
             { paymentId: data.paymentId },
@@ -2021,7 +2339,6 @@ router.post('/clover/webhook', express.json(), async (req, res) => {
 
 router.post('/square/webhook', express.json(), async (req, res) => {
   try {
-    const signature = req.headers['x-square-signature'];
     const body = req.body;
 
     console.log('🔔 Square webhook received:', {
@@ -2054,135 +2371,16 @@ router.post('/square/webhook', express.json(), async (req, res) => {
   }
 });
 
-router.post('/clover/process', authenticate, async (req, res) => {
-  console.log('=== CLOVER PAYMENT PROCESS REQUEST ===');
+// ============================================
+// CLOVER RECEIPT
+// ============================================
 
-  const session = await mongoose.startSession();
-  session.startTransaction();
-
-  try {
-    const {
-      token,
-      sourceId,
-      amount,
-      email: buyerEmailAddress,
-      players,
-      cardDetails,
-      registrationType,
-      teamIds,
-      tournament,
-      year,
-      tournamentId,
-    } = req.body;
-
-    const parentId = req.user.id;
-
-    console.log('Processing Clover payment:', {
-      parentId,
-      registrationType,
-      amount,
-      email: buyerEmailAddress,
-      playerCount: players?.length || 0,
-      teamCount: teamIds?.length || 0,
-    });
-
-    // Validate required fields
-    if (!token && !sourceId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Payment token is required',
-      });
-    }
-
-    if (!amount || amount <= 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Valid payment amount is required',
-      });
-    }
-
-    // Get Clover payment service
-    const paymentService = await getPaymentService('clover');
-    console.log('Using Clover payment service');
-
-    // Validate configuration
-    validateConfigForPayment(paymentService.configuration, registrationType);
-
-    // Get parent
-    const parent = await Parent.findById(parentId).session(session);
-    if (!parent) {
-      return res.status(404).json({
-        success: false,
-        error: 'Parent not found',
-      });
-    }
-
-    // Process Clover payment
-    const amountInCents = parseInt(amount);
-    const paymentData = {
-      sourceId: sourceId || token,
-      amount: amountInCents,
-      email: buyerEmailAddress,
-      referenceId: `parent:${parent._id}`,
-      note: `${registrationType} payment`,
-    };
-
-    const paymentResult = await paymentService.processPayment(paymentData);
-
-    if (
-      paymentResult.status !== 'PAID' &&
-      paymentResult.status !== 'AUTHORIZED'
-    ) {
-      throw new Error(
-        `Clover payment failed with status: ${paymentResult.status}`,
-      );
-    }
-
-    console.log('✅ Clover payment completed:', {
-      paymentId: paymentResult.id,
-      status: paymentResult.status,
-    });
-
-    // Handle different registration types
-    let responseData = { success: true };
-
-    if (registrationType === 'tryout') {
-      // Handle tryout registration
-      // ... (copy tryout logic from existing endpoint)
-    } else if (registrationType === 'training') {
-      // Handle training registration
-      // ... (copy training logic from existing endpoint)
-    } else if (registrationType === 'tournament') {
-      // Handle tournament registration
-      // ... (copy tournament logic from existing endpoint)
-    } else {
-      // Handle general payment
-      // ... (copy general payment logic)
-    }
-
-    await session.commitTransaction();
-    res.json(responseData);
-  } catch (error) {
-    await session.abortTransaction();
-    console.error('Clover payment error:', error);
-    res.status(400).json({
-      success: false,
-      error: 'Clover payment processing failed',
-      message: error.message,
-    });
-  } finally {
-    session.endSession();
-  }
-});
-
-// Get Clover receipt details for internal receipt page
 router.get('/clover/receipt/:orderId', authenticate, async (req, res) => {
   try {
     const { orderId } = req.params;
 
     console.log('🔍 Fetching Clover receipt for orderId:', orderId);
 
-    // Find the payment by orderId
     const payment = await Payment.findOne({
       orderId: orderId,
       paymentSystem: 'clover',
@@ -2198,7 +2396,6 @@ router.get('/clover/receipt/:orderId', authenticate, async (req, res) => {
       });
     }
 
-    // Check authorization - only the parent who paid or admin can view
     if (
       req.user.role !== 'admin' &&
       payment.parentId._id.toString() !== req.user.id
@@ -2209,14 +2406,6 @@ router.get('/clover/receipt/:orderId', authenticate, async (req, res) => {
       });
     }
 
-    console.log('✅ Found payment:', {
-      orderId: payment.orderId,
-      paymentId: payment.paymentId,
-      amount: payment.amount,
-      parentEmail: payment.parentId?.email,
-    });
-
-    // Return receipt data (without trying to fetch from Clover API)
     res.json({
       success: true,
       receipt: {
