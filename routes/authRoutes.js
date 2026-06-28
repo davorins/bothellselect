@@ -3740,26 +3740,96 @@ router.post('/notifications', authenticate, async (req, res) => {
     if (req.user.role === 'admin') {
       let emails = [];
 
+      // Get sender info for the email
+      const sender = await Parent.findById(req.user.id).select(
+        'fullName avatar',
+      );
+
       if (targetType === 'all') {
-        const parents = await Parent.find({}, 'email');
-        emails = parents.map((p) => p.email);
+        const parents = await Parent.find({}, 'email fullName');
+        emails = parents.map((p) => ({
+          email: p.email,
+          fullName: p.fullName,
+        }));
       } else {
         const parents = await Parent.find(
           { _id: { $in: resolvedParentIds } },
-          'email',
+          'email fullName',
         );
-        emails = parents.map((p) => p.email);
+        emails = parents.map((p) => ({
+          email: p.email,
+          fullName: p.fullName,
+        }));
       }
 
-      for (const email of emails) {
+      for (const recipient of emails) {
         try {
+          // Build the notification email with the same style as your other emails
+          const notificationEmailHtml = `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px;">
+          <div style="text-align: center; margin-bottom: 20px;">
+            <img src="https://bothellselect.com/assets/img/logo.png" alt="Bothell Select Basketball" style="max-width: 200px;">
+          </div>
+          
+          <div style="background: #f8f9fa; padding: 30px; border-radius: 8px;">
+            <h1 style="color: #333; text-align: center; font-size: 24px;">📢 New Notification</h1>
+            
+            <div style="margin: 30px 0;">
+              <p>Dear <strong>${recipient.fullName || 'Parent'}</strong>,</p>
+              
+              <div style="background: white; padding: 20px; border-radius: 6px; margin: 20px 0; border-left: 4px solid #506ee4;">
+                <h3 style="margin-top: 0; color: rgba(0, 0, 0, .7);">📨 Message from Bothell Select</h3>
+                <p style="font-size: 16px; line-height: 1.6; color: #333;">${message}</p>
+              </div>
+              
+              ${
+                targetType === 'season' && seasonName
+                  ? `
+                <div style="background: #e8f4fd; padding: 15px; border-radius: 6px; margin: 20px 0;">
+                  <p style="margin: 0; color: #0066cc;">
+                    <strong>Season:</strong> ${seasonName}
+                  </p>
+                </div>
+              `
+                  : ''
+              }
+              
+              <div style="text-align: center; margin: 30px 0;">
+                <a href="${process.env.FRONTEND_URL || 'https://bothellselect.com'}/admin-dashboard" 
+                   style="background: #506ee4; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
+                  Go to Dashboard
+                </a>
+              </div>
+              
+              <div style="background: #fff3cd; padding: 15px; border-radius: 4px; margin: 20px 0;">
+                <h4 style="margin-top: 0; color: #856404;">📌 Important</h4>
+                <p style="color: #856404; margin: 0;">
+                  Please log in to your account to view all notifications and manage your settings.
+                </p>
+              </div>
+              
+              <p style="color: #666; font-size: 14px;">If you have any questions, please contact us at <a href="mailto:bothellselect@proton.me">bothellselect@proton.me</a></p>
+            </div>
+          </div>
+          
+          <div style="text-align: center; margin-top: 30px; color: #666; font-size: 14px;">
+            <p>Bothell Select Basketball<br>
+            bothellselect@proton.me</p>
+            <p style="font-size: 12px;">© ${new Date().getFullYear()} Bothell Select Basketball. All rights reserved.</p>
+          </div>
+        </div>
+      `;
+
           await sendEmail({
-            to: email,
-            subject: 'New Notification',
-            html: `<p>${message}</p>`,
+            to: recipient.email,
+            subject: `New Notification from Bothell Select Basketball`,
+            html: notificationEmailHtml,
           });
         } catch (emailError) {
-          console.error(`Failed to send email to ${email}:`, emailError);
+          console.error(
+            `Failed to send email to ${recipient.email}:`,
+            emailError,
+          );
         }
       }
     }
