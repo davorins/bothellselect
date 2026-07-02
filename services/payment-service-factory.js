@@ -15,14 +15,13 @@ class PaymentServiceFactory {
 
     const query = {
       isActive: true,
-      paymentSystem: paymentSystem || { $exists: true },
     };
 
     if (paymentSystem) {
       query.paymentSystem = paymentSystem;
+    } else {
+      query.paymentSystem = { $exists: true };
     }
-
-    console.log('Querying PaymentConfiguration with:', query);
 
     const config = await PaymentConfiguration.findOne(query)
       .select(
@@ -37,8 +36,9 @@ class PaymentServiceFactory {
       hasSquareConfig: !!config?.squareConfig,
       hasAccessToken: !!config?.squareConfig?.accessToken,
       hasLocationId: !!config?.squareConfig?.locationId,
-      cloverAccessToken:
-        config?.cloverConfig?.accessToken?.substring(0, 10) + '...',
+      cloverAccessToken: config?.cloverConfig?.accessToken
+        ? config.cloverConfig.accessToken.substring(0, 10) + '...'
+        : 'none',
     });
 
     if (!config) {
@@ -72,6 +72,10 @@ class PaymentServiceFactory {
     return service;
   }
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // SQUARE
+  // ──────────────────────────────────────────────────────────────────────────
+
   createSquareService(config) {
     const { Client, Environment } = require('square');
 
@@ -98,14 +102,11 @@ class PaymentServiceFactory {
       configurationId: config._id,
 
       async processPayment(paymentData) {
-        console.log('Square processPayment called with config:', {
-          locationId: this.config.locationId,
-          hasAccessToken: !!this.config.accessToken,
-        });
-
         const { paymentsApi } = this.client;
         const paymentRequest = {
-          idempotencyKey: `payment_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          idempotencyKey: `payment_${Date.now()}_${Math.random()
+            .toString(36)
+            .substr(2, 9)}`,
           sourceId: paymentData.sourceId,
           amountMoney: {
             amount: paymentData.amount,
@@ -118,23 +119,19 @@ class PaymentServiceFactory {
           buyerEmailAddress: paymentData.email,
         };
 
-        console.log('Square payment request:', {
-          amount: paymentRequest.amountMoney.amount,
-          locationId: paymentRequest.locationId,
-          hasLocationId: !!paymentRequest.locationId,
-        });
-
         const { result } = await paymentsApi.createPayment(paymentRequest);
         return result.payment;
       },
 
-      async refundPayment(paymentId, amount, reason) {
+      async refundPayment(paymentId, amountInCents, reason) {
         const { refundsApi } = this.client;
         const refundRequest = {
-          idempotencyKey: `refund_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+          idempotencyKey: `refund_${Date.now()}_${Math.random()
+            .toString(36)
+            .substr(2, 9)}`,
           paymentId,
           amountMoney: {
-            amount,
+            amount: amountInCents,
             currency: this.settings.currency || 'USD',
           },
           reason,
@@ -150,6 +147,10 @@ class PaymentServiceFactory {
       },
     };
   }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // CLOVER
+  // ──────────────────────────────────────────────────────────────────────────
 
   createCloverService(config) {
     console.log('🔧 Creating Clover service with config:', {
@@ -174,13 +175,13 @@ class PaymentServiceFactory {
 
     console.log('✅ Using Clover Ecommerce API at:', ecomBase);
 
-    // Check if using Ecommerce API key (starts with sk_) vs OAuth token
+    // Ecommerce API key path (no refreshToken present)
     const accessToken = config.cloverConfig?.accessToken;
     const isEcommerceKey = accessToken && !config.cloverConfig?.refreshToken;
 
     if (isEcommerceKey) {
       console.log(
-        '✅ Detected Ecommerce API key (sk_) - using direct authentication',
+        '✅ Detected Ecommerce API key — using direct authentication',
       );
 
       return {
@@ -200,49 +201,44 @@ class PaymentServiceFactory {
           if (!paymentData.sourceId) {
             throw new Error('Payment source ID (token) is required');
           }
-
           if (!paymentData.amount || paymentData.amount <= 0) {
             throw new Error('Valid payment amount is required');
           }
 
           const privateKey = this.config.accessToken;
 
-          const response = await axios.post(
-            `${this.ecomBase}/v1/charges`,
-            {
-              amount: paymentData.amount,
-              currency: (this.settings?.currency || 'USD').toLowerCase(),
-              source: paymentData.sourceId,
-              ...(paymentData.email && { email: paymentData.email }),
-              ...(paymentData.note && { description: paymentData.note }),
-            },
-            {
-              headers: {
-                Authorization: `Bearer ${privateKey}`,
-                'Content-Type': 'application/json',
+          let response;
+          try {
+            response = await axios.post(
+              `${this.ecomBase}/v1/charges`,
+              {
+                amount: paymentData.amount,
+                currency: (this.settings?.currency || 'USD').toLowerCase(),
+                source: paymentData.sourceId,
+                ...(paymentData.email && { email: paymentData.email }),
+                ...(paymentData.note && { description: paymentData.note }),
               },
-              // Don't throw on 204
-              validateStatus: (status) => status >= 200 && status < 300,
-            },
-          );
+              {
+                headers: {
+                  Authorization: `Bearer ${privateKey}`,
+                  'Content-Type': 'application/json',
+                },
+                validateStatus: (status) => status >= 200 && status < 300,
+              },
+            );
+          } catch (axiosError) {
+            const cloverMessage =
+              axiosError.response?.data?.message ||
+              axiosError.response?.data?.error?.message ||
+              axiosError.message;
+            throw new Error(`Clover charge failed: ${cloverMessage}`);
+          }
 
           console.log('🔍 Clover charge response status:', response.status);
 
-          // 204 = success with no body, 200/201 = success with body
-          const isSuccess =
-            response.status === 204 ||
-            response.status === 200 ||
-            response.status === 201;
-
-          if (!isSuccess) {
-            throw new Error(
-              `Clover charge failed with status: ${response.status}`,
-            );
-          }
-
           const result = response.data || {};
 
-          // Generate a unique payment ID since 204 returns no body
+          // 204 = success with no body; generate a stable ID from token suffix
           const paymentId =
             result.id ||
             `clover_${Date.now()}_${paymentData.sourceId.slice(-8)}`;
@@ -252,10 +248,10 @@ class PaymentServiceFactory {
 
           return {
             id: paymentId,
-            status: 'PAID', // 204 means it went through
+            status: 'PAID',
             amount: result.amount || paymentData.amount,
             currency: result.currency || 'usd',
-            receiptUrl: receiptUrl,
+            receiptUrl,
             cardDetails: result.source?.card
               ? {
                   last4: result.source.card.last4,
@@ -267,27 +263,54 @@ class PaymentServiceFactory {
           };
         },
 
-        async refundPayment(paymentId, amount, reason) {
-          console.log('🔄 Processing Clover refund:', { paymentId, amount });
+        async refundPayment(chargeId, amountInCents, reason) {
+          console.log('🔄 Processing Clover refund (ecommerce key):', {
+            chargeId,
+            amountInCents,
+            reason,
+          });
 
           const privateKey = this.config.accessToken;
 
-          const response = await axios.post(
-            `${this.ecomBase}/v1/refunds`,
-            {
-              charge: paymentId,
-              amount: amount,
-              reason: reason || 'requested_by_customer',
-            },
-            {
-              headers: {
-                Authorization: `Bearer ${privateKey}`,
-                'Content-Type': 'application/json',
-              },
-            },
-          );
+          // Clover /v1/refunds requires the charge ID and amount in cents.
+          // Omitting amount triggers a full refund; always send it for safety.
+          const payload = {
+            charge: chargeId,
+            reason: reason || 'requested_by_customer',
+          };
+          if (amountInCents) {
+            payload.amount = amountInCents;
+          }
 
-          return response.data;
+          let response;
+          try {
+            response = await axios.post(
+              `${this.ecomBase}/v1/refunds`,
+              payload,
+              {
+                headers: {
+                  Authorization: `Bearer ${privateKey}`,
+                  'Content-Type': 'application/json',
+                },
+                validateStatus: (status) => status >= 200 && status < 300,
+              },
+            );
+          } catch (axiosError) {
+            const cloverMessage =
+              axiosError.response?.data?.message ||
+              axiosError.response?.data?.error?.message ||
+              axiosError.message;
+            throw new Error(`Clover refund failed: ${cloverMessage}`);
+          }
+
+          const result = response.data || {};
+
+          return {
+            id: result.id || `clover_refund_${Date.now()}`,
+            status: 'COMPLETED',
+            amount: result.amount ? result.amount / 100 : amountInCents / 100,
+            chargeId: result.charge || chargeId,
+          };
         },
 
         async getPaymentDetails(paymentId) {
@@ -295,22 +318,34 @@ class PaymentServiceFactory {
 
           const privateKey = this.config.accessToken;
 
-          const response = await axios.get(
-            `${this.ecomBase}/v1/payments/${paymentId}`,
-            {
-              headers: {
-                Authorization: `Bearer ${privateKey}`,
-                'Content-Type': 'application/json',
+          let response;
+          try {
+            response = await axios.get(
+              `${this.ecomBase}/v1/charges/${paymentId}`,
+              {
+                headers: {
+                  Authorization: `Bearer ${privateKey}`,
+                  'Content-Type': 'application/json',
+                },
               },
-            },
-          );
+            );
+          } catch (axiosError) {
+            const cloverMessage =
+              axiosError.response?.data?.message ||
+              axiosError.response?.data?.error?.message ||
+              axiosError.message;
+            throw new Error(
+              `Clover get payment details failed: ${cloverMessage}`,
+            );
+          }
 
           return response.data;
         },
       };
     }
 
-    // Original OAuth flow for non-Ecommerce keys (keep as fallback)
+    // ── OAuth flow (refreshToken present) ────────────────────────────────
+
     console.log('Using OAuth token flow (non-Ecommerce key)');
 
     return {
@@ -322,7 +357,7 @@ class PaymentServiceFactory {
       ecomBase,
 
       async processPayment(paymentData) {
-        console.log('💰 Processing Clover charge:', {
+        console.log('💰 Processing Clover charge (OAuth):', {
           amount: paymentData.amount,
           ecomBase: this.ecomBase,
         });
@@ -330,7 +365,6 @@ class PaymentServiceFactory {
         if (!paymentData.sourceId) {
           throw new Error('Payment source ID (token) is required');
         }
-
         if (!paymentData.amount || paymentData.amount <= 0) {
           throw new Error('Valid payment amount is required');
         }
@@ -340,42 +374,39 @@ class PaymentServiceFactory {
           validToken = await cloverTokenManager.getValidAccessToken(
             this.configurationId,
           );
-          console.log('✅ Got valid Clover token');
         } catch (tokenError) {
-          console.error(
-            '❌ Failed to get valid Clover token:',
-            tokenError.message,
-          );
           throw new Error(
             'Clover authentication failed. Please check configuration.',
           );
         }
 
-        const response = await axios.post(
-          `${this.ecomBase}/v1/payments`,
-          {
-            amount: paymentData.amount,
-            currency: (this.settings?.currency || 'USD').toLowerCase(),
-            source: paymentData.sourceId,
-            ...(paymentData.email && { email: paymentData.email }),
-            ...(paymentData.note && { description: paymentData.note }),
-          },
-          {
-            headers: {
-              Authorization: `Bearer ${validToken}`,
-              'Content-Type': 'application/json',
+        let response;
+        try {
+          response = await axios.post(
+            `${this.ecomBase}/v1/payments`,
+            {
+              amount: paymentData.amount,
+              currency: (this.settings?.currency || 'USD').toLowerCase(),
+              source: paymentData.sourceId,
+              ...(paymentData.email && { email: paymentData.email }),
+              ...(paymentData.note && { description: paymentData.note }),
             },
-          },
-        );
+            {
+              headers: {
+                Authorization: `Bearer ${validToken}`,
+                'Content-Type': 'application/json',
+              },
+            },
+          );
+        } catch (axiosError) {
+          const cloverMessage =
+            axiosError.response?.data?.message ||
+            axiosError.response?.data?.error?.message ||
+            axiosError.message;
+          throw new Error(`Clover charge failed: ${cloverMessage}`);
+        }
 
         const result = response.data;
-
-        console.log('✅ Clover payment result:', {
-          id: result.id,
-          paid: result.paid,
-          status: result.status,
-        });
-
         const receiptUrl =
           result.receipt_url || `https://www.clover.com/receipt/${result.id}`;
 
@@ -385,7 +416,7 @@ class PaymentServiceFactory {
           amount: result.amount,
           currency: result.currency,
           orderId: result.order?.id || result.id,
-          receiptUrl: receiptUrl,
+          receiptUrl,
           cardDetails: result.source?.card
             ? {
                 last4: result.source.card.last4,
@@ -397,8 +428,12 @@ class PaymentServiceFactory {
         };
       },
 
-      async refundPayment(paymentId, amount, reason) {
-        console.log('🔄 Processing Clover refund:', { paymentId, amount });
+      async refundPayment(chargeId, amountInCents, reason) {
+        console.log('🔄 Processing Clover refund (OAuth):', {
+          chargeId,
+          amountInCents,
+          reason,
+        });
 
         let validToken;
         try {
@@ -406,35 +441,48 @@ class PaymentServiceFactory {
             this.configurationId,
           );
         } catch (tokenError) {
-          console.error(
-            '❌ Failed to get valid Clover token for refund:',
-            tokenError.message,
-          );
           throw new Error(
             'Clover authentication failed. Please check configuration.',
           );
         }
 
-        const response = await axios.post(
-          `${this.ecomBase}/v1/refunds`,
-          {
-            charge: paymentId,
-            amount: amount,
-            reason: reason || 'requested_by_customer',
-          },
-          {
+        const payload = {
+          charge: chargeId,
+          reason: reason || 'requested_by_customer',
+        };
+        if (amountInCents) {
+          payload.amount = amountInCents;
+        }
+
+        let response;
+        try {
+          response = await axios.post(`${this.ecomBase}/v1/refunds`, payload, {
             headers: {
               Authorization: `Bearer ${validToken}`,
               'Content-Type': 'application/json',
             },
-          },
-        );
+            validateStatus: (status) => status >= 200 && status < 300,
+          });
+        } catch (axiosError) {
+          const cloverMessage =
+            axiosError.response?.data?.message ||
+            axiosError.response?.data?.error?.message ||
+            axiosError.message;
+          throw new Error(`Clover refund failed: ${cloverMessage}`);
+        }
 
-        return response.data;
+        const result = response.data || {};
+
+        return {
+          id: result.id || `clover_refund_${Date.now()}`,
+          status: 'COMPLETED',
+          amount: result.amount ? result.amount / 100 : amountInCents / 100,
+          chargeId: result.charge || chargeId,
+        };
       },
 
       async getPaymentDetails(paymentId) {
-        console.log('🔍 Getting Clover payment details:', paymentId);
+        console.log('🔍 Getting Clover payment details (OAuth):', paymentId);
 
         let validToken;
         try {
@@ -442,29 +490,40 @@ class PaymentServiceFactory {
             this.configurationId,
           );
         } catch (tokenError) {
-          console.error(
-            '❌ Failed to get valid Clover token for details:',
-            tokenError.message,
-          );
           throw new Error(
             'Clover authentication failed. Please check configuration.',
           );
         }
 
-        const response = await axios.get(
-          `${this.ecomBase}/v1/payments/${paymentId}`,
-          {
-            headers: {
-              Authorization: `Bearer ${validToken}`,
-              'Content-Type': 'application/json',
+        let response;
+        try {
+          response = await axios.get(
+            `${this.ecomBase}/v1/charges/${paymentId}`,
+            {
+              headers: {
+                Authorization: `Bearer ${validToken}`,
+                'Content-Type': 'application/json',
+              },
             },
-          },
-        );
+          );
+        } catch (axiosError) {
+          const cloverMessage =
+            axiosError.response?.data?.message ||
+            axiosError.response?.data?.error?.message ||
+            axiosError.message;
+          throw new Error(
+            `Clover get payment details failed: ${cloverMessage}`,
+          );
+        }
 
         return response.data;
       },
     };
   }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // STRIPE
+  // ──────────────────────────────────────────────────────────────────────────
 
   createStripeService(config) {
     const stripe = require('stripe')(config.stripeConfig.secretKey);
@@ -490,37 +549,38 @@ class PaymentServiceFactory {
         return paymentIntent;
       },
 
-      async refundPayment(paymentId, amount, reason) {
+      async refundPayment(paymentId, amountInCents, reason) {
         const refund = await stripe.refunds.create({
           payment_intent: paymentId,
-          amount,
+          amount: amountInCents,
           reason,
         });
         return refund;
       },
 
       async getPaymentDetails(paymentId) {
-        const paymentIntent = await stripe.paymentIntents.retrieve(paymentId);
-        return paymentIntent;
+        return await stripe.paymentIntents.retrieve(paymentId);
       },
     };
   }
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // PAYPAL
+  // ──────────────────────────────────────────────────────────────────────────
+
   createPaypalService(config) {
     const paypal = require('@paypal/checkout-server-sdk');
 
-    let environment;
-    if (config.paypalConfig.environment === 'production') {
-      environment = new paypal.core.LiveEnvironment(
-        config.paypalConfig.clientId,
-        config.paypalConfig.clientSecret,
-      );
-    } else {
-      environment = new paypal.core.SandboxEnvironment(
-        config.paypalConfig.clientId,
-        config.paypalConfig.clientSecret,
-      );
-    }
+    const environment =
+      config.paypalConfig.environment === 'production'
+        ? new paypal.core.LiveEnvironment(
+            config.paypalConfig.clientId,
+            config.paypalConfig.clientSecret,
+          )
+        : new paypal.core.SandboxEnvironment(
+            config.paypalConfig.clientId,
+            config.paypalConfig.clientSecret,
+          );
 
     const client = new paypal.core.PayPalHttpClient(environment);
 
@@ -562,12 +622,12 @@ class PaymentServiceFactory {
         return captureResponse.result;
       },
 
-      async refundPayment(captureId, amount, reason) {
+      async refundPayment(captureId, amountInCents, reason) {
         const request = new paypal.payments.CapturesRefundRequest(captureId);
         request.requestBody({
           amount: {
             currency_code: this.settings.currency || 'USD',
-            value: (amount / 100).toFixed(2),
+            value: (amountInCents / 100).toFixed(2),
           },
           note_to_payer: reason,
         });
@@ -582,6 +642,10 @@ class PaymentServiceFactory {
       },
     };
   }
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // CACHE HELPERS
+  // ──────────────────────────────────────────────────────────────────────────
 
   clearCache(paymentSystem = null) {
     if (paymentSystem) {

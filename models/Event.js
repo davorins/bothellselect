@@ -108,7 +108,7 @@ eventSchema.pre('save', function (next) {
       game: '#dc3545',
       holidays: '#0f65cd',
       celebration: '#eab300',
-      camp: '#ff00d2',
+      camp: '#9b25b7',
       tryout: '#0d6efd',
     };
 
