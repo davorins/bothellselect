@@ -153,6 +153,10 @@ const emailTemplateSchema = new mongoose.Schema(
         },
       },
     ],
+    builderConfig: {
+      type: mongoose.Schema.Types.Mixed,
+      default: null,
+    },
   },
   {
     timestamps: true,
