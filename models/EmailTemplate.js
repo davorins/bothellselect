@@ -551,8 +551,8 @@ emailTemplateSchema.methods.getCompleteEmailHTML = function () {
                 <div style="text-align: center; font-size: 13px; color: #666; padding: 30px 0 20px; margin-top: 40px; border-top: 1px solid #eaeaea;">
                   <p style="margin: 0 0 8px;"> you're part of <strong style="color: #333;">Bothell Select</strong>.</p>
                   <p style="margin: 0;">
-                    <a href="https://bothellselect.com/unsubscribe" style="color: #506ee4; text-decoration: none; border-bottom: 1px solid #506ee4; padding-bottom: 1px;">Unsubscribe</a> • 
-                    <a href="https://bothellselect.com/contact" style="color: #506ee4; text-decoration: none; border-bottom: 1px solid #506ee4; padding-bottom: 1px;">Contact Us</a> • 
+                    <a href="https://bothellselect.com/general-settings/notifications-settings" style="color: #506ee4; text-decoration: none; border-bottom: 1px solid #506ee4; padding-bottom: 1px;">Unsubscribe</a> • 
+                    <a href="https://bothellselect.com/contact-us" style="color: #506ee4; text-decoration: none; border-bottom: 1px solid #506ee4; padding-bottom: 1px;">Contact Us</a> • 
                     <a href="https://bothellselect.com" style="color: #506ee4; text-decoration: none; border-bottom: 1px solid #506ee4; padding-bottom: 1px;">Website</a>
                   </p>
                 </div>

@@ -48,11 +48,11 @@ async function updateEmailTemplateLinks() {
             // Check for old unsubscribe link and update
             if (
               fieldContent.includes(
-                'href="https://bothellselect.com/unsubscribe"',
+                'href="https://bothellselect.com/general-settings/notifications-settings"',
               )
             ) {
               fieldContent = fieldContent.replace(
-                /href="https:\/\/bothellselect\.com\/unsubscribe"/g,
+                /href="https:\/\/bothellselect\.com\/general-settings\/notifications-settings"/g,
                 'href="https://bothellselect.com/general-settings/notifications-settings"',
               );
               console.log(`   ↳ Updated unsubscribe link in ${field}`);
@@ -61,7 +61,9 @@ async function updateEmailTemplateLinks() {
 
             // Check for old contact link and update
             if (
-              fieldContent.includes('href="https://bothellselect.com/contact"')
+              fieldContent.includes(
+                'href="https://bothellselect.com/contact-us"',
+              )
             ) {
               fieldContent = fieldContent.replace(
                 /href="https:\/\/bothellselect\.com\/contact"/g,
@@ -87,11 +89,11 @@ async function updateEmailTemplateLinks() {
             // Check for links without quotes
             if (
               fieldContent.includes(
-                'href=https://bothellselect.com/unsubscribe',
+                'href=https://bothellselect.com/general-settings/notifications-settings',
               )
             ) {
               fieldContent = fieldContent.replace(
-                /href=https:\/\/bothellselect\.com\/unsubscribe/g,
+                /href=https:\/\/bothellselect\.com\/general-settings\/notifications-settings/g,
                 'href="https://bothellselect.com/general-settings/notifications-settings"',
               );
               console.log(
@@ -101,10 +103,10 @@ async function updateEmailTemplateLinks() {
             }
 
             if (
-              fieldContent.includes('href=https://bothellselect.com/contact')
+              fieldContent.includes('href=https://bothellselect.com/contact-us')
             ) {
               fieldContent = fieldContent.replace(
-                /href=https:\/\/bothellselect\.com\/contact/g,
+                /href=https:\/\/bothellselect\.com\/contact-us/g,
                 'href="https://bothellselect.com/contact-us"',
               );
               console.log(`   ↳ Updated contact link (no quotes) in ${field}`);

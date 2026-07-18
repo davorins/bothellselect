@@ -76,8 +76,8 @@ function generateEmailHTML(
         <div style="text-align:center;font-size:12px;color:#999;padding:24px 0 16px;border-top:1px solid #eaeaea;margin-top:32px;">
           <p style="margin:0 0 6px;">${cfg.footerText || "You're receiving this because you're part of <strong>Bothell Select</strong>."}</p>
           <p style="margin:0;">
-            <a href="https://bothellselect.com/unsubscribe" style="color:${primary};text-decoration:none;font-size:11px;">Unsubscribe</a>&nbsp;•&nbsp;
-            <a href="https://bothellselect.com/contact" style="color:${primary};text-decoration:none;font-size:11px;">Contact Us</a>&nbsp;•&nbsp;
+            <a href="https://bothellselect.com/general-settings/notifications-settings" style="color:${primary};text-decoration:none;font-size:11px;">Unsubscribe</a>&nbsp;•&nbsp;
+            <a href="https://bothellselect.com/contact-us" style="color:${primary};text-decoration:none;font-size:11px;">Contact Us</a>&nbsp;•&nbsp;
             <a href="https://bothellselect.com" style="color:${primary};text-decoration:none;font-size:11px;">Website</a>
           </p>
         </div>
@@ -254,8 +254,8 @@ function generateEmailHTML(
                 ${darkCTA}
                 ${lightSig}
                 <div style="text-align:center;margin-top:28px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.15);font-size:11px;color:rgba(255,255,255,0.45);">
-                  <a href="https://bothellselect.com/unsubscribe" style="color:rgba(255,255,255,0.55);text-decoration:none;margin:0 6px;">Unsubscribe</a>
-                  <a href="https://bothellselect.com/contact" style="color:rgba(255,255,255,0.55);text-decoration:none;margin:0 6px;">Contact</a>
+                  <a href="https://bothellselect.com/general-settings/notifications-settings" style="color:rgba(255,255,255,0.55);text-decoration:none;margin:0 6px;">Unsubscribe</a>
+                  <a href="https://bothellselect.com/contact-us" style="color:rgba(255,255,255,0.55);text-decoration:none;margin:0 6px;">Contact Us</a>
                   <a href="https://bothellselect.com" style="color:rgba(255,255,255,0.55);text-decoration:none;margin:0 6px;">Website</a>
                 </div>
               </td>
