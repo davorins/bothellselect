@@ -3,7 +3,7 @@ const { body, validationResult } = require('express-validator');
 const router = express.Router();
 const EmailTemplate = require('../models/EmailTemplate');
 const { authenticate } = require('../utils/auth');
-const { upload } = require('../utils/fileUpload'); // ✅ Correct import from fileUpload
+const { upload } = require('../utils/fileUpload');
 const { uploadToR2, deleteFromR2, isR2Url } = require('../utils/r2');
 const crypto = require('crypto');
 
@@ -39,7 +39,61 @@ const uploadAttachmentToR2 = async (fileBuffer, filename, mimetype) => {
   }
 };
 
-// In emailTemplates.js
+// ─── SANITIZE: Remove base64 images from elements ───
+const sanitizeElements = (elements) => {
+  if (!elements || !Array.isArray(elements)) return elements;
+
+  return elements.map((el) => {
+    // Deep clone to avoid mutation
+    const sanitized = { ...el };
+
+    // Handle image elements
+    if (
+      sanitized.type === 'image' &&
+      sanitized.src &&
+      typeof sanitized.src === 'string' &&
+      sanitized.src.startsWith('data:image')
+    ) {
+      sanitized.src = '';
+    }
+
+    // Handle features elements with images
+    if (sanitized.type === 'features' && sanitized.features) {
+      sanitized.features = sanitized.features.map((f) => ({
+        ...f,
+        image:
+          f.image &&
+          typeof f.image === 'string' &&
+          f.image.startsWith('data:image')
+            ? ''
+            : f.image,
+      }));
+    }
+
+    // Handle list elements with images
+    if (sanitized.type === 'list' && sanitized.items) {
+      sanitized.items = sanitized.items.map((item) => ({
+        ...item,
+        image:
+          item.image &&
+          typeof item.image === 'string' &&
+          item.image.startsWith('data:image')
+            ? ''
+            : item.image,
+      }));
+    }
+
+    // Handle nested columns
+    if (sanitized.columns) {
+      sanitized.columns = sanitizeElements(sanitized.columns);
+    }
+
+    return sanitized;
+  });
+};
+
+// ─── Upload temp image ──────────────────────────────────────────────────
+
 router.post(
   '/upload-temp-image',
   authenticate,
@@ -50,6 +104,29 @@ router.post(
         return res
           .status(400)
           .json({ success: false, error: 'No image uploaded' });
+      }
+
+      // Validate file type
+      const allowedTypes = [
+        'image/jpeg',
+        'image/png',
+        'image/gif',
+        'image/webp',
+        'image/svg+xml',
+      ];
+      if (!allowedTypes.includes(req.file.mimetype)) {
+        return res.status(400).json({
+          success: false,
+          error: 'Invalid file type. Allowed: JPEG, PNG, GIF, WEBP, SVG',
+        });
+      }
+
+      // Validate file size (5MB max)
+      if (req.file.size > 5 * 1024 * 1024) {
+        return res.status(400).json({
+          success: false,
+          error: 'File too large. Maximum size is 5MB',
+        });
       }
 
       const attachment = await uploadAttachmentToR2(
@@ -89,6 +166,13 @@ router.post(
     }
 
     try {
+      // Sanitize builderConfig to remove any base64 images
+      if (req.body.builderConfig && req.body.builderConfig.elements) {
+        req.body.builderConfig.elements = sanitizeElements(
+          req.body.builderConfig.elements,
+        );
+      }
+
       const templateData = {
         ...req.body,
         createdBy: req.user.id,
@@ -105,6 +189,7 @@ router.post(
 
       res.status(201).json({ success: true, data: template });
     } catch (error) {
+      console.error('❌ Create template error:', error);
       res.status(500).json({ success: false, error: error.message });
     }
   },
@@ -198,6 +283,13 @@ router.put(
         });
       }
 
+      // ─── SANITIZE: Remove base64 images before processing ───
+      if (req.body.builderConfig && req.body.builderConfig.elements) {
+        req.body.builderConfig.elements = sanitizeElements(
+          req.body.builderConfig.elements,
+        );
+      }
+
       req.body.lastUpdatedBy = req.user.id;
 
       if (req.body.attachments !== undefined) {
@@ -225,6 +317,7 @@ router.put(
         data: template,
       });
     } catch (error) {
+      console.error('❌ Update template error:', error);
       res.status(400).json({
         success: false,
         error: error.message,
@@ -305,7 +398,7 @@ router.get('/:id/generate-html', authenticate, async (req, res) => {
 router.post(
   '/:id/upload-attachment',
   authenticate,
-  upload.single('attachment'), // ✅ This now works because upload is imported from fileUpload
+  upload.single('attachment'),
   async (req, res) => {
     try {
       const template = await EmailTemplate.findById(req.params.id);
