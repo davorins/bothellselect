@@ -39,6 +39,39 @@ const uploadAttachmentToR2 = async (fileBuffer, filename, mimetype) => {
   }
 };
 
+// In emailTemplates.js
+router.post(
+  '/upload-temp-image',
+  authenticate,
+  upload.single('image'),
+  async (req, res) => {
+    try {
+      if (!req.file) {
+        return res
+          .status(400)
+          .json({ success: false, error: 'No image uploaded' });
+      }
+
+      const attachment = await uploadAttachmentToR2(
+        req.file.buffer,
+        req.file.originalname,
+        req.file.mimetype,
+      );
+
+      res.json({
+        success: true,
+        data: {
+          url: attachment.url,
+          filename: attachment.filename,
+        },
+      });
+    } catch (error) {
+      console.error('❌ Temp upload error:', error);
+      res.status(500).json({ success: false, error: error.message });
+    }
+  },
+);
+
 // ✅ Create a new email template
 router.post(
   '/',
