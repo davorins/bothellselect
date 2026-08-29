@@ -51,15 +51,7 @@ const adSchema = new mongoose.Schema({
   },
   placement: {
     type: String,
-    enum: [
-      'sidebar',
-      'header',
-      'footer',
-      'inline',
-      'popup',
-      'topbar',
-      'footerbar',
-    ],
+    enum: ['sidebar', 'header', 'footer', 'inline', 'popup', 'topbar'],
     default: 'sidebar',
   },
 
