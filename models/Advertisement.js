@@ -5,7 +5,6 @@ const adSchema = new mongoose.Schema({
   title: {
     type: String,
     trim: true,
-    // Make title optional - can use businessName as fallback
   },
   description: {
     type: String,
@@ -52,7 +51,15 @@ const adSchema = new mongoose.Schema({
   },
   placement: {
     type: String,
-    enum: ['sidebar', 'header', 'footer', 'inline', 'popup', 'topbar'],
+    enum: [
+      'sidebar',
+      'header',
+      'footer',
+      'inline',
+      'popup',
+      'topbar',
+      'footerbar',
+    ],
     default: 'sidebar',
   },
 
