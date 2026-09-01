@@ -1,6 +1,7 @@
 // controllers/registrationController.js
 const SeasonEvent = require('../models/SeasonEvent');
 const RegistrationFormConfig = require('../models/RegistrationFormConfig');
+const MarketingAttribution = require('../models/MarketingAttribution');
 
 // Season Events
 exports.getSeasonEvents = async (req, res) => {
@@ -227,5 +228,54 @@ exports.getActiveForms = async (req, res) => {
     res.json(activeConfigs);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch active forms' });
+  }
+};
+
+exports.saveMarketingAttribution = async (
+  registrationId,
+  parentId,
+  marketingData,
+  eventType = 'player',
+  eventId = null,
+) => {
+  try {
+    if (!marketingData) {
+      // If no marketing data, create a default 'direct' attribution
+      const attribution = new MarketingAttribution({
+        registrationId,
+        parentId,
+        source: 'direct',
+        medium: 'none',
+        campaign: 'none',
+        content: 'none',
+        eventType,
+        eventId,
+      });
+      await attribution.save();
+      return attribution;
+    }
+
+    const attribution = new MarketingAttribution({
+      registrationId,
+      parentId,
+      source: marketingData.source || 'direct',
+      medium: marketingData.medium || 'none',
+      campaign: marketingData.campaign || 'none',
+      content: marketingData.content || 'none',
+      term: marketingData.term || 'none',
+      eventType,
+      eventId,
+      userAgent: marketingData.userAgent || null,
+      ipAddress: marketingData.ipAddress || null,
+      referrer: marketingData.referrer || null,
+      landingPage: marketingData.landingPage || null,
+    });
+
+    await attribution.save();
+    return attribution;
+  } catch (error) {
+    console.error('Error saving marketing attribution:', error);
+    // Don't throw - we don't want to fail registration if attribution fails
+    return null;
   }
 };

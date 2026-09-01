@@ -320,6 +320,9 @@ router.post(
         registerType = 'self',
         additionalGuardians = [],
         agreeToTerms,
+        marketing,
+        registrationType = 'player',
+        eventId = null,
       } = req.body;
 
       const normalizedEmail = email.toLowerCase().trim();
@@ -394,6 +397,60 @@ router.post(
 
       const parent = new Parent(parentData);
       await parent.save();
+
+      if (parent && parent._id) {
+        try {
+          // Import MarketingAttribution model (add at top of file)
+          const MarketingAttribution = require('../models/MarketingAttribution');
+
+          // Check if we have marketing data
+          if (marketing) {
+            // Create marketing attribution
+            const attribution = new MarketingAttribution({
+              parentId: parent._id,
+              source: marketing.source || 'direct',
+              medium: marketing.medium || 'none',
+              campaign: marketing.campaign || 'none',
+              content: marketing.content || 'none',
+              term: marketing.term || 'none',
+              eventType: registrationType || 'player',
+              eventId: eventId || null,
+              registrationAt: new Date(),
+              // We don't have a registrationId yet for player registrations
+              // but we can update it later when a registration is created
+            });
+            await attribution.save();
+            console.log(
+              '✅ Marketing attribution saved for parent:',
+              parent._id,
+            );
+          } else {
+            // Always save a default attribution so we know where traffic comes from
+            const attribution = new MarketingAttribution({
+              parentId: parent._id,
+              source: 'direct',
+              medium: 'none',
+              campaign: 'none',
+              content: 'none',
+              term: 'none',
+              eventType: registrationType || 'player',
+              eventId: eventId || null,
+              registrationAt: new Date(),
+            });
+            await attribution.save();
+            console.log(
+              '✅ Default marketing attribution saved for parent:',
+              parent._id,
+            );
+          }
+        } catch (marketingError) {
+          console.error(
+            '⚠️ Failed to save marketing attribution:',
+            marketingError,
+          );
+          // Don't fail the registration if marketing attribution fails
+        }
+      }
 
       // Send welcome email (don't await - let it run in background)
       try {

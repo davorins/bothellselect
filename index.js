@@ -46,6 +46,7 @@ const healthCheck = require('./health');
 const formFieldRoutes = require('./routes/formFieldRoutes');
 const advertisementRoutes = require('./routes/advertisementRoutes');
 const videoGalleryRoutes = require('./routes/videoGallery');
+const marketingRoutes = require('./routes/marketingRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -153,7 +154,7 @@ app.use('/api/page-builder', pageBuilder);
 app.get('/api/health', healthCheck);
 app.use('/api/form-fields', formFieldRoutes);
 app.use('/api/video-gallery', videoGalleryRoutes);
-
+app.use('/api/marketing', marketingRoutes);
 // Backend route for fetching player data
 app.get('/api/player/:playerId', async (req, res) => {
   try {
