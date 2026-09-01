@@ -98,4 +98,66 @@ router.get('/attribution/stats', authenticate, isAdmin, async (req, res) => {
   }
 });
 
+// Get campaigns list
+router.get('/campaigns', authenticate, isAdmin, async (req, res) => {
+  try {
+    const campaigns = await MarketingAttribution.distinct('campaign');
+    res.json({
+      success: true,
+      campaigns: campaigns.filter((c) => c && c !== 'none'),
+    });
+  } catch (error) {
+    console.error('Error fetching campaigns:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+// Get sources list
+router.get('/sources', authenticate, isAdmin, async (req, res) => {
+  try {
+    const sources = await MarketingAttribution.distinct('source');
+    res.json({
+      success: true,
+      sources: sources.filter((s) => s && s !== 'direct'),
+    });
+  } catch (error) {
+    console.error('Error fetching sources:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+// Get attribution for a specific registration
+router.get('/registration/:registrationId', authenticate, async (req, res) => {
+  try {
+    const { registrationId } = req.params;
+    const attribution = await MarketingAttribution.findOne({ registrationId })
+      .populate('registrationId', 'paymentStatus paymentDetails')
+      .lean();
+
+    if (!attribution) {
+      return res.status(404).json({
+        success: false,
+        error: 'Attribution not found for this registration',
+      });
+    }
+
+    res.json({
+      success: true,
+      attribution,
+    });
+  } catch (error) {
+    console.error('Error fetching registration attribution:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
 module.exports = router;
