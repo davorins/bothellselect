@@ -47,6 +47,7 @@ const formFieldRoutes = require('./routes/formFieldRoutes');
 const advertisementRoutes = require('./routes/advertisementRoutes');
 const videoGalleryRoutes = require('./routes/videoGallery');
 const marketingRoutes = require('./routes/marketingRoutes');
+const eventConfigRoutes = require('./routes/eventConfigRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -63,7 +64,6 @@ const corsOptions = {
       'https://bothellselect.com',
       'https://www.bothellselect.com',
       'https://bothellselect.vercel.app',
-      // Add localhost with different ports Safari might use
       'http://127.0.0.1:3000',
       'http://127.0.0.1:3001',
     ];
@@ -155,7 +155,8 @@ app.get('/api/health', healthCheck);
 app.use('/api/form-fields', formFieldRoutes);
 app.use('/api/video-gallery', videoGalleryRoutes);
 app.use('/api/marketing', marketingRoutes);
-// Backend route for fetching player data
+app.use('/api/event-config', eventConfigRoutes);
+
 app.get('/api/player/:playerId', async (req, res) => {
   try {
     const playerId = req.params.playerId;
