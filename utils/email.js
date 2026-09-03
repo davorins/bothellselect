@@ -2149,9 +2149,110 @@ async function sendAcceptanceEmail({
   }
 }
 
-// ============ TRYOUT NOTIFICATION EMAIL (User requests notification) ============
-async function sendTryoutNotificationEmail({
+// ============ USER NOTIFICATION CONFIRMATION EMAIL ============
+async function sendUserNotificationConfirmationEmail({
   to,
+  eventName,
+  eventDate,
+  eventLocation,
+  eventType = 'Tryout',
+}) {
+  try {
+    const html = `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; background: #f9fafb; padding: 20px;">
+        <div style="text-align: center; margin-bottom: 20px;">
+          <img src="${R2_LOGO_URL}" alt="Bothell Select Basketball" style="max-width: 200px; height: auto;" 
+               onerror="this.onerror=null; this.src='https://bothellselect.com/assets/img/logo.png';" />
+        </div>
+        
+        <div style="background: #506ee4; color: white; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
+          <h1 style="margin: 0;">✅ You're on the List!</h1>
+        </div>
+        
+        <div style="background: white; padding: 20px; border-radius: 0 0 5px 5px;">
+          <p style="font-size: 16px;">Hello,</p>
+          
+          <p style="font-size: 16px;">Thank you for your interest in <strong>${eventName}</strong>!</p>
+          
+          <p style="font-size: 16px;">We've received your request to be notified when registration opens. We'll send you an email as soon as registration becomes available.</p>
+          
+          <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #506ee4;">
+            <h3 style="margin-top: 0; color: rgba(0, 0, 0, .7);">Event Details</h3>
+            <table style="width: 100%; border-collapse: collapse;">
+              <tr>
+                <td style="padding: 8px 0; border-bottom: 1px solid #eee;"><strong>Event:</strong></td>
+                <td style="padding: 8px 0; border-bottom: 1px solid #eee;">${eventName}</td>
+              </tr>
+              ${
+                eventDate && eventDate !== 'TBD'
+                  ? `
+              <tr>
+                <td style="padding: 8px 0; border-bottom: 1px solid #eee;"><strong>Date:</strong></td>
+                <td style="padding: 8px 0; border-bottom: 1px solid #eee;">${eventDate}</td>
+              </tr>`
+                  : ''
+              }
+              ${
+                eventLocation && eventLocation !== 'TBD'
+                  ? `
+              <tr>
+                <td style="padding: 8px 0; border-bottom: 1px solid #eee;"><strong>Location:</strong></td>
+                <td style="padding: 8px 0; border-bottom: 1px solid #eee;">${eventLocation}</td>
+              </tr>`
+                  : ''
+              }
+              <tr>
+                <td style="padding: 8px 0; border-bottom: 1px solid #eee;"><strong>Status:</strong></td>
+                <td style="padding: 8px 0; border-bottom: 1px solid #eee;"><span style="color: #fbbf24; font-weight: bold;">📋 Coming Soon</span></td>
+              </tr>
+            </table>
+          </div>
+          
+          <div style="background: #d1e7dd; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #0f5132;">
+            <p style="margin: 0; color: #0f5132;">
+              <strong>✅ What's Next?</strong><br>
+              You'll receive an email notification as soon as registration opens. No further action is needed at this time.
+            </p>
+          </div>
+          
+          <p style="font-size: 14px; color: #555;">If you have any questions, please contact us at bothellselect@proton.me</p>
+          
+          <p style="font-size: 16px; font-weight: bold; color: #1a1a2e;">Bothell Select Basketball 🏀</p>
+        </div>
+        
+        <div style="background: #e5e7eb; padding: 15px; text-align: center; font-size: 14px; color: #555; border-radius: 0 0 5px 5px;">
+          <p style="margin: 0;">Bothell Select Basketball<br>
+          bothellselect@proton.me</p>
+        </div>
+      </div>
+    `;
+
+    const result = await sendEmail({
+      to: to,
+      subject: `📋 You're on the List - ${eventName}`,
+      html: html,
+      emailType: 'transactional',
+    });
+
+    console.log('User notification confirmation email sent successfully:', {
+      to,
+      eventName,
+    });
+
+    return result;
+  } catch (err) {
+    console.error('Error in sendUserNotificationConfirmationEmail:', {
+      error: err.message,
+      to,
+      eventName,
+      timestamp: new Date().toISOString(),
+    });
+    throw err;
+  }
+}
+
+// ============ ADMIN NOTIFICATION (User requested notification) ============
+async function sendAdminNotificationEmail({
   userEmail,
   eventName,
   eventDate,
@@ -2159,7 +2260,6 @@ async function sendTryoutNotificationEmail({
   eventType = 'Tryout',
 }) {
   try {
-    // Build the email HTML using the same style as your existing templates
     const html = `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; background: #f9fafb; padding: 20px;">
         <div style="text-align: center; margin-bottom: 20px;">
@@ -2168,40 +2268,36 @@ async function sendTryoutNotificationEmail({
         </div>
         
         <div style="background: #fbbf24; color: #1a1a2e; padding: 20px; text-align: center; border-radius: 5px 5px 0 0;">
-          <h1 style="margin: 0;">🔔 New ${eventType} Notification Request</h1>
+          <h1 style="margin: 0;">🔔 New Notification Request</h1>
         </div>
         
         <div style="background: white; padding: 20px; border-radius: 0 0 5px 5px;">
           <p style="font-size: 16px;">Hello Bothell Select Team,</p>
           
-          <p style="font-size: 16px;">A user has requested to be notified when registration opens for the following event:</p>
+          <p style="font-size: 16px;">A user has requested to be notified when registration opens:</p>
           
           <div style="background: #f8f9fa; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #fbbf24;">
-            <h3 style="margin-top: 0; color: rgba(0, 0, 0, .7);">Notification Request Details</h3>
+            <h3 style="margin-top: 0; color: rgba(0, 0, 0, .7);">Request Details</h3>
             <table style="width: 100%; border-collapse: collapse;">
               <tr>
                 <td style="padding: 8px 0; border-bottom: 1px solid #eee;"><strong>Email:</strong></td>
-                <td style="padding: 8px 0; border-bottom: 1px solid #eee;">${userEmail}</td>
+                <td style="padding: 8px 0; border-bottom: 1px solid #eee;"><a href="mailto:${userEmail}">${userEmail}</a></td>
               </tr>
               <tr>
                 <td style="padding: 8px 0; border-bottom: 1px solid #eee;"><strong>Event:</strong></td>
                 <td style="padding: 8px 0; border-bottom: 1px solid #eee;">${eventName}</td>
               </tr>
-              <tr>
-                <td style="padding: 8px 0; border-bottom: 1px solid #eee;"><strong>Event Type:</strong></td>
-                <td style="padding: 8px 0; border-bottom: 1px solid #eee;">${eventType}</td>
-              </tr>
               ${
-                eventDate
+                eventDate && eventDate !== 'TBD'
                   ? `
               <tr>
-                <td style="padding: 8px 0; border-bottom: 1px solid #eee;"><strong>Event Date:</strong></td>
+                <td style="padding: 8px 0; border-bottom: 1px solid #eee;"><strong>Date:</strong></td>
                 <td style="padding: 8px 0; border-bottom: 1px solid #eee;">${eventDate}</td>
               </tr>`
                   : ''
               }
               ${
-                eventLocation
+                eventLocation && eventLocation !== 'TBD'
                   ? `
               <tr>
                 <td style="padding: 8px 0; border-bottom: 1px solid #eee;"><strong>Location:</strong></td>
@@ -2216,21 +2312,14 @@ async function sendTryoutNotificationEmail({
             </table>
           </div>
           
-          <div style="background: #d1e7dd; padding: 15px; border-radius: 5px; margin: 15px 0; border-left: 4px solid #0f5132;">
-            <p style="margin: 0; color: #0f5132;">
-              <strong>✅ Action Required:</strong> Please notify ${userEmail} when registration opens for ${eventName}.
-            </p>
-          </div>
-          
-          <p style="font-size: 14px; color: #555;">You can reply directly to this email to contact the user.</p>
-          
           <div style="text-align: center; margin: 20px 0; padding: 15px; background: #f3f4f6; border-radius: 5px;">
-            <a href="mailto:${userEmail}" style="background: #506ee4; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
-              Reply to ${userEmail}
+            <a href="mailto:${userEmail}?subject=Registration%20Open%20-%20${encodeURIComponent(eventName)}" 
+               style="background: #506ee4; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: bold;">
+              📧 Notify ${userEmail}
             </a>
           </div>
           
-          <p style="font-size: 16px; font-weight: bold; color: #1a1a2e;">Bothell Select Basketball</p>
+          <p style="font-size: 14px; color: #555;">When registration opens, click the button above to notify the user.</p>
         </div>
         
         <div style="background: #e5e7eb; padding: 15px; text-align: center; font-size: 14px; color: #555; border-radius: 0 0 5px 5px;">
@@ -2240,23 +2329,21 @@ async function sendTryoutNotificationEmail({
       </div>
     `;
 
-    // Send the email using Resend
     const result = await sendEmail({
-      to: to || 'bothellselect@proton.me',
-      subject: `🔔 Notification Request: ${eventName}`,
+      to: process.env.ADMIN_EMAIL || 'bothellselect@proton.me',
+      subject: `🔔 New Notification Request - ${eventName}`,
       html: html,
       emailType: 'notification',
     });
 
-    console.log('Tryout notification email sent successfully:', {
-      to: to || 'bothellselect@proton.me',
+    console.log('Admin notification email sent successfully:', {
       userEmail,
       eventName,
     });
 
     return result;
   } catch (err) {
-    console.error('Error in sendTryoutNotificationEmail:', {
+    console.error('Error in sendAdminNotificationEmail:', {
       error: err.message,
       userEmail,
       eventName,
@@ -2285,5 +2372,6 @@ module.exports = {
   uploadAttachmentToR2,
   getR2AttachmentUrl,
   sendAcceptanceEmail,
-  sendTryoutNotificationEmail,
+  sendUserNotificationConfirmationEmail,
+  sendAdminNotificationEmail,
 };
