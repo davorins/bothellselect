@@ -55,18 +55,14 @@ router.get('/schools', async (req, res) => {
 });
 
 // ── POST batch create (Schedule Builder) ─────────────────────────────────────
-// Accepts an array of events and inserts them all in one call.
-// Returns { created: N, events: [...] }
 router.post('/batch', authenticate, async (req, res) => {
   const eventsPayload = req.body;
 
   if (!Array.isArray(eventsPayload) || eventsPayload.length === 0) {
-    return res
-      .status(400)
-      .json({
-        success: false,
-        error: 'Body must be a non-empty array of events',
-      });
+    return res.status(400).json({
+      success: false,
+      error: 'Body must be a non-empty array of events',
+    });
   }
 
   if (eventsPayload.length > 500) {
@@ -160,12 +156,10 @@ router.post(
 
         const hasPaymentFields = form.fields.some((f) => f.type === 'payment');
         if (hasPaymentFields && !req.body.paymentConfig) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              error: 'Payment configuration is required for this form',
-            });
+          return res.status(400).json({
+            success: false,
+            error: 'Payment configuration is required for this form',
+          });
         }
       }
 
@@ -195,7 +189,6 @@ router.post(
 );
 
 // ── PUT update event ──────────────────────────────────────────────────────────
-// FIX: uses `!== undefined` checks so fields can be explicitly cleared to ''
 router.put(
   '/:id',
   authenticate,
@@ -245,12 +238,10 @@ router.put(
 
         const hasPaymentFields = form.fields.some((f) => f.type === 'payment');
         if (hasPaymentFields && !req.body.paymentConfig) {
-          return res
-            .status(400)
-            .json({
-              success: false,
-              error: 'Payment configuration is required for this form',
-            });
+          return res.status(400).json({
+            success: false,
+            error: 'Payment configuration is required for this form',
+          });
         }
       }
 
@@ -313,12 +304,10 @@ router.post('/:id/submit', authenticate, async (req, res) => {
       .map((field) => field.label || field.id);
 
     if (missingFields.length > 0) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: `Missing required fields: ${missingFields.join(', ')}`,
-        });
+      return res.status(400).json({
+        success: false,
+        message: `Missing required fields: ${missingFields.join(', ')}`,
+      });
     }
 
     const paymentField = event.formId.fields.find((f) => f.type === 'payment');
@@ -341,13 +330,11 @@ router.post('/:id/submit', authenticate, async (req, res) => {
           },
         });
       } catch (paymentError) {
-        return res
-          .status(402)
-          .json({
-            success: false,
-            message: 'Payment processing failed',
-            error: paymentError.message,
-          });
+        return res.status(402).json({
+          success: false,
+          message: 'Payment processing failed',
+          error: paymentError.message,
+        });
       }
     }
 
@@ -369,13 +356,11 @@ router.post('/:id/submit', authenticate, async (req, res) => {
     });
 
     await submission.save();
-    res
-      .status(201)
-      .json({
-        success: true,
-        data: submission,
-        message: 'Form submitted successfully',
-      });
+    res.status(201).json({
+      success: true,
+      data: submission,
+      message: 'Form submitted successfully',
+    });
   } catch (err) {
     console.error('Form submission error:', err);
     res.status(400).json({ success: false, message: err.message });
@@ -436,12 +421,10 @@ router.post('/payments/process', authenticate, async (req, res) => {
     });
   } catch (error) {
     console.error('Event payment processing error:', error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        error: error.message || 'Payment processing failed',
-      });
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Payment processing failed',
+    });
   }
 });
 

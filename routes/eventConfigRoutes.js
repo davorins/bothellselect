@@ -4,6 +4,9 @@ const EventConfig = require('../models/EventConfig');
 const { authenticate, isAdmin } = require('../utils/auth');
 const { body, validationResult } = require('express-validator');
 
+// ✅ IMPORT the email function
+const { sendTryoutNotificationEmail } = require('../utils/email');
+
 // ─── GET public config by event type ──────────────────────────
 router.get('/public/:eventType', async (req, res) => {
   try {
@@ -241,6 +244,71 @@ router.delete('/:id', authenticate, isAdmin, async (req, res) => {
     res.status(500).json({
       success: false,
       error: 'Failed to delete event configuration',
+    });
+  }
+});
+
+// ─── ✅ NEW: NOTIFICATION ENDPOINT ─────────────────────────────
+router.post('/notify', async (req, res) => {
+  try {
+    const { email, eventType, eventId, eventName, eventDate, eventLocation } =
+      req.body;
+
+    // Validate email
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        error: 'Email is required',
+      });
+    }
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid email format',
+      });
+    }
+
+    console.log(`📧 Notification request for ${eventType || 'tryout'}:`, {
+      email,
+      eventId,
+      eventName,
+      eventDate,
+      eventLocation,
+    });
+
+    // Send notification email to admin
+    await sendTryoutNotificationEmail({
+      to: process.env.ADMIN_EMAIL || 'bothellselect@proton.me',
+      userEmail: email,
+      eventName: eventName || 'Bothell Select Tryouts',
+      eventDate: eventDate || 'TBD',
+      eventLocation: eventLocation || 'TBD',
+      eventType: eventType || 'Tryout',
+    });
+
+    // ✅ Optional: Store in database (if you have a Notification model)
+    // const Notification = require('../models/Notification');
+    // await Notification.create({
+    //   email,
+    //   eventType,
+    //   eventId,
+    //   eventName,
+    //   requestedAt: new Date(),
+    // });
+
+    res.json({
+      success: true,
+      message: 'Notification request submitted successfully',
+    });
+  } catch (error) {
+    console.error('Error processing notification request:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to process notification request',
+      message: error.message,
     });
   }
 });
