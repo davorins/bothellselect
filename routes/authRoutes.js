@@ -36,6 +36,7 @@ const {
   sendTrainingRegistrationPendingEmail,
 } = require('../utils/email');
 const { calculateGradeFromDOB } = require('../utils/gradeUtils');
+const axios = require('axios');
 
 const router = express.Router();
 const emailRateLimit = new Map();
@@ -3001,16 +3002,54 @@ router.get('/past-seasons', (req, res) => {
 
 // Contact form
 router.post('/contact', async (req, res) => {
-  const { fullName, email, subject, message } = req.body;
+  // 1. Destructure the recaptchaToken sent from your updated React frontend
+  const { fullName, email, subject, message, recaptchaToken } = req.body;
 
-  const html = `
-    <p><strong>Name:</strong> ${fullName}</p>
-    <p><strong>Email:</strong> ${email}</p>
-    <p><strong>Message:</strong></p>
-    <p>${message}</p>
-  `;
+  // 🛡️ Guard Clause: Instantly block direct endpoint pings missing a token
+  if (!recaptchaToken) {
+    console.warn(
+      `🤖 Bot Blocked: Form submitted without security token from email: ${email}`,
+    );
+    return res
+      .status(400)
+      .json({ error: 'Security token missing. Request denied.' });
+  }
 
   try {
+    // 🛡️ Verify the token with Google reCAPTCHA v3 backend servers
+    const verificationUrl = 'https://google.com';
+    const googleResponse = await axios.post(
+      verificationUrl,
+      null, // No post body content
+      {
+        params: {
+          secret: process.env.RECAPTCHA_SECRET_KEY,
+          response: recaptchaToken,
+        },
+      },
+    );
+
+    const { success, score } = googleResponse.data;
+
+    // 🛡️ Evaluate human probability score (0.0 = definite bot, 1.0 = definite human)
+    if (!success || score < 0.5) {
+      console.warn(
+        `🤖 Bot Blocked: reCAPTCHA flagged submission from ${email}. Score: ${score}`,
+      );
+      // Return a 403 Forbidden status code to stop execution completely
+      return res
+        .status(403)
+        .json({ error: 'Spam submission detected and blocked.' });
+    }
+
+    // ─── 🎉 HUMAN VERIFIED: Proceed with sending the email ───────────────────────
+    const html = `
+      <p><strong>Name:</strong> ${fullName}</p>
+      <p><strong>Email:</strong> ${email}</p>
+      <p><strong>Message:</strong></p>
+      <p>${message}</p>
+    `;
+
     await sendEmail({
       to: 'bothellselect@proton.me',
       subject: subject || 'New Inquiry from Contact Form',
@@ -3019,7 +3058,10 @@ router.post('/contact', async (req, res) => {
 
     res.status(200).json({ message: 'Inquiry sent successfully.' });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to send inquiry.' });
+    console.error('Error during contact form processing:', err.message);
+    res
+      .status(500)
+      .json({ error: 'Failed to process inquiry submission securely.' });
   }
 });
 

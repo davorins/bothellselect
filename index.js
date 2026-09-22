@@ -48,6 +48,9 @@ const advertisementRoutes = require('./routes/advertisementRoutes');
 const videoGalleryRoutes = require('./routes/videoGallery');
 const marketingRoutes = require('./routes/marketingRoutes');
 const eventConfigRoutes = require('./routes/eventConfigRoutes');
+const AiEmail = require('./models/AiEmail');
+const AiSettings = require('./models/AiSettings');
+const aiEmailRoutes = require('./routes/aiEmailRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -156,7 +159,7 @@ app.use('/api/form-fields', formFieldRoutes);
 app.use('/api/video-gallery', videoGalleryRoutes);
 app.use('/api/marketing', marketingRoutes);
 app.use('/api/event-config', eventConfigRoutes);
-
+app.use('/api/admin/ai-emails', aiEmailRoutes);
 app.get('/api/player/:playerId', async (req, res) => {
   try {
     const playerId = req.params.playerId;
