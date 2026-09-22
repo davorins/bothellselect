@@ -3017,17 +3017,14 @@ router.post('/contact', async (req, res) => {
 
   try {
     // 🛡️ Verify the token with Google reCAPTCHA v3 backend servers
-    const verificationUrl = 'https://google.com';
-    const googleResponse = await axios.post(
-      verificationUrl,
-      null, // No post body content
-      {
-        params: {
-          secret: process.env.RECAPTCHA_SECRET_KEY,
-          response: recaptchaToken,
-        },
+    const verificationUrl = 'https://www.google.com/recaptcha/api/siteverify';
+
+    const googleResponse = await axios.post(verificationUrl, null, {
+      params: {
+        secret: process.env.RECAPTCHA_SECRET_KEY,
+        response: recaptchaToken,
       },
-    );
+    });
 
     const { success, score } = googleResponse.data;
 
