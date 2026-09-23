@@ -118,4 +118,50 @@ router.post('/test', authenticate, isAdmin, async (req, res) => {
   }
 });
 
+router.post('/ingest-test', authenticate, isAdmin, async (req, res) => {
+  try {
+    const { messageId, threadId, from, to, subject, body, receivedAt } =
+      req.body;
+
+    if (!from) {
+      return res.status(400).json({
+        success: false,
+        message: 'from is required.',
+      });
+    }
+
+    if (!body) {
+      return res.status(400).json({
+        success: false,
+        message: 'body is required.',
+      });
+    }
+
+    const email = await processIncomingEmail({
+      messageId:
+        messageId ||
+        `ingest-test-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      threadId: threadId || null,
+      from,
+      to: to || 'bothellselect@proton.me',
+      subject: subject || '',
+      body,
+      receivedAt: receivedAt || new Date(),
+    });
+
+    res.status(201).json({
+      success: true,
+      email,
+    });
+  } catch (error) {
+    console.error('Error ingesting test email:', error);
+
+    res.status(500).json({
+      success: false,
+      message: 'Failed to ingest test email.',
+      error: error.message,
+    });
+  }
+});
+
 module.exports = router;
