@@ -1,5 +1,7 @@
 require('dotenv').config();
 const OpenAI = require('openai');
+const { Resend } = require('resend');
+
 const AiEmail = require('../models/AiEmail');
 const AiSettings = require('../models/AiSettings');
 const Parent = require('../models/Parent');
@@ -12,116 +14,97 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-/**
- * Get the AI email assistant settings.
- *
- * There should only be one settings document.
- * If it does not exist yet, create it using the schema defaults.
- */
+const resend = new Resend(process.env.RESEND_API_KEY);
+
+const VERIFIED_SENDER = 'Bothell Select <info@bothellselect.com>';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Settings
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function getAiSettings() {
   let settings = await AiSettings.findOne({ key: 'default' });
 
   if (!settings) {
-    settings = await AiSettings.create({
-      key: 'default',
-    });
+    settings = await AiSettings.create({ key: 'default' });
   }
 
   return settings;
 }
 
-/**
- * Find a parent by email address.
- */
-async function findParent(email) {
-  if (!email) return null;
+async function updateAiSettings(updates, updatedBy = null) {
+  const settings = await getAiSettings();
+  const allowed = [
+    'enabled',
+    'automaticRepliesEnabled',
+    'confidenceThreshold',
+    'tone',
+    'allowedAutomaticCategories',
+    'alwaysRequireHumanReview',
+  ];
 
-  return Parent.findOne({
-    email: email.toLowerCase().trim(),
-  }).select('-password');
+  for (const key of allowed) {
+    if (key in updates) {
+      settings[key] = updates[key];
+    }
+  }
+
+  if (updatedBy) {
+    settings.updatedBy = updatedBy;
+  }
+
+  await settings.save();
+  return settings;
 }
 
-/**
- * Find a parent by ID.
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Parent / player / registration / payment / team lookups
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function findParent(email) {
+  if (!email) return null;
+  return Parent.findOne({ email: email.toLowerCase().trim() }).select(
+    '-password',
+  );
+}
+
 async function findParentById(parentId) {
   if (!parentId) return null;
-
   return Parent.findById(parentId).select('-password');
 }
 
-/**
- * Find all players belonging to a parent.
- */
 async function findPlayersByParent(parentId) {
   if (!parentId) return [];
-
-  return Player.find({
-    parentId,
-  });
+  return Player.find({ parentId });
 }
 
-/**
- * Find a player by ID.
- */
 async function findPlayer(playerId) {
   if (!playerId) return null;
-
   return Player.findById(playerId);
 }
 
-/**
- * Find registrations for a specific player.
- */
 async function findRegistrationsByPlayer(playerId) {
   if (!playerId) return [];
-
-  return PlayerRegistration.find({
-    playerId,
-  }).sort({ createdAt: -1 });
+  return PlayerRegistration.find({ playerId }).sort({ createdAt: -1 });
 }
 
-/**
- * Find all registrations belonging to a parent's players.
- */
 async function findRegistrationsByParent(parentId) {
   if (!parentId) return [];
-
-  const players = await Player.find({
-    parentId,
-  }).select('_id');
-
-  const playerIds = players.map((player) => player._id);
-
+  const players = await Player.find({ parentId }).select('_id');
+  const playerIds = players.map((p) => p._id);
   if (playerIds.length === 0) return [];
-
   return PlayerRegistration.find({
     playerId: { $in: playerIds },
   }).sort({ createdAt: -1 });
 }
 
-/**
- * Find payments made by a parent.
- */
 async function findPaymentsByParent(parentId) {
   if (!parentId) return [];
-
-  return Payment.find({
-    parentId,
-  }).sort({ createdAt: -1 });
+  return Payment.find({ parentId }).sort({ createdAt: -1 });
 }
 
-/**
- * Find payments associated with a player.
- *
- * Payments in this system can reference a player through:
- *   - playerId
- *   - playerIds
- *   - players.playerId
- */
 async function findPaymentsByPlayer(playerId) {
   if (!playerId) return [];
-
   return Payment.find({
     $or: [
       { playerId },
@@ -131,61 +114,37 @@ async function findPaymentsByPlayer(playerId) {
   }).sort({ createdAt: -1 });
 }
 
-/**
- * Find payments associated with a team.
- *
- * Payments can reference teams through:
- *   - teamId
- *   - teamIds
- */
 async function findPaymentsByTeam(teamId) {
   if (!teamId) return [];
-
   return Payment.find({
     $or: [{ teamId }, { teamIds: teamId }],
   }).sort({ createdAt: -1 });
 }
 
-/**
- * Find a team by ID.
- */
 async function findTeam(teamId) {
   if (!teamId) return null;
-
   return Team.findById(teamId);
 }
 
-/**
- * Find teams associated with a coach.
- *
- * Team records contain coachIds, not player IDs.
- */
 async function findTeamsByCoach(coachId) {
   if (!coachId) return [];
-
-  return Team.find({
-    coachIds: coachId,
-    isActive: true,
-  }).sort({
+  return Team.find({ coachIds: coachId, isActive: true }).sort({
     registrationYear: -1,
     name: 1,
   });
 }
 
-/**
- * Create an incoming AI email record.
- *
- * This stores the original email before any AI processing occurs.
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// AiEmail CRUD
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function createAiEmail(emailData) {
   if (!emailData || !emailData.messageId) {
     throw new Error('messageId is required to create an AI email');
   }
-
   if (!emailData.from) {
     throw new Error('from is required to create an AI email');
   }
-
   if (!emailData.body) {
     throw new Error('body is required to create an AI email');
   }
@@ -203,35 +162,27 @@ async function createAiEmail(emailData) {
   });
 }
 
-/**
- * Get emails that are currently waiting for administrative action.
- */
 async function getPendingAiEmails() {
   return AiEmail.find({
-    status: {
-      $in: ['new', 'draft_ready', 'reviewed'],
-    },
-  }).sort({
-    receivedAt: -1,
-  });
+    status: { $in: ['new', 'draft_ready', 'reviewed'] },
+  }).sort({ receivedAt: -1 });
 }
 
-/**
- * Get one AI email by ID.
- */
+async function getAllAiEmails({ limit = 100, status = null } = {}) {
+  const filter = {};
+  if (status) filter.status = status;
+  return AiEmail.find(filter).sort({ receivedAt: -1 }).limit(limit);
+}
+
 async function getAiEmailById(id) {
   if (!id) return null;
-
   return AiEmail.findById(id);
 }
 
-/**
- * Build a safe, limited view of Bothell Select information
- * that can be provided to the AI.
- *
- * We deliberately do NOT send passwords or unrestricted database
- * information to OpenAI.
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// AI context + draft generation
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function buildParentContext(parent) {
   if (!parent) {
     return {
@@ -249,7 +200,6 @@ async function buildParentContext(parent) {
 
   return {
     parentFound: true,
-
     parent: {
       id: parent._id.toString(),
       firstName: parent.firstName || '',
@@ -257,7 +207,6 @@ async function buildParentContext(parent) {
       email: parent.email || '',
       phone: parent.phone || '',
     },
-
     players: players.map((player) => ({
       id: player._id.toString(),
       firstName: player.firstName || '',
@@ -265,14 +214,12 @@ async function buildParentContext(parent) {
       grade: player.grade || '',
       gender: player.gender || '',
     })),
-
     registrations: registrations.map((registration) => ({
       id: registration._id.toString(),
       playerId: registration.playerId ? registration.playerId.toString() : null,
       status: registration.status || '',
       createdAt: registration.createdAt || null,
     })),
-
     payments: payments.map((payment) => ({
       id: payment._id.toString(),
       amount: payment.amount || null,
@@ -284,25 +231,11 @@ async function buildParentContext(parent) {
   };
 }
 
-/**
- * Generate an AI draft for an incoming parent email.
- *
- * Phase 1:
- * - AI may classify and draft.
- * - Human review is ALWAYS required.
- * - This function NEVER sends an email.
- */
 async function generateAiDraft({ from, subject = '', body }) {
-  if (!from) {
-    throw new Error('from is required');
-  }
-
-  if (!body) {
-    throw new Error('body is required');
-  }
+  if (!from) throw new Error('from is required');
+  if (!body) throw new Error('body is required');
 
   const settings = await getAiSettings();
-
   const parent = await findParent(from);
   const context = await buildParentContext(parent);
 
@@ -325,9 +258,9 @@ IMPORTANT RULES:
 6. Do not make decisions about team placement.
 7. Do not approve refunds.
 8. Do not resolve payment disputes automatically.
-9. Do not send an email. You are only preparing a draft.
-10. The draft should sound like a helpful Bothell Select administrator.
-11. Keep the response concise unless the parent needs a detailed explanation.
+9. The draft should sound like a helpful Bothell Select administrator.
+10. Keep the response concise unless the parent needs a detailed explanation.
+11. Sign the response as "Bothell Select Basketball".
 
 Available categories:
 
@@ -341,8 +274,6 @@ Available categories:
 - technical
 - general
 - other
-
-Human review is ALWAYS required during the current phase.
 
 Return ONLY valid JSON with this exact structure:
 
@@ -388,25 +319,15 @@ ${JSON.stringify(
   const response = await openai.responses.create({
     model: 'gpt-5-mini',
     input: [
-      {
-        role: 'system',
-        content: systemPrompt,
-      },
-      {
-        role: 'user',
-        content: userPrompt,
-      },
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userPrompt },
     ],
   });
 
   const rawOutput = response.output_text;
-
-  if (!rawOutput) {
-    throw new Error('OpenAI returned an empty response');
-  }
+  if (!rawOutput) throw new Error('OpenAI returned an empty response');
 
   let result;
-
   try {
     result = JSON.parse(rawOutput);
   } catch (error) {
@@ -435,11 +356,7 @@ ${JSON.stringify(
     Math.min(100, Number(result.confidence) || 0),
   );
 
-  result.requiresHumanReview = true;
-
-  if (!Array.isArray(result.dataUsed)) {
-    result.dataUsed = [];
-  }
+  if (!Array.isArray(result.dataUsed)) result.dataUsed = [];
 
   if (!result.draft) {
     result.draft =
@@ -451,22 +368,86 @@ ${JSON.stringify(
   }
 
   if (!result.reviewReason) {
-    result.reviewReason = 'Human review is required during Phase 1.';
+    result.reviewReason = 'Human review is required.';
   }
 
-  return {
-    ...result,
-    parent,
-    context,
-  };
+  return { ...result, parent, context };
 }
 
-/**
- * Create an AI email record and generate its draft.
- *
- * This is the main function we will eventually call when an
- * incoming email arrives from Proton.
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Auto-send eligibility + sending
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function evaluateAutoSendEligibility(aiEmail) {
+  const settings = await getAiSettings();
+
+  if (!settings.enabled) {
+    return { eligible: false, reason: 'AI assistant is disabled.' };
+  }
+
+  if (!settings.automaticRepliesEnabled) {
+    return { eligible: false, reason: 'Automatic replies are disabled.' };
+  }
+
+  if (aiEmail.confidence < settings.confidenceThreshold) {
+    return {
+      eligible: false,
+      reason: `Confidence ${aiEmail.confidence}% is below threshold ${settings.confidenceThreshold}%.`,
+    };
+  }
+
+  if (settings.alwaysRequireHumanReview.includes(aiEmail.category)) {
+    return {
+      eligible: false,
+      reason: `Category "${aiEmail.category}" always requires human review.`,
+    };
+  }
+
+  if (
+    Array.isArray(settings.allowedAutomaticCategories) &&
+    settings.allowedAutomaticCategories.length > 0 &&
+    !settings.allowedAutomaticCategories.includes(aiEmail.category)
+  ) {
+    return {
+      eligible: false,
+      reason: `Category "${aiEmail.category}" is not in the allowed automatic categories.`,
+    };
+  }
+
+  return { eligible: true, reason: 'All auto-send conditions met.' };
+}
+
+async function sendAiReply(aiEmail) {
+  const body = aiEmail.humanEditedDraft || aiEmail.aiDraft;
+  if (!body) throw new Error('No draft body available to send.');
+
+  const headers = {};
+  if (aiEmail.messageId) {
+    headers['In-Reply-To'] = aiEmail.messageId;
+    headers['References'] = aiEmail.messageId;
+  }
+
+  const subject = aiEmail.subject
+    ? `Re: ${aiEmail.subject.replace(/^Re:\s*/i, '')}`
+    : 'Re: Your message to Bothell Select';
+
+  const { data, error } = await resend.emails.send({
+    from: VERIFIED_SENDER,
+    to: aiEmail.from,
+    subject,
+    text: body,
+    headers,
+  });
+
+  if (error) throw new Error(error.message || 'Resend send failed');
+
+  return data?.id || null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main pipeline
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function processIncomingEmail(emailData) {
   const aiEmail = await createAiEmail(emailData);
 
@@ -482,8 +463,6 @@ async function processIncomingEmail(emailData) {
     aiEmail.aiDraft = result.draft;
     aiEmail.aiReason = result.reason;
     aiEmail.dataUsed = result.dataUsed;
-    aiEmail.requiresHumanReview = true;
-    aiEmail.reviewReason = result.reviewReason;
 
     if (result.parent) {
       aiEmail.parentId = result.parent._id;
@@ -507,46 +486,94 @@ async function processIncomingEmail(emailData) {
         .map((payment) => payment.id);
     }
 
-    aiEmail.status = 'draft_ready';
+    // Decide whether to auto-send or leave for human review
+    const eligibility = await evaluateAutoSendEligibility(aiEmail);
+
+    if (eligibility.eligible) {
+      try {
+        const sentMessageId = await sendAiReply(aiEmail);
+
+        aiEmail.status = 'sent';
+        aiEmail.requiresHumanReview = false;
+        aiEmail.finalResponse = aiEmail.aiDraft;
+        aiEmail.sentAt = new Date();
+        aiEmail.sentMessageId = sentMessageId;
+        aiEmail.autoSent = true;
+        aiEmail.reviewReason = `Auto-sent. ${eligibility.reason}`;
+      } catch (sendError) {
+        console.error('Auto-send failed:', sendError.message);
+        aiEmail.status = 'draft_ready';
+        aiEmail.requiresHumanReview = true;
+        aiEmail.reviewReason = `Auto-send failed: ${sendError.message}`;
+      }
+    } else {
+      aiEmail.status = 'draft_ready';
+      aiEmail.requiresHumanReview = true;
+      aiEmail.reviewReason = eligibility.reason;
+    }
 
     await aiEmail.save();
-
     return aiEmail;
   } catch (error) {
     aiEmail.status = 'new';
     aiEmail.requiresHumanReview = true;
     aiEmail.reviewReason = 'AI processing failed and requires manual review.';
-
     await aiEmail.save();
-
     throw error;
   }
 }
 
+async function manualSendAiEmail(aiEmail, { draft, reviewedBy } = {}) {
+  if (!aiEmail) throw new Error('AI email not found');
+  if (aiEmail.status === 'sent') throw new Error('Email has already been sent');
+
+  if (typeof draft === 'string' && draft.trim()) {
+    aiEmail.humanEditedDraft = draft.trim();
+  }
+
+  const sentMessageId = await sendAiReply(aiEmail);
+
+  aiEmail.status = 'sent';
+  aiEmail.requiresHumanReview = false;
+  aiEmail.finalResponse = aiEmail.humanEditedDraft || aiEmail.aiDraft;
+  aiEmail.sentAt = new Date();
+  aiEmail.sentMessageId = sentMessageId;
+  aiEmail.autoSent = false;
+  if (reviewedBy) {
+    aiEmail.reviewedBy = reviewedBy;
+    aiEmail.reviewedAt = new Date();
+  }
+
+  await aiEmail.save();
+  return aiEmail;
+}
+
 module.exports = {
   getAiSettings,
+  updateAiSettings,
 
   findParent,
   findParentById,
-
   findPlayersByParent,
   findPlayer,
-
   findRegistrationsByPlayer,
   findRegistrationsByParent,
-
   findPaymentsByParent,
   findPaymentsByPlayer,
   findPaymentsByTeam,
-
   findTeam,
   findTeamsByCoach,
 
   createAiEmail,
   getPendingAiEmails,
+  getAllAiEmails,
   getAiEmailById,
 
   buildParentContext,
   generateAiDraft,
   processIncomingEmail,
+
+  evaluateAutoSendEligibility,
+  sendAiReply,
+  manualSendAiEmail,
 };

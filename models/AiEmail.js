@@ -121,6 +121,14 @@ const aiEmailSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    sentMessageId: {
+      type: String,
+      default: null,
+    },
+    autoSent: {
+      type: Boolean,
+      default: false,
+    },
 
     // Related Bothell Select records identified by the AI
     parentId: {
