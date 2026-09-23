@@ -1,37 +1,60 @@
-// routes/resendWebhookRoutes.js
 const express = require('express');
+const { Resend } = require('resend');
 const { processIncomingEmail } = require('../services/aiEmailService');
 
 const router = express.Router();
+const resend = new Resend(process.env.RESEND_API_KEY);
 
-// This endpoint MUST be public — Resend calls it, not your admin users.
-router.post('/resend', async (req, res) => {
-  const event = req.body;
+router.post(
+  '/resend',
+  express.raw({ type: 'application/json' }),
+  async (req, res) => {
+    try {
+      const payload = req.body.toString('utf8');
 
-  // Only care about inbound emails
-  if (event.type !== 'email.received') {
-    return res.status(200).json({ status: 'ignored' });
-  }
+      // Verify signature (recommended for production)
+      const event = resend.webhooks.verify({
+        payload,
+        headers: {
+          id: req.headers['svix-id'],
+          timestamp: req.headers['svix-timestamp'],
+          signature: req.headers['svix-signature'],
+        },
+        webhookSecret: process.env.RESEND_WEBHOOK_SECRET,
+      });
 
-  const data = event.data;
+      if (event.type !== 'email.received') {
+        return res.status(200).json({ status: 'ignored' });
+      }
 
-  try {
-    await processIncomingEmail({
-      messageId: data.message_id,
-      threadId: null, // Resend webhook doesn't provide threadId here
-      from: data.from,
-      to: Array.isArray(data.to) ? data.to[0] : data.to,
-      subject: data.subject || '',
-      body: data.text || data.html || 'No body content',
-      receivedAt: new Date(data.created_at),
-    });
+      const { email_id, from, to, subject, created_at } = event.data;
 
-    res.status(200).json({ success: true });
-  } catch (error) {
-    console.error('Webhook processing error:', error);
-    // Still return 200 so Resend doesn't keep retrying a bad payload
-    res.status(200).json({ success: false, error: error.message });
-  }
-});
+      // ⚠️ CRITICAL: Fetch the FULL email content (body is NOT in the webhook)
+      const { data: fullEmail, error } =
+        await resend.emails.receiving.get(email_id);
+
+      if (error || !fullEmail) {
+        console.error('Failed to fetch email body:', error);
+        return res.status(200).json({ success: false });
+      }
+
+      await processIncomingEmail({
+        messageId: email_id,
+        threadId: null,
+        from: from,
+        to: Array.isArray(to) ? to[0] : to,
+        subject: subject || '',
+        body: fullEmail.text || fullEmail.html || 'No body content',
+        receivedAt: new Date(created_at),
+      });
+
+      res.status(200).json({ success: true });
+    } catch (error) {
+      console.error('Resend webhook error:', error.message);
+      // Return 200 so Resend doesn't endlessly retry a malformed payload
+      res.status(200).json({ success: false, error: error.message });
+    }
+  },
+);
 
 module.exports = router;
