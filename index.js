@@ -115,6 +115,12 @@ app.use(
   squareWebhooksRouter,
 );
 
+app.use(
+  '/api/webhooks/resend',
+  express.raw({ type: 'application/json' }),
+  resendWebhookRoutes,
+);
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -161,7 +167,6 @@ app.use('/api/video-gallery', videoGalleryRoutes);
 app.use('/api/marketing', marketingRoutes);
 app.use('/api/event-config', eventConfigRoutes);
 app.use('/api/admin/ai-emails', aiEmailRoutes);
-app.use('/api/webhooks', resendWebhookRoutes);
 app.get('/api/player/:playerId', async (req, res) => {
   try {
     const playerId = req.params.playerId;
