@@ -5,7 +5,7 @@ const { processIncomingEmail } = require('../services/aiEmailService');
 const router = express.Router();
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-router.post('/resend', async (req, res) => {
+router.post('/', async (req, res) => {
   try {
     // req.body is a Buffer — express.raw() is applied in index.js before this router
     const payload = req.body.toString('utf8');
