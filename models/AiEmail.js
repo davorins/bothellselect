@@ -79,8 +79,8 @@ const aiEmailSchema = new mongoose.Schema(
       default: '',
     },
     dataUsed: {
-      type: mongoose.Schema.Types.Mixed,
-      default: {},
+      type: [String],
+      default: [],
     },
 
     // Review and workflow
