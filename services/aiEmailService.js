@@ -572,7 +572,7 @@ ${JSON.stringify(
       'No matching parent record found for this email address — verify manually.';
   }
 
-  return { ...result, parent, context };
+  return { ...result, parent, context, effectiveEmail };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -632,9 +632,14 @@ async function sendAiReply(aiEmail) {
     ? `Re: ${aiEmail.subject.replace(/^Re:\s*/i, '')}`
     : 'Re: Your message to Bothell Select';
 
+  // Reply to the resolved parent address when we have one (contact-form
+  // submissions always arrive "from" info@bothellselect.com, so replying
+  // to `from` directly would send the response back to ourselves).
+  const replyTarget = aiEmail.replyToEmail || aiEmail.from;
+
   const { data, error } = await resend.emails.send({
     from: VERIFIED_SENDER,
-    to: aiEmail.from,
+    to: replyTarget,
     subject,
     text: body,
     headers,
@@ -664,6 +669,7 @@ async function processIncomingEmail(emailData) {
     aiEmail.aiDraft = result.draft;
     aiEmail.aiReason = result.reason;
     aiEmail.dataUsed = result.dataUsed;
+    aiEmail.replyToEmail = result.effectiveEmail || emailData.from;
 
     if (result.parent) {
       aiEmail.parentId = result.parent._id;

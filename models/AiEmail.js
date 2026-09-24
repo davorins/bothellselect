@@ -20,6 +20,12 @@ const aiEmailSchema = new mongoose.Schema(
       lowercase: true,
       trim: true,
     },
+    replyToEmail: {
+      type: String,
+      lowercase: true,
+      trim: true,
+      default: null,
+    },
     to: {
       type: String,
       trim: true,
