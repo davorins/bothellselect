@@ -135,38 +135,28 @@ const aiEmailSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
-
-    // Related Bothell Select records identified by the AI
     parentId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Parent',
       default: null,
       index: true,
     },
-    playerIds: [
-      {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Player',
-      },
-    ],
-    registrationIds: [
-      {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Registration',
-      },
-    ],
-    paymentIds: [
-      {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Payment',
-      },
-    ],
-    teamIds: [
-      {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Team',
-      },
-    ],
+    playerIds: {
+      type: [String],
+      default: [],
+    },
+    registrationIds: {
+      type: [String],
+      default: [],
+    },
+    paymentIds: {
+      type: [String],
+      default: [],
+    },
+    teamIds: {
+      type: [String],
+      default: [],
+    },
   },
   {
     timestamps: true,

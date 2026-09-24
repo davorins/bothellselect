@@ -1,4 +1,5 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const { authenticate, isAdmin } = require('../utils/auth');
 
 const AiEmail = require('../models/AiEmail');
@@ -12,6 +13,7 @@ const {
   getAiSettings,
   updateAiSettings,
   generateAiDraft,
+  normalizeIdList,
 } = require('../services/aiEmailService');
 
 const router = express.Router();
@@ -117,22 +119,25 @@ router.post('/:id/regenerate', authenticate, isAdmin, async (req, res) => {
     aiEmail.replyToEmail = result.effectiveEmail || aiEmail.from;
 
     if (result.parent) {
-      aiEmail.parentId = result.parent.id || result.parent._id || null;
+      const pid = result.parent.id || result.parent._id || null;
+      if (pid && mongoose.Types.ObjectId.isValid(pid)) {
+        aiEmail.parentId = pid;
+      }
     }
     if (result.context && result.context.players) {
-      aiEmail.playerIds = result.context.players
-        .filter((p) => p.id)
-        .map((p) => p.id);
+      aiEmail.playerIds = normalizeIdList(
+        result.context.players.map((p) => p.id),
+      );
     }
     if (result.context && result.context.registrations) {
-      aiEmail.registrationIds = result.context.registrations
-        .filter((r) => r.playerId)
-        .map((r) => r.playerId);
+      aiEmail.registrationIds = normalizeIdList(
+        result.context.registrations.map((r) => r.playerId),
+      );
     }
     if (result.context && result.context.payments) {
-      aiEmail.paymentIds = result.context.payments
-        .filter((p) => p.paymentId)
-        .map((p) => p.paymentId);
+      aiEmail.paymentIds = normalizeIdList(
+        result.context.payments.map((p) => p.paymentId),
+      );
     }
 
     aiEmail.status = 'draft_ready';

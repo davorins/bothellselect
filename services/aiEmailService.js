@@ -1,5 +1,6 @@
 require('dotenv').config();
 
+const mongoose = require('mongoose');
 const OpenAI = require('openai');
 const { Resend } = require('resend');
 
@@ -44,6 +45,45 @@ const SITE_OWNED_EMAILS = new Set(
     .filter(Boolean)
     .map((e) => e.toLowerCase()),
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ID-list normalization
+//
+// The AI occasionally returns a list field as a scalar, as a JSON-encoded
+// array string, or as a nested array. This flattens any of those shapes into
+// a clean array of trimmed strings so Mongoose's save() never chokes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function normalizeIdList(value) {
+  if (value == null) return [];
+
+  if (Array.isArray(value)) {
+    return value
+      .flat(Infinity)
+      .map((v) => (v == null ? '' : String(v).trim()))
+      .filter(Boolean);
+  }
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+
+    // Guard against JSON-encoded arrays like: '["a", "b"]'
+    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) return normalizeIdList(parsed);
+      } catch {
+        // not valid JSON — fall through and treat as a plain string
+      }
+    }
+
+    return [trimmed];
+  }
+
+  // Any other scalar (number, ObjectId, etc.)
+  return [String(value).trim()].filter(Boolean);
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Settings
@@ -189,10 +229,41 @@ async function findTeamsByCoach(coachId) {
 // AiEmail CRUD
 // ─────────────────────────────────────────────────────────────────────────────
 
-function populateAiEmail(query) {
-  return query
-    .populate({ path: 'parentId', select: 'fullName email' })
-    .populate({ path: 'playerIds', select: 'fullName' });
+// playerIds is [String] in the schema, so .populate() can't auto-resolve
+// names. We populate parentId normally and then manually look up player names
+// in a single query, replacing each id with { _id, fullName } for the UI.
+async function populateAiEmail(query) {
+  const doc = await query.populate({
+    path: 'parentId',
+    select: 'fullName email',
+  });
+
+  if (!doc) return doc;
+
+  const docs = Array.isArray(doc) ? doc : [doc];
+
+  const allPlayerIds = [
+    ...new Set(
+      docs.flatMap((d) => (d.playerIds || []).map((id) => String(id))),
+    ),
+  ].filter((id) => mongoose.Types.ObjectId.isValid(id));
+
+  let byId = new Map();
+  if (allPlayerIds.length > 0) {
+    const players = await Player.find({
+      _id: { $in: allPlayerIds },
+    }).select('fullName');
+    byId = new Map(players.map((p) => [String(p._id), p.fullName]));
+  }
+
+  for (const d of docs) {
+    d.playerIds = (d.playerIds || []).map((id) => ({
+      _id: String(id),
+      fullName: byId.get(String(id)) || null,
+    }));
+  }
+
+  return doc;
 }
 
 async function createAiEmail(emailData) {
@@ -545,18 +616,21 @@ IMPORTANT RULES
 4. To answer "did I pay?", check paymentComplete / paymentStatus for that
    child's current-season registration, and include amountPaid,
    paymentDate, and cardLast4 when confirming.
-5. When the data unambiguously confirms what the parent asked (e.g.
+5. When multiple payments exist for the same child, list each one
+   separately. The "paymentId" field in your response must always be a
+   single string, never an array.
+6. When the data unambiguously confirms what the parent asked (e.g.
    registrationComplete: true AND the current-season registration has
    paymentComplete: true for the exact child they mentioned), confirm it
    directly and confidently. Do NOT hedge with "appears to be" or
    "according to our records."
-6. If get_parent_by_email finds no parent, or the child the parent asked
+7. If get_parent_by_email finds no parent, or the child the parent asked
    about isn't in the family data, say the administrator needs to verify
    it manually — do NOT guess, and set confidence to 20 or lower.
-7. Do not expose passwords or internal MongoDB ids.
-8. Do not make team placement decisions or approve refunds.
-9. Sound like a helpful Bothell Select administrator. Be warm and concise.
-10. Sign the response as "Bothell Select Basketball".
+8. Do not expose passwords or internal MongoDB ids.
+9. Do not make team placement decisions or approve refunds.
+10. Sound like a helpful Bothell Select administrator. Be warm and concise.
+11. Sign the response as "Bothell Select Basketball".
 
 CONFIDENCE
 "confidence" must reflect whether you actually had the data to answer the
@@ -826,22 +900,25 @@ async function processIncomingEmail(emailData) {
     aiEmail.replyToEmail = result.effectiveEmail || resolvedEmailData.from;
 
     if (result.parent) {
-      aiEmail.parentId = result.parent.id || result.parent._id || null;
+      const pid = result.parent.id || result.parent._id || null;
+      if (pid && mongoose.Types.ObjectId.isValid(pid)) {
+        aiEmail.parentId = pid;
+      }
     }
     if (result.context.players) {
-      aiEmail.playerIds = result.context.players
-        .filter((p) => p.id)
-        .map((p) => p.id);
+      aiEmail.playerIds = normalizeIdList(
+        result.context.players.map((p) => p.id),
+      );
     }
     if (result.context.registrations) {
-      aiEmail.registrationIds = result.context.registrations
-        .filter((r) => r.playerId)
-        .map((r) => r.playerId);
+      aiEmail.registrationIds = normalizeIdList(
+        result.context.registrations.map((r) => r.playerId),
+      );
     }
     if (result.context.payments) {
-      aiEmail.paymentIds = result.context.payments
-        .filter((p) => p.paymentId)
-        .map((p) => p.paymentId);
+      aiEmail.paymentIds = normalizeIdList(
+        result.context.payments.map((p) => p.paymentId),
+      );
     }
 
     const eligibility = await evaluateAutoSendEligibility(aiEmail);
@@ -959,4 +1036,6 @@ module.exports = {
   extractJsonFromText,
   extractEmailAddress,
   extractEmailFromBody,
+
+  normalizeIdList,
 };
