@@ -47,8 +47,6 @@ const SITE_OWNED_EMAILS = new Set(
     .map((e) => e.toLowerCase()),
 );
 
-// Optional allowlist of email domains that may bypass the parent lookup.
-// Set AI_ALLOWED_DOMAINS=bothellschools.org,partner.org in .env to use it.
 const ADDITIONAL_ALLOWED_DOMAINS = (process.env.AI_ALLOWED_DOMAINS || '')
   .split(',')
   .map((d) => d.trim().toLowerCase())
@@ -142,10 +140,6 @@ function extractEmailFromBody(body) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Inbound email filter
-//
-// Decides whether an inbound email should be processed by the AI. We only
-// want emails from actual Bothell Select parents. Vendors, newsletters,
-// spam, and third-party pitches are skipped.
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function shouldProcessEmail(fromEmail) {
@@ -154,13 +148,11 @@ async function shouldProcessEmail(fromEmail) {
     return { process: false, reason: 'No sender email address.' };
   }
 
-  // Layer 1 — must be a known parent.
   const parent = await Parent.findOne({ email }).select('_id').lean();
   if (parent) {
     return { process: true, reason: 'Known parent.' };
   }
 
-  // Layer 2 — optional extra allowlist for trusted domains.
   const domain = email.split('@')[1] || '';
   if (ADDITIONAL_ALLOWED_DOMAINS.includes(domain)) {
     return { process: true, reason: `Allowed domain (${domain}).` };
@@ -634,7 +626,7 @@ const TOOL_DEFINITIONS = [
     function: {
       name: 'get_family_data',
       description:
-        'Get the players, registrations, payments, and teams for a parent, using the parentId returned by get_parent_by_email.',
+        "Get the players, registrations, payments, and teams for a parent, using the parentId returned by get_parent_by_email. Call this before answering ANY question that could relate to the parent's children, even if the email doesn't mention a specific child by name.",
       parameters: {
         type: 'object',
         properties: {
@@ -718,15 +710,43 @@ You have access to three tools backed by the live database:
   dates, times, locations, age/gender groupings per session, fee,
   deadlines, what to bring, and contact email.
 
-ALWAYS call get_parent_by_email first, using the sender's email address.
-If it finds a parent, ALWAYS follow up with get_family_data using that
-parent's id before answering anything about registration or payment status.
+MANDATORY TOOL SEQUENCE
+1. ALWAYS call get_parent_by_email first, using the sender's email address.
+2. If it finds a parent, ALWAYS call get_family_data IMMEDIATELY after.
+   Call it even when the email does not name a specific child by name.
+   The words "my son", "my daughter", "my kid", "my child", or any question
+   about registration/payment/tryouts implicitly refers to the parent's
+   children, so get_family_data is required to answer it.
+3. ALWAYS call get_current_tryout whenever the parent asks about tryout
+   dates, times, locations, schedules, what to bring, fees, deadlines, or
+   "where/when" questions. Never say "please refer to the latest
+   communication" if the tryout tool returned the data — answer directly
+   using the sessions in the tool result.
 
-ALWAYS call get_current_tryout whenever the parent asks about tryout
-dates, times, locations, schedules, what to bring, fees, deadlines, or
-"where/when" questions. Never say "please refer to the latest
-communication" if the tryout tool returned the data — answer directly
-using the sessions in the tool result.
+RESOLVING "MY SON" / "MY DAUGHTER" / "MY KID"
+The player list in get_family_data includes each child's gender. Use it.
+
+- "son" / "my son" / "boys" → players with gender === "Male"
+- "daughter" / "my daughter" / "girls" → players with gender === "Female"
+- "kid", "child", "children", or the parent names no child → all players
+
+After filtering by gender:
+- If exactly ONE child matches → that's the child. Answer confidently.
+- If MULTIPLE children match → do NOT silently pick one. List all of them
+  with their own registration/payment/tryout information, and open with a
+  short line like "You have more than one son, so I've included info for
+  both:" — then present each child separately.
+- If multiple match AND only one of them has a paid/complete registration
+  for the current season → assume the parent means that child, but
+  acknowledge the ambiguity briefly ("Assuming you mean Theo, who has a
+  completed registration...") and still include the other child's status
+  in a short sentence.
+- If NO child matches the gender term → say the administrator will verify,
+  and list the parent's children by name so they can see who we have.
+- If the parent names a child by name, match by fullName first. Common
+  nicknames (Theo/Theodore, Alex/Alexander, Ariana/Ari, etc.) count.
+- Never ask the parent to clarify in a first reply. Always give the info
+  we have and note any ambiguity for a human to review.
 
 When answering "when/where is the tryout?", match the child's gender and
 grade to the correct session:
@@ -742,8 +762,8 @@ ${currentSeasonLine}
 IMPORTANT RULES
 
 1. Never invent facts. Only use what the tools return.
-2. Match children by fullName within the family data. Common nicknames
-   (Theo/Theodore, Alex/Alexander, Ariana/Ari, etc.) may match — use context.
+2. Match children by fullName, and fall back to gender for son/daughter.
+   Common nicknames (Theo/Theodore, Alex/Alexander, Ariana/Ari, etc.) match.
 3. To answer "is my child registered?", check that child's
    registrationComplete field (both on the player and within their
    registrations for the current season).
@@ -762,9 +782,10 @@ IMPORTANT RULES
    paymentComplete: true for the exact child they mentioned), confirm it
    directly and confidently. Do NOT hedge with "appears to be" or
    "according to our records."
-8. If get_parent_by_email finds no parent, or the child the parent asked
-   about isn't in the family data, say the administrator needs to verify
-   it manually — do NOT guess, and set confidence to 20 or lower.
+8. If get_parent_by_email finds no parent at all, say an administrator will
+   verify — do NOT guess, and set confidence to 20 or lower. But if a
+   parent WAS found and the child isn't 100% clear, still answer using the
+   family data — do NOT default to "we couldn't find your information".
 9. Do not expose passwords or internal MongoDB ids.
 10. Do not make team placement decisions or approve refunds.
 11. Sound like a helpful Bothell Select administrator. Be warm and concise.
@@ -773,8 +794,9 @@ IMPORTANT RULES
 CONFIDENCE
 "confidence" must reflect whether you actually had the data to answer the
 parent's question — not just whether you picked the right category. If no
-parent was found, or the child asked about isn't in the family data,
-confidence must be 20 or lower, regardless of how clear the category is.
+parent was found at all, confidence must be 20 or lower. If a parent was
+found and you answered from their family data, confidence should be high
+even if you had to disambiguate by gender.
 
 Once you have gathered whatever data is available (or confirmed none
 exists), respond with ONLY valid JSON, no markdown fences, no text before
@@ -812,7 +834,7 @@ async function generateAiDraft({ from, subject = '', body }) {
 
   const toolContext = {};
   let iterations = 0;
-  const MAX_ITERATIONS = 6;
+  const MAX_ITERATIONS = 8;
   let finalMessage = null;
 
   while (iterations < MAX_ITERATIONS) {
@@ -895,6 +917,9 @@ async function generateAiDraft({ from, subject = '', body }) {
     result.reviewReason = 'Human review is required.';
   }
 
+  // Only apply the "no parent" confidence cap when we truly had no parent.
+  // If a parent was found, trust the model's confidence — the family data
+  // was available even if the child had to be disambiguated by gender.
   const context = toolContext.family || {
     parentFound: false,
     parent: null,
@@ -903,7 +928,7 @@ async function generateAiDraft({ from, subject = '', body }) {
     payments: [],
   };
 
-  if (!context.parentFound) {
+  if (!context.parentFound && !toolContext.parent) {
     result.confidence = Math.min(result.confidence, 20);
     result.requiresHumanReview = true;
     result.reviewReason =
@@ -1012,13 +1037,10 @@ async function processIncomingEmail(emailData) {
   console.log('Subject:', resolvedEmailData.subject);
   console.log('Body length:', (resolvedEmailData.body || '').length);
 
-  // ── Filter: only process emails from known parents (or trusted domains) ──
   const filterResult = await shouldProcessEmail(resolvedEmailData.from);
   if (!filterResult.process) {
     console.log(`⏭️  Skipping email — ${filterResult.reason}`);
 
-    // Save a lightweight record so admins can still see it if they want,
-    // but mark it skipped so it doesn't clutter the pending queue.
     try {
       const skipped = await AiEmail.create({
         messageId: emailData.messageId,
@@ -1036,7 +1058,6 @@ async function processIncomingEmail(emailData) {
       console.log('Saved skipped AiEmail:', skipped._id.toString());
       return skipped;
     } catch (saveErr) {
-      // Duplicate messageId (Resend retry) — safe to ignore.
       if (saveErr.code === 11000) {
         console.log('Skipped email already recorded (duplicate messageId).');
         return null;
