@@ -9,7 +9,6 @@ router.post('/', async (req, res) => {
   console.log('📬 Resend webhook hit');
 
   try {
-    // req.body is a Buffer — express.raw() is applied in index.js before this router
     const payload = req.body.toString('utf8');
 
     let event;
@@ -43,7 +42,6 @@ router.post('/', async (req, res) => {
     const { email_id, from, to, subject, created_at } = event.data;
     console.log('📨 Inbound email metadata:', { email_id, from, to, subject });
 
-    // Webhook only sends metadata — fetch the full email body
     let fullEmail;
     try {
       const result = await resend.emails.receiving.get(email_id);
@@ -77,8 +75,9 @@ router.post('/', async (req, res) => {
       (fullEmail.text || fullEmail.html || '').length,
     );
 
-    console.log('🚀 Calling processIncomingEmail...');
-    const aiEmail = await processIncomingEmail({
+    res.status(200).json({ success: true, queued: true });
+
+    processIncomingEmail({
       messageId: email_id,
       threadId: null,
       from: from,
@@ -86,16 +85,21 @@ router.post('/', async (req, res) => {
       subject: subject || '',
       body: fullEmail.text || fullEmail.html || 'No body content',
       receivedAt: new Date(created_at),
-    });
-
-    console.log(
-      '✅ processIncomingEmail completed. AiEmail id:',
-      aiEmail._id,
-      'status:',
-      aiEmail.status,
-    );
-
-    res.status(200).json({ success: true });
+    })
+      .then((aiEmail) => {
+        console.log(
+          '✅ Background AI processing completed. AiEmail id:',
+          aiEmail._id,
+          'status:',
+          aiEmail.status,
+          'confidence:',
+          aiEmail.confidence,
+        );
+      })
+      .catch((error) => {
+        console.error('❌ Background AI processing failed:', error.message);
+        console.error(error.stack);
+      });
   } catch (error) {
     console.error('❌ Resend webhook error:', error.message);
     console.error(error.stack);
