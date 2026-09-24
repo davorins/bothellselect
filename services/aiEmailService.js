@@ -47,6 +47,13 @@ const SITE_OWNED_EMAILS = new Set(
     .map((e) => e.toLowerCase()),
 );
 
+// Optional allowlist of email domains that may bypass the parent lookup.
+// Set AI_ALLOWED_DOMAINS=bothellschools.org,partner.org in .env to use it.
+const ADDITIONAL_ALLOWED_DOMAINS = (process.env.AI_ALLOWED_DOMAINS || '')
+  .split(',')
+  .map((d) => d.trim().toLowerCase())
+  .filter(Boolean);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // ID-list normalization
 // ─────────────────────────────────────────────────────────────────────────────
@@ -131,6 +138,38 @@ function extractEmailFromBody(body) {
     /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/,
   );
   return anyMatch ? anyMatch[0].toLowerCase().trim() : '';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inbound email filter
+//
+// Decides whether an inbound email should be processed by the AI. We only
+// want emails from actual Bothell Select parents. Vendors, newsletters,
+// spam, and third-party pitches are skipped.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function shouldProcessEmail(fromEmail) {
+  const email = extractEmailAddress(fromEmail);
+  if (!email) {
+    return { process: false, reason: 'No sender email address.' };
+  }
+
+  // Layer 1 — must be a known parent.
+  const parent = await Parent.findOne({ email }).select('_id').lean();
+  if (parent) {
+    return { process: true, reason: 'Known parent.' };
+  }
+
+  // Layer 2 — optional extra allowlist for trusted domains.
+  const domain = email.split('@')[1] || '';
+  if (ADDITIONAL_ALLOWED_DOMAINS.includes(domain)) {
+    return { process: true, reason: `Allowed domain (${domain}).` };
+  }
+
+  return {
+    process: false,
+    reason: 'Sender is not a registered Bothell Select parent.',
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -465,10 +504,6 @@ async function getFamilyData(parentId) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Current tryout lookup
-//
-// Returns the active tryout config trimmed to what the AI needs:
-// dates, sessions with grade ranges, locations, fees, deadlines, what to bring.
-// The AI matches a player's gender + grade to the right session.
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function getCurrentTryout() {
@@ -977,6 +1012,40 @@ async function processIncomingEmail(emailData) {
   console.log('Subject:', resolvedEmailData.subject);
   console.log('Body length:', (resolvedEmailData.body || '').length);
 
+  // ── Filter: only process emails from known parents (or trusted domains) ──
+  const filterResult = await shouldProcessEmail(resolvedEmailData.from);
+  if (!filterResult.process) {
+    console.log(`⏭️  Skipping email — ${filterResult.reason}`);
+
+    // Save a lightweight record so admins can still see it if they want,
+    // but mark it skipped so it doesn't clutter the pending queue.
+    try {
+      const skipped = await AiEmail.create({
+        messageId: emailData.messageId,
+        threadId: emailData.threadId || null,
+        from: resolvedEmailData.from,
+        to: resolvedEmailData.to || null,
+        subject: resolvedEmailData.subject || '',
+        body: resolvedEmailData.body,
+        receivedAt: emailData.receivedAt || new Date(),
+        status: 'skipped',
+        skipReason: filterResult.reason,
+        requiresHumanReview: false,
+        reviewReason: filterResult.reason,
+      });
+      console.log('Saved skipped AiEmail:', skipped._id.toString());
+      return skipped;
+    } catch (saveErr) {
+      // Duplicate messageId (Resend retry) — safe to ignore.
+      if (saveErr.code === 11000) {
+        console.log('Skipped email already recorded (duplicate messageId).');
+        return null;
+      }
+      console.error('Failed to save skipped AiEmail:', saveErr.message);
+      throw saveErr;
+    }
+  }
+
   const aiEmail = await createAiEmail(resolvedEmailData);
   console.log('Created AiEmail:', aiEmail._id.toString());
 
@@ -1134,6 +1203,8 @@ module.exports = {
   buildParentContext,
   generateAiDraft,
   processIncomingEmail,
+
+  shouldProcessEmail,
 
   evaluateAutoSendEligibility,
   sendAiReply,

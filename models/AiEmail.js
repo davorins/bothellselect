@@ -86,9 +86,13 @@ const aiEmailSchema = new mongoose.Schema(
     // Review and workflow
     status: {
       type: String,
-      enum: ['new', 'draft_ready', 'reviewed', 'sent', 'rejected'],
+      enum: ['new', 'draft_ready', 'reviewed', 'sent', 'rejected', 'skipped'],
       default: 'new',
       index: true,
+    },
+    skipReason: {
+      type: String,
+      default: '',
     },
     requiresHumanReview: {
       type: Boolean,
