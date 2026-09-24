@@ -1213,16 +1213,15 @@ ${body || ''}
   return {
     ...draft,
 
-    dataUsed: {
-      dataUsed: JSON.stringify({
-        parentFound: !!contextPackage.raw.parent,
-        playerCount: contextPackage.raw.players?.length || 0,
-        registrationCount: contextPackage.raw.registrations?.length || 0,
-        paymentCount: contextPackage.raw.payments?.length || 0,
-        tryoutFound: !!contextPackage.tryout?.exists,
-        tryoutSource: contextPackage.tryout?.source || null,
-      }),
-      liveContext: contextPackage,
+    dataUsed: JSON.stringify({
+      parentFound: !!contextPackage.raw.parent,
+      playerCount: contextPackage.raw.players?.length || 0,
+      registrationCount: contextPackage.raw.registrations?.length || 0,
+      paymentCount: contextPackage.raw.payments?.length || 0,
+      tryoutFound: !!contextPackage.tryout?.exists,
+      tryoutSource: contextPackage.tryout?.source || null,
+    }),
+    liveContext: contextPackage,
   };
 }
 
