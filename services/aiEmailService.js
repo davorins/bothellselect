@@ -180,7 +180,7 @@ async function getAiEmailById(id) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Context building
+// AI context + draft generation
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function buildParentContext(parent) {
@@ -195,135 +195,41 @@ async function buildParentContext(parent) {
   }
 
   const players = await findPlayersByParent(parent._id);
-
-  // Flatten every player's `seasons` array into a single registrations list
-  const registrationsFromSeasons = players.flatMap((player) =>
-    (player.seasons || []).map((season) => ({
-      playerId: player._id.toString(),
-      playerName: player.fullName || '',
-      season: season.season || '',
-      year: season.year || null,
-      tryoutId: season.tryoutId || null,
-      registrationDate: season.registrationDate || null,
-      registrationComplete: player.registrationComplete || false,
-      paymentComplete: season.paymentComplete || false,
-      paymentStatus: season.paymentStatus || 'unknown',
-      paymentId: season.paymentId || null,
-      amountPaid: season.amountPaid ?? null,
-      paymentDate: season.paymentDate || null,
-      cardLast4: season.cardLast4 || null,
-      cardBrand: season.cardBrand || null,
-    })),
-  );
-
-  // Also pull the standalone PlayerRegistration collection
-  const standaloneRegistrations = await findRegistrationsByParent(parent._id);
-
-  const normalizedStandalone = standaloneRegistrations.map((reg) => ({
-    playerId: reg.playerId ? reg.playerId.toString() : null,
-    playerName: '',
-    season: reg.season || '',
-    year: reg.year || null,
-    tryoutId: reg.tryoutId || null,
-    registrationDate: reg.createdAt || null,
-    registrationComplete: reg.status === 'complete',
-    paymentComplete: reg.paymentComplete || false,
-    paymentStatus: reg.paymentStatus || 'unknown',
-    paymentId: reg.paymentId || null,
-    amountPaid: reg.amountPaid ?? null,
-    paymentDate: reg.paymentDate || null,
-    cardLast4: null,
-    cardBrand: null,
-  }));
-
-  const allRegistrations = [
-    ...registrationsFromSeasons,
-    ...normalizedStandalone,
-  ];
-
-  const allPayments = allRegistrations
-    .filter((r) => r.paymentId || r.amountPaid)
-    .map((r) => ({
-      playerId: r.playerId,
-      playerName: r.playerName,
-      season: r.season,
-      paymentId: r.paymentId,
-      amountPaid: r.amountPaid,
-      status: r.paymentStatus,
-      paidAt: r.paymentDate,
-      cardLast4: r.cardLast4,
-      cardBrand: r.cardBrand,
-    }));
+  const registrations = await findRegistrationsByParent(parent._id);
+  const payments = await findPaymentsByParent(parent._id);
 
   return {
     parentFound: true,
-
     parent: {
       id: parent._id.toString(),
-      fullName: parent.fullName || '',
+      firstName: parent.firstName || '',
+      lastName: parent.lastName || '',
       email: parent.email || '',
       phone: parent.phone || '',
-      relationship: parent.relationship || '',
-      role: parent.role || '',
     },
-
     players: players.map((player) => ({
       id: player._id.toString(),
-      fullName: player.fullName || '',
-      gender: player.gender || '',
+      firstName: player.firstName || '',
+      lastName: player.lastName || '',
       grade: player.grade || '',
-      aauNumber: player.aauNumber || '',
-      registrationYear: player.registrationYear || null,
-      registrationComplete: player.registrationComplete || false,
-      paymentComplete: player.paymentComplete || false,
-      paymentStatus: player.paymentStatus || '',
-      lastPaymentDate: player.lastPaymentDate || null,
-      healthConcerns: player.healthConcerns || '',
+      gender: player.gender || '',
     })),
-
-    registrations: allRegistrations,
-    payments: allPayments,
+    registrations: registrations.map((registration) => ({
+      id: registration._id.toString(),
+      playerId: registration.playerId ? registration.playerId.toString() : null,
+      status: registration.status || '',
+      createdAt: registration.createdAt || null,
+    })),
+    payments: payments.map((payment) => ({
+      id: payment._id.toString(),
+      amount: payment.amount || null,
+      status: payment.status || '',
+      createdAt: payment.createdAt || null,
+      playerId: payment.playerId ? payment.playerId.toString() : null,
+      teamId: payment.teamId ? payment.teamId.toString() : null,
+    })),
   };
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Robust JSON extraction from AI response
-// ─────────────────────────────────────────────────────────────────────────────
-
-function extractJsonFromText(rawOutput) {
-  if (!rawOutput) {
-    throw new Error('Empty AI output');
-  }
-
-  let cleaned = String(rawOutput).trim();
-
-  // Remove BOM and normalize whitespace
-  cleaned = cleaned.replace(/^\uFEFF/, '');
-
-  // Strip ```json ... ``` or ``` ... ``` fences
-  if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```(?:json)?\s*/i, '');
-    cleaned = cleaned.replace(/\s*```\s*$/i, '');
-  }
-
-  // Trim any leading prose before the first {
-  const firstBrace = cleaned.indexOf('{');
-  const lastBrace = cleaned.lastIndexOf('}');
-
-  if (firstBrace === -1 || lastBrace === -1 || lastBrace < firstBrace) {
-    throw new Error(
-      `No JSON object found in AI output. Raw: ${cleaned.slice(0, 300)}`,
-    );
-  }
-
-  cleaned = cleaned.slice(firstBrace, lastBrace + 1);
-
-  return JSON.parse(cleaned);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// AI draft generation
-// ─────────────────────────────────────────────────────────────────────────────
 
 async function generateAiDraft({ from, subject = '', body }) {
   if (!from) throw new Error('from is required');
@@ -337,38 +243,26 @@ async function generateAiDraft({ from, subject = '', body }) {
 You are the Bothell Select parent email assistant.
 
 Your job is to analyze an incoming email from a parent and prepare
-a professional draft response for a Bothell Select administrator.
+a professional draft response for a human Bothell Select administrator
+to review.
 
-DATA YOU RECEIVE
-You are given a "context" object containing verified Bothell Select data:
+IMPORTANT RULES:
 
-- context.parent: the parent's fullName, email, phone, relationship.
-- context.players: each child with fullName, grade, gender,
-  registrationComplete, paymentComplete, paymentStatus.
-- context.registrations: each registration with playerName, season, year,
-  tryoutId, registrationDate, registrationComplete, paymentComplete,
-  paymentStatus, amountPaid, paymentDate, cardLast4, cardBrand.
-- context.payments: each payment with playerName, amountPaid, status,
-  paidAt, cardLast4, cardBrand.
+1. Never invent facts.
+2. Only use information contained in the provided Bothell Select data.
+3. If information is missing, say that the administrator needs to verify it.
+4. Never claim a payment, registration, refund, schedule, team placement,
+   or other action is confirmed unless the provided data confirms it.
+5. Do not expose passwords, authentication information, or sensitive
+   internal information.
+6. Do not make decisions about team placement.
+7. Do not approve refunds.
+8. Do not resolve payment disputes automatically.
+9. The draft should sound like a helpful Bothell Select administrator.
+10. Keep the response concise unless the parent needs a detailed explanation.
+11. Sign the response as "Bothell Select Basketball".
 
-IMPORTANT RULES
-
-1. Never invent facts. Only use what is in the context.
-2. Match children by context.players[*].fullName.
-3. To answer "is my child registered?", check
-   context.players[*].registrationComplete AND
-   context.registrations[*].registrationComplete for that child.
-4. To answer "did I pay?", check context.players[*].paymentComplete AND
-   context.registrations[*].paymentComplete for that child. Include
-   amountPaid, paymentDate, and cardLast4 when confirming.
-5. If the context is missing information the parent asked about, say that
-   the administrator needs to verify it — do NOT guess.
-6. Do not expose passwords or internal IDs.
-7. Do not make team placement decisions or approve refunds.
-8. Sound like a helpful Bothell Select administrator. Be warm and concise.
-9. Sign the response as "Bothell Select Basketball".
-
-CATEGORIES
+Available categories:
 
 - tryouts
 - registration
@@ -381,23 +275,19 @@ CATEGORIES
 - general
 - other
 
-Return ONLY valid JSON. Do NOT wrap it in markdown fences. Do NOT include
-any text before or after the JSON. The response must start with { and end
-with }.
-
-JSON structure:
+Return ONLY valid JSON with this exact structure:
 
 {
   "category": "one of the allowed categories",
   "confidence": 0,
   "draft": "draft response",
-  "reason": "short explanation of category and confidence",
+  "reason": "short explanation of why this category and confidence were selected",
   "dataUsed": ["parent", "players", "registrations", "payments"],
   "requiresHumanReview": true,
   "reviewReason": "why a human should review this response"
 }
 
-Confidence must be 0-100. Higher = more certain the response is correct.
+Confidence must be a number from 0 to 100.
 `;
 
   const userPrompt = `
@@ -409,7 +299,7 @@ Subject: ${subject}
 Message:
 ${body}
 
-Verified Bothell Select data (this is the only source of truth):
+Verified Bothell Select information:
 
 ${JSON.stringify(context, null, 2)}
 
@@ -435,21 +325,13 @@ ${JSON.stringify(
   });
 
   const rawOutput = response.output_text;
-
-  if (!rawOutput) {
-    throw new Error('OpenAI returned an empty response');
-  }
-
-  console.log('=== AI RAW OUTPUT (first 500 chars) ===');
-  console.log(rawOutput.slice(0, 500));
-  console.log('=======================================');
+  if (!rawOutput) throw new Error('OpenAI returned an empty response');
 
   let result;
   try {
-    result = extractJsonFromText(rawOutput);
-  } catch (parseError) {
-    console.error('JSON extraction failed:', parseError.message);
-    throw new Error(`OpenAI returned invalid JSON: ${parseError.message}`);
+    result = JSON.parse(rawOutput);
+  } catch (error) {
+    throw new Error(`OpenAI returned invalid JSON: ${rawOutput}`);
   }
 
   const allowedCategories = [
@@ -594,16 +476,17 @@ async function processIncomingEmail(emailData) {
 
     if (result.context.registrations) {
       aiEmail.registrationIds = result.context.registrations
-        .filter((registration) => registration.playerId)
-        .map((registration) => registration.playerId);
+        .filter((registration) => registration.id)
+        .map((registration) => registration.id);
     }
 
     if (result.context.payments) {
       aiEmail.paymentIds = result.context.payments
-        .filter((payment) => payment.paymentId)
-        .map((payment) => payment.paymentId);
+        .filter((payment) => payment.id)
+        .map((payment) => payment.id);
     }
 
+    // Decide whether to auto-send or leave for human review
     const eligibility = await evaluateAutoSendEligibility(aiEmail);
 
     if (eligibility.eligible) {
@@ -632,16 +515,9 @@ async function processIncomingEmail(emailData) {
     await aiEmail.save();
     return aiEmail;
   } catch (error) {
-    console.error('=== AI PROCESSING FAILED ===');
-    console.error('Message:', error.message);
-    console.error('Stack:', error.stack);
-    console.error('============================');
-
     aiEmail.status = 'new';
     aiEmail.requiresHumanReview = true;
-    aiEmail.reviewReason = `AI processing failed: ${error.message}`;
-    aiEmail.aiDraft = `[AI draft failed: ${error.message}]`;
-
+    aiEmail.reviewReason = 'AI processing failed and requires manual review.';
     await aiEmail.save();
     throw error;
   }
@@ -700,6 +576,4 @@ module.exports = {
   evaluateAutoSendEligibility,
   sendAiReply,
   manualSendAiEmail,
-
-  extractJsonFromText,
 };
