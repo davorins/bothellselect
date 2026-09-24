@@ -1,4 +1,5 @@
 require('dotenv').config();
+
 const OpenAI = require('openai');
 const { Resend } = require('resend');
 
@@ -10,18 +11,43 @@ const PlayerRegistration = require('../models/PlayerRegistration');
 const Payment = require('../models/Payment');
 const Team = require('../models/Team');
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// ─────────────────────────────────────────────────────────────────────────────
+// Clients + config
+// ─────────────────────────────────────────────────────────────────────────────
 
+if (!process.env.OPENAI_API_KEY) {
+  console.warn('[aiEmailService] OPENAI_API_KEY is not set.');
+}
+if (!process.env.RESEND_API_KEY) {
+  console.warn('[aiEmailService] RESEND_API_KEY is not set.');
+}
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const resend = new Resend(process.env.RESEND_API_KEY);
-const VERIFIED_SENDER = 'Bothell Select <info@bothellselect.com>';
+
+const VERIFIED_SENDER =
+  process.env.VERIFIED_SENDER || 'Bothell Select <info@bothellselect.com>';
+
+const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o';
+
+const CURRENT_TRYOUT_YEAR = Number(process.env.CURRENT_TRYOUT_YEAR) || null;
+const CURRENT_TRYOUT_ID = process.env.CURRENT_TRYOUT_ID || null;
+const CURRENT_TRYOUT_LABEL =
+  process.env.CURRENT_TRYOUT_LABEL || 'Bothell Select Tryouts';
 
 // Addresses that belong to the site itself, never to a parent. Contact-form
-// submissions always arrive "from" one of these — even if one of them
-// happens to also exist as a Parent record (e.g. an admin/site account),
-// it must never be treated as the matched parent for an inbound email.
-const SITE_OWNED_EMAILS = new Set(['info@bothellselect.com']);
+// submissions always arrive "from" one of these. Even if one of them happens
+// to also exist as a Parent record (e.g. an admin account), it must never be
+// treated as the matched parent for an inbound email.
+const SITE_OWNED_EMAILS = new Set(
+  [
+    'info@bothellselect.com',
+    'bothellselect@proton.me',
+    process.env.VERIFIED_SENDER_EMAIL,
+  ]
+    .filter(Boolean)
+    .map((e) => e.toLowerCase()),
+);
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Settings
@@ -29,11 +55,9 @@ const SITE_OWNED_EMAILS = new Set(['info@bothellselect.com']);
 
 async function getAiSettings() {
   let settings = await AiSettings.findOne({ key: 'default' });
-
   if (!settings) {
     settings = await AiSettings.create({ key: 'default' });
   }
-
   return settings;
 }
 
@@ -47,17 +71,10 @@ async function updateAiSettings(updates, updatedBy = null) {
     'allowedAutomaticCategories',
     'alwaysRequireHumanReview',
   ];
-
   for (const key of allowed) {
-    if (key in updates) {
-      settings[key] = updates[key];
-    }
+    if (key in updates) settings[key] = updates[key];
   }
-
-  if (updatedBy) {
-    settings.updatedBy = updatedBy;
-  }
-
+  if (updatedBy) settings.updatedBy = updatedBy;
   await settings.save();
   return settings;
 }
@@ -66,10 +83,6 @@ async function updateAiSettings(updates, updatedBy = null) {
 // Email address normalization
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Inbound "from" headers often look like `"Davorin Savovic" <davorins@gmail.com>`.
-// Parent lookups need the bare address, or findParent() silently returns null
-// and the AI ends up with parentFound: false while still rating its own
-// classification confidence high.
 function extractEmailAddress(rawFrom) {
   if (!rawFrom) return '';
   const match = String(rawFrom).match(/<([^>]+)>/);
@@ -77,21 +90,12 @@ function extractEmailAddress(rawFrom) {
   return address.toLowerCase().trim();
 }
 
-// Contact-form submissions arrive with the envelope "from" set to the site's
-// own sending address (info@bothellselect.com) — the actual parent's email
-// is embedded in the body as plain text (e.g. "Email: davorins@gmail.com").
-// This pulls that out as a fallback when the envelope sender doesn't match
-// a parent record on its own.
 function extractEmailFromBody(body) {
   if (!body) return '';
-
-  // Prefer an explicit "Email: ..." line, which is what the contact form emits.
   const labeledMatch = String(body).match(
     /email\s*:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i,
   );
   if (labeledMatch) return labeledMatch[1].toLowerCase().trim();
-
-  // Fall back to the first email-looking string anywhere in the body.
   const anyMatch = String(body).match(
     /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/,
   );
@@ -114,9 +118,20 @@ async function findParentById(parentId) {
   return Parent.findById(parentId).select('-password');
 }
 
+// Look up the parent's players via BOTH the parent.players array AND the
+// player.parentId back-reference. This guarantees a player is never invisible
+// to the AI if one side of the relationship is stale.
 async function findPlayersByParent(parentId) {
   if (!parentId) return [];
-  return Player.find({ parentId });
+
+  const parent = await Parent.findById(parentId).select('players');
+  const playerIdsFromParentArray = (parent?.players || []).map((id) =>
+    id.toString(),
+  );
+
+  return Player.find({
+    $or: [{ parentId }, { _id: { $in: playerIdsFromParentArray } }],
+  });
 }
 
 async function findPlayer(playerId) {
@@ -131,9 +146,11 @@ async function findRegistrationsByPlayer(playerId) {
 
 async function findRegistrationsByParent(parentId) {
   if (!parentId) return [];
+
   const players = await Player.find({ parentId }).select('_id');
   const playerIds = players.map((p) => p._id);
   if (playerIds.length === 0) return [];
+
   return PlayerRegistration.find({
     playerId: { $in: playerIds },
   }).sort({ createdAt: -1 });
@@ -234,8 +251,19 @@ async function getAiEmailById(id) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Context building (shared by the legacy path and the AI tool-calling path)
+// Context building
 // ─────────────────────────────────────────────────────────────────────────────
+
+function sortSeasonsDesc(seasons) {
+  return [...(seasons || [])].sort((a, b) => {
+    const ay = Number(a.year) || 0;
+    const by = Number(b.year) || 0;
+    if (by !== ay) return by - ay;
+    const ad = a.registrationDate ? new Date(a.registrationDate).getTime() : 0;
+    const bd = b.registrationDate ? new Date(b.registrationDate).getTime() : 0;
+    return bd - ad;
+  });
+}
 
 async function buildParentContext(parent) {
   if (!parent) {
@@ -250,9 +278,8 @@ async function buildParentContext(parent) {
 
   const players = await findPlayersByParent(parent._id);
 
-  // Flatten every player's `seasons` array into a single registrations list
   const registrationsFromSeasons = players.flatMap((player) =>
-    (player.seasons || []).map((season) => ({
+    sortSeasonsDesc(player.seasons).map((season) => ({
       playerId: player._id.toString(),
       playerName: player.fullName || '',
       season: season.season || '',
@@ -270,7 +297,6 @@ async function buildParentContext(parent) {
     })),
   );
 
-  // Also pull the standalone PlayerRegistration collection
   const standaloneRegistrations = await findRegistrationsByParent(parent._id);
 
   const normalizedStandalone = standaloneRegistrations.map((reg) => ({
@@ -311,7 +337,6 @@ async function buildParentContext(parent) {
 
   return {
     parentFound: true,
-
     parent: {
       id: parent._id.toString(),
       fullName: parent.fullName || '',
@@ -320,7 +345,6 @@ async function buildParentContext(parent) {
       relationship: parent.relationship || '',
       role: parent.role || '',
     },
-
     players: players.map((player) => ({
       id: player._id.toString(),
       fullName: player.fullName || '',
@@ -333,8 +357,20 @@ async function buildParentContext(parent) {
       paymentStatus: player.paymentStatus || '',
       lastPaymentDate: player.lastPaymentDate || null,
       healthConcerns: player.healthConcerns || '',
+      seasons: sortSeasonsDesc(player.seasons).map((s) => ({
+        season: s.season || '',
+        year: s.year || null,
+        tryoutId: s.tryoutId || null,
+        registrationDate: s.registrationDate || null,
+        paymentComplete: s.paymentComplete || false,
+        paymentStatus: s.paymentStatus || 'unknown',
+        paymentId: s.paymentId || null,
+        amountPaid: s.amountPaid ?? null,
+        paymentDate: s.paymentDate || null,
+        cardLast4: s.cardLast4 || null,
+        cardBrand: s.cardBrand || null,
+      })),
     })),
-
     registrations: allRegistrations,
     payments: allPayments,
   };
@@ -347,7 +383,6 @@ async function buildParentContext(parent) {
 async function getParentByEmail(email) {
   const parent = await findParent(email);
   if (!parent) return null;
-
   return {
     id: parent._id.toString(),
     fullName: parent.fullName || '',
@@ -357,37 +392,26 @@ async function getParentByEmail(email) {
   };
 }
 
-// Returns the same normalized shape as buildParentContext — flattened
-// seasons-based registrations/payments, `.id` keys — so the model sees
-// consistent field names and the downstream linking code (playerIds,
-// registrationIds, paymentIds) works whether context came from the legacy
-// path or the tool-calling path.
 async function getFamilyData(parentId) {
   const parent = await findParentById(parentId);
   return buildParentContext(parent);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Robust JSON extraction from AI response
+// JSON extraction
 // ─────────────────────────────────────────────────────────────────────────────
 
 function extractJsonFromText(rawOutput) {
-  if (!rawOutput) {
-    throw new Error('Empty AI output');
-  }
+  if (!rawOutput) throw new Error('Empty AI output');
 
   let cleaned = String(rawOutput).trim();
-
-  // Remove BOM and normalize whitespace
   cleaned = cleaned.replace(/^\uFEFF/, '');
 
-  // Strip ```json ... ``` or ``` ... ``` fences
   if (cleaned.startsWith('```')) {
     cleaned = cleaned.replace(/^```(?:json)?\s*/i, '');
     cleaned = cleaned.replace(/\s*```\s*$/i, '');
   }
 
-  // Trim any leading prose before the first {
   const firstBrace = cleaned.indexOf('{');
   const lastBrace = cleaned.lastIndexOf('}');
 
@@ -398,7 +422,6 @@ function extractJsonFromText(rawOutput) {
   }
 
   cleaned = cleaned.slice(firstBrace, lastBrace + 1);
-
   return JSON.parse(cleaned);
 }
 
@@ -416,16 +439,82 @@ const ALLOWED_CATEGORIES = [
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AI draft generation (tool-calling)
+// AI draft generation (Chat Completions + tool calling)
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function generateAiDraft({ from, subject = '', body }) {
-  if (!from) throw new Error('from is required');
-  if (!body) throw new Error('body is required');
+const TOOL_DEFINITIONS = [
+  {
+    type: 'function',
+    function: {
+      name: 'get_parent_by_email',
+      description:
+        'Find the parent account in the Bothell Select database using the sender email address. Returns null if no parent matches.',
+      parameters: {
+        type: 'object',
+        properties: {
+          email: { type: 'string', description: 'The sender email address.' },
+        },
+        required: ['email'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_family_data',
+      description:
+        'Get the players, registrations, payments, and teams for a parent, using the parentId returned by get_parent_by_email.',
+      parameters: {
+        type: 'object',
+        properties: {
+          parentId: {
+            type: 'string',
+            description: 'The parent id returned by get_parent_by_email.',
+          },
+        },
+        required: ['parentId'],
+      },
+    },
+  },
+];
 
-  const settings = await getAiSettings();
+async function executeToolCall(call, toolContext) {
+  let args = {};
+  try {
+    args = JSON.parse(call.function.arguments || '{}');
+  } catch (err) {
+    console.warn('Failed to parse tool arguments:', call.function.arguments);
+  }
 
-  const systemPrompt = `
+  if (call.function.name === 'get_parent_by_email') {
+    const result = await getParentByEmail(args.email);
+    toolContext.parent = result;
+    return result;
+  }
+
+  if (call.function.name === 'get_family_data') {
+    const result = await getFamilyData(args.parentId);
+    toolContext.family = result;
+    return result;
+  }
+
+  return { error: `Unknown tool: ${call.function.name}` };
+}
+
+function buildSystemPrompt(settings) {
+  const currentSeasonLine = CURRENT_TRYOUT_YEAR
+    ? `
+CURRENT SEASON
+The current / upcoming season is "${CURRENT_TRYOUT_LABEL}" for year ${CURRENT_TRYOUT_YEAR}${
+        CURRENT_TRYOUT_ID ? ` (tryoutId: ${CURRENT_TRYOUT_ID})` : ''
+      }.
+When a parent asks about "upcoming", "current", or "this year's" tryouts,
+that refers to this season. Only fall back to mentioning other seasons if
+the parent explicitly asks about a past one.
+`.trim()
+    : '';
+
+  return `
 You are the Bothell Select parent email assistant.
 
 Your job is to analyze an incoming email from a parent and prepare a
@@ -434,29 +523,37 @@ professional draft response for a Bothell Select administrator.
 You have access to two tools backed by the live database:
 - get_parent_by_email: look up the parent account from the sender's email.
 - get_family_data: given a parentId, get that family's players,
-  registrations, and payments.
+  registrations, payments, and teams.
 
 ALWAYS call get_parent_by_email first, using the sender's email address.
 If it finds a parent, ALWAYS follow up with get_family_data using that
 parent's id before answering anything about registration or payment status.
 
+${currentSeasonLine}
+
 IMPORTANT RULES
 
 1. Never invent facts. Only use what the tools return.
-2. Match children by fullName within the family data.
+2. Match children by fullName within the family data. Common nicknames
+   (Theo/Theodore, Alex/Alexander, etc.) may match — use context.
 3. To answer "is my child registered?", check that child's
    registrationComplete field (both on the player and within their
-   registrations).
+   registrations for the current season).
 4. To answer "did I pay?", check paymentComplete / paymentStatus for that
-   child, and include amountPaid, paymentDate, and cardLast4 when
-   confirming.
-5. If get_parent_by_email finds no parent, or the child the parent asked
+   child's current-season registration, and include amountPaid,
+   paymentDate, and cardLast4 when confirming.
+5. When the data unambiguously confirms what the parent asked (e.g.
+   registrationComplete: true AND the current-season registration has
+   paymentComplete: true for the exact child they mentioned), confirm it
+   directly and confidently. Do NOT hedge with "appears to be" or
+   "according to our records."
+6. If get_parent_by_email finds no parent, or the child the parent asked
    about isn't in the family data, say the administrator needs to verify
    it manually — do NOT guess, and set confidence to 20 or lower.
-6. Do not expose passwords or internal IDs.
-7. Do not make team placement decisions or approve refunds.
-8. Sound like a helpful Bothell Select administrator. Be warm and concise.
-9. Sign the response as "Bothell Select Basketball".
+7. Do not expose passwords or internal MongoDB ids.
+8. Do not make team placement decisions or approve refunds.
+9. Sound like a helpful Bothell Select administrator. Be warm and concise.
+10. Sign the response as "Bothell Select Basketball".
 
 CONFIDENCE
 "confidence" must reflect whether you actually had the data to answer the
@@ -480,108 +577,77 @@ or after it, in exactly this shape:
 
 Confidence must be 0-100.
 Settings: tone=${settings.tone}, confidenceThreshold=${settings.confidenceThreshold}, automaticRepliesEnabled=${settings.automaticRepliesEnabled}
-`;
+`.trim();
+}
 
-  const userPrompt = `
-From: ${from}
-Subject: ${subject}
+async function generateAiDraft({ from, subject = '', body }) {
+  if (!from) throw new Error('from is required');
+  if (!body) throw new Error('body is required');
 
-Message:
-${body}
-`;
+  const settings = await getAiSettings();
+  const systemPrompt = buildSystemPrompt(settings);
 
-  let response = await openai.responses.create({
-    model: 'gpt-5',
-    input: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt },
-    ],
-    max_output_tokens: 3000,
-    reasoning: { effort: 'low' },
-    tools: [
-      {
-        type: 'function',
-        name: 'get_parent_by_email',
-        description: 'Find the parent account from the sender email address.',
-        parameters: {
-          type: 'object',
-          properties: {
-            email: { type: 'string' },
-          },
-          required: ['email'],
-        },
-      },
-      {
-        type: 'function',
-        name: 'get_family_data',
-        description:
-          'Get players, registrations, and payments for a parent, by parentId.',
-        parameters: {
-          type: 'object',
-          properties: {
-            parentId: { type: 'string' },
-          },
-          required: ['parentId'],
-        },
-      },
-    ],
-  });
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    {
+      role: 'user',
+      content: `From: ${from}\nSubject: ${subject}\n\nMessage:\n${body}`,
+    },
+  ];
 
   const toolContext = {};
   let iterations = 0;
   const MAX_ITERATIONS = 6;
+  let finalMessage = null;
 
-  while (
-    response.output.some((o) => o.type === 'function_call') &&
-    iterations < MAX_ITERATIONS
-  ) {
+  while (iterations < MAX_ITERATIONS) {
     iterations += 1;
-    const outputs = [];
 
-    for (const call of response.output.filter(
-      (o) => o.type === 'function_call',
-    )) {
-      const args = JSON.parse(call.arguments || '{}');
-      let result = null;
+    const completion = await openai.chat.completions.create({
+      model: OPENAI_MODEL,
+      messages,
+      tools: TOOL_DEFINITIONS,
+      tool_choice: 'auto',
+      temperature: 0.3,
+      max_tokens: 2000,
+    });
 
-      if (call.name === 'get_parent_by_email') {
-        result = await getParentByEmail(args.email);
-        toolContext.parent = result;
+    const choice = completion.choices && completion.choices[0];
+    if (!choice) throw new Error('OpenAI returned no choices');
+
+    const message = choice.message;
+    messages.push(message);
+
+    if (message.tool_calls && message.tool_calls.length > 0) {
+      for (const call of message.tool_calls) {
+        let result;
+        try {
+          result = await executeToolCall(call, toolContext);
+        } catch (err) {
+          console.error('Tool execution failed:', err);
+          result = { error: err.message };
+        }
+        messages.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          content: JSON.stringify(result),
+        });
       }
-
-      if (call.name === 'get_family_data') {
-        result = await getFamilyData(args.parentId);
-        toolContext.family = result;
-      }
-
-      outputs.push({
-        type: 'function_call_output',
-        call_id: call.call_id,
-        output: JSON.stringify(result),
-      });
+      continue;
     }
 
-    response = await openai.responses.create({
-      model: 'gpt-5',
-      previous_response_id: response.id,
-      input: outputs,
-      max_output_tokens: 3000,
-      reasoning: { effort: 'low' },
-    });
+    finalMessage = message;
+    break;
   }
 
-  if (response.status === 'incomplete') {
-    const reason = response.incomplete_details?.reason || 'unknown';
-    throw new Error(`OpenAI response incomplete (reason: ${reason})`);
-  }
-
-  const rawOutput = response.output_text;
-
-  if (!rawOutput) {
+  if (!finalMessage) {
     throw new Error(
-      `OpenAI returned an empty response (status: ${response.status || 'unknown'})`,
+      `AI did not finish within ${MAX_ITERATIONS} tool-calling iterations`,
     );
   }
+
+  const rawOutput = finalMessage.content || '';
+  if (!rawOutput) throw new Error('OpenAI returned an empty final message');
 
   console.log('=== AI RAW OUTPUT (first 500 chars) ===');
   console.log(rawOutput.slice(0, 500));
@@ -595,34 +661,25 @@ ${body}
     throw new Error(`OpenAI returned invalid JSON: ${parseError.message}`);
   }
 
-  // ── Validation / defaults — don't trust the model's shape blindly ──
-
   if (!ALLOWED_CATEGORIES.includes(result.category)) {
     result.category = 'other';
   }
-
   result.confidence = Math.max(
     0,
     Math.min(100, Number(result.confidence) || 0),
   );
-
   if (!Array.isArray(result.dataUsed)) result.dataUsed = [];
-
   if (!result.draft) {
     result.draft =
       'Thank you for contacting Bothell Select. We will review your message and get back to you shortly.';
   }
-
   if (!result.reason) {
     result.reason = 'AI generated a draft for administrative review.';
   }
-
   if (!result.reviewReason) {
     result.reviewReason = 'Human review is required.';
   }
 
-  // Context comes from whatever the model's tool calls actually returned —
-  // default to "not found" if it never called the tools at all.
   const context = toolContext.family || {
     parentFound: false,
     parent: null,
@@ -631,8 +688,6 @@ ${body}
     payments: [],
   };
 
-  // Enforce confidence/review in code — don't rely solely on the model to
-  // self-report when it actually had no data to work with.
   if (!context.parentFound) {
     result.confidence = Math.min(result.confidence, 20);
     result.requiresHumanReview = true;
@@ -645,7 +700,6 @@ ${body}
     parent: toolContext.parent || null,
     context,
     effectiveEmail: from,
-    fromIsSiteOwned: false,
   };
 }
 
@@ -659,25 +713,21 @@ async function evaluateAutoSendEligibility(aiEmail) {
   if (!settings.enabled) {
     return { eligible: false, reason: 'AI assistant is disabled.' };
   }
-
   if (!settings.automaticRepliesEnabled) {
     return { eligible: false, reason: 'Automatic replies are disabled.' };
   }
-
   if (aiEmail.confidence < settings.confidenceThreshold) {
     return {
       eligible: false,
       reason: `Confidence ${aiEmail.confidence}% is below threshold ${settings.confidenceThreshold}%.`,
     };
   }
-
   if (settings.alwaysRequireHumanReview.includes(aiEmail.category)) {
     return {
       eligible: false,
       reason: `Category "${aiEmail.category}" always requires human review.`,
     };
   }
-
   if (
     Array.isArray(settings.allowedAutomaticCategories) &&
     settings.allowedAutomaticCategories.length > 0 &&
@@ -688,7 +738,6 @@ async function evaluateAutoSendEligibility(aiEmail) {
       reason: `Category "${aiEmail.category}" is not in the allowed automatic categories.`,
     };
   }
-
   return { eligible: true, reason: 'All auto-send conditions met.' };
 }
 
@@ -706,9 +755,6 @@ async function sendAiReply(aiEmail) {
     ? `Re: ${aiEmail.subject.replace(/^Re:\s*/i, '')}`
     : 'Re: Your message to Bothell Select';
 
-  // Reply to the resolved parent address when we have one (contact-form
-  // submissions always arrive "from" info@bothellselect.com, so replying
-  // to `from` directly would send the response back to ourselves).
   const replyTarget = aiEmail.replyToEmail || aiEmail.from;
 
   const { data, error } = await resend.emails.send({
@@ -720,7 +766,6 @@ async function sendAiReply(aiEmail) {
   });
 
   if (error) throw new Error(error.message || 'Resend send failed');
-
   return data?.id || null;
 }
 
@@ -729,10 +774,6 @@ async function sendAiReply(aiEmail) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function processIncomingEmail(emailData) {
-  // Contact-form submissions arrive with "from" set to the site's own
-  // address (info@bothellselect.com), not the visitor's. Replace it with
-  // the parent's actual email — parsed out of the body — before anything
-  // else touches this record, so `from` is always the real sender.
   const normalizedFrom = extractEmailAddress(emailData.from);
   let resolvedEmailData = emailData;
 
@@ -740,19 +781,38 @@ async function processIncomingEmail(emailData) {
     const bodyEmail = extractEmailFromBody(emailData.body);
     if (bodyEmail && !SITE_OWNED_EMAILS.has(bodyEmail)) {
       console.log(
-        `"from" was site-owned address "${normalizedFrom}"; replacing with body email "${bodyEmail}".`,
+        `"from" was site-owned ("${normalizedFrom}"); replacing with body email "${bodyEmail}".`,
       );
       resolvedEmailData = { ...emailData, from: bodyEmail };
+    } else {
+      console.log(
+        `"from" was site-owned ("${normalizedFrom}") and no usable body email was found.`,
+      );
     }
   }
 
+  console.log('=== PROCESSING EMAIL ===');
+  console.log('From:', resolvedEmailData.from);
+  console.log('Subject:', resolvedEmailData.subject);
+  console.log('Body length:', (resolvedEmailData.body || '').length);
+
   const aiEmail = await createAiEmail(resolvedEmailData);
+  console.log('Created AiEmail:', aiEmail._id.toString());
 
   try {
+    console.log('Calling generateAiDraft...');
     const result = await generateAiDraft({
       from: resolvedEmailData.from,
       subject: resolvedEmailData.subject || '',
       body: resolvedEmailData.body,
+    });
+
+    console.log('AI result summary:', {
+      category: result.category,
+      confidence: result.confidence,
+      hasParent: !!result.parent,
+      parentFound: result.context?.parentFound,
+      playerCount: result.context?.players?.length || 0,
     });
 
     aiEmail.category = result.category;
@@ -763,26 +823,22 @@ async function processIncomingEmail(emailData) {
     aiEmail.replyToEmail = result.effectiveEmail || resolvedEmailData.from;
 
     if (result.parent) {
-      // getParentByEmail returns `.id` (a string), not a Mongoose `._id`.
       aiEmail.parentId = result.parent.id || result.parent._id || null;
     }
-
     if (result.context.players) {
       aiEmail.playerIds = result.context.players
-        .filter((player) => player.id)
-        .map((player) => player.id);
+        .filter((p) => p.id)
+        .map((p) => p.id);
     }
-
     if (result.context.registrations) {
       aiEmail.registrationIds = result.context.registrations
-        .filter((registration) => registration.playerId)
-        .map((registration) => registration.playerId);
+        .filter((r) => r.playerId)
+        .map((r) => r.playerId);
     }
-
     if (result.context.payments) {
       aiEmail.paymentIds = result.context.payments
-        .filter((payment) => payment.paymentId)
-        .map((payment) => payment.paymentId);
+        .filter((p) => p.paymentId)
+        .map((p) => p.paymentId);
     }
 
     const eligibility = await evaluateAutoSendEligibility(aiEmail);
@@ -790,7 +846,6 @@ async function processIncomingEmail(emailData) {
     if (eligibility.eligible) {
       try {
         const sentMessageId = await sendAiReply(aiEmail);
-
         aiEmail.status = 'sent';
         aiEmail.requiresHumanReview = false;
         aiEmail.finalResponse = aiEmail.aiDraft;
@@ -811,6 +866,7 @@ async function processIncomingEmail(emailData) {
     }
 
     await aiEmail.save();
+    console.log('AiEmail saved with status:', aiEmail.status);
     return aiEmail;
   } catch (error) {
     console.error('=== AI PROCESSING FAILED ===');
@@ -821,9 +877,22 @@ async function processIncomingEmail(emailData) {
     aiEmail.status = 'new';
     aiEmail.requiresHumanReview = true;
     aiEmail.reviewReason = `AI processing failed: ${error.message}`;
-    aiEmail.aiDraft = `[AI draft failed: ${error.message}]`;
+    aiEmail.aiDraft =
+      aiEmail.aiDraft ||
+      `[AI draft failed] ${error.message}\n\nOriginal message:\n${resolvedEmailData.body}`;
+    aiEmail.category = aiEmail.category || 'other';
+    aiEmail.confidence = aiEmail.confidence || 0;
 
-    await aiEmail.save();
+    try {
+      await aiEmail.save();
+      console.log('Saved fallback AiEmail (status=new) after AI failure.');
+    } catch (saveError) {
+      console.error(
+        'CRITICAL: Failed to save AiEmail after AI failure:',
+        saveError.message,
+      );
+    }
+
     throw error;
   }
 }
