@@ -35,10 +35,6 @@ const CURRENT_TRYOUT_ID = process.env.CURRENT_TRYOUT_ID || null;
 const CURRENT_TRYOUT_LABEL =
   process.env.CURRENT_TRYOUT_LABEL || 'Bothell Select Tryouts';
 
-// Addresses that belong to the site itself, never to a parent. Contact-form
-// submissions always arrive "from" one of these. Even if one of them happens
-// to also exist as a Parent record (e.g. an admin account), it must never be
-// treated as the matched parent for an inbound email.
 const SITE_OWNED_EMAILS = new Set(
   [
     'info@bothellselect.com',
@@ -80,7 +76,7 @@ async function updateAiSettings(updates, updatedBy = null) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Email address normalization
+// Email normalization
 // ─────────────────────────────────────────────────────────────────────────────
 
 function extractEmailAddress(rawFrom) {
@@ -103,7 +99,7 @@ function extractEmailFromBody(body) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Parent / player / registration / payment / team lookups
+// DB lookups
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function findParent(email) {
@@ -118,9 +114,6 @@ async function findParentById(parentId) {
   return Parent.findById(parentId).select('-password');
 }
 
-// Look up the parent's players via BOTH the parent.players array AND the
-// player.parentId back-reference. This guarantees a player is never invisible
-// to the AI if one side of the relationship is stale.
 async function findPlayersByParent(parentId) {
   if (!parentId) return [];
 
@@ -196,6 +189,12 @@ async function findTeamsByCoach(coachId) {
 // AiEmail CRUD
 // ─────────────────────────────────────────────────────────────────────────────
 
+function populateAiEmail(query) {
+  return query
+    .populate({ path: 'parentId', select: 'fullName email' })
+    .populate({ path: 'playerIds', select: 'fullName' });
+}
+
 async function createAiEmail(emailData) {
   if (!emailData || !emailData.messageId) {
     throw new Error('messageId is required to create an AI email');
@@ -225,7 +224,9 @@ async function getPendingAiEmails({ page = 1, limit = 25 } = {}) {
   const skip = (Math.max(1, page) - 1) * limit;
 
   const [emails, total] = await Promise.all([
-    AiEmail.find(filter).sort({ receivedAt: -1 }).skip(skip).limit(limit),
+    populateAiEmail(
+      AiEmail.find(filter).sort({ receivedAt: -1 }).skip(skip).limit(limit),
+    ),
     AiEmail.countDocuments(filter),
   ]);
 
@@ -238,7 +239,9 @@ async function getAllAiEmails({ page = 1, limit = 25, status = null } = {}) {
   const skip = (Math.max(1, page) - 1) * limit;
 
   const [emails, total] = await Promise.all([
-    AiEmail.find(filter).sort({ receivedAt: -1 }).skip(skip).limit(limit),
+    populateAiEmail(
+      AiEmail.find(filter).sort({ receivedAt: -1 }).skip(skip).limit(limit),
+    ),
     AiEmail.countDocuments(filter),
   ]);
 
@@ -247,7 +250,7 @@ async function getAllAiEmails({ page = 1, limit = 25, status = null } = {}) {
 
 async function getAiEmailById(id) {
   if (!id) return null;
-  return AiEmail.findById(id);
+  return populateAiEmail(AiEmail.findById(id));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -377,7 +380,7 @@ async function buildParentContext(parent) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AI tool functions — called by the model via function-calling
+// AI tools
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function getParentByEmail(email) {
@@ -439,7 +442,7 @@ const ALLOWED_CATEGORIES = [
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AI draft generation (Chat Completions + tool calling)
+// AI draft generation
 // ─────────────────────────────────────────────────────────────────────────────
 
 const TOOL_DEFINITIONS = [
@@ -704,7 +707,7 @@ async function generateAiDraft({ from, subject = '', body }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Auto-send eligibility + sending
+// Auto-send + sending
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function evaluateAutoSendEligibility(aiEmail) {
