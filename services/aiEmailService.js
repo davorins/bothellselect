@@ -72,6 +72,27 @@ function extractEmailAddress(rawFrom) {
   return address.toLowerCase().trim();
 }
 
+// Contact-form submissions arrive with the envelope "from" set to the site's
+// own sending address (info@bothellselect.com) — the actual parent's email
+// is embedded in the body as plain text (e.g. "Email: davorins@gmail.com").
+// This pulls that out as a fallback when the envelope sender doesn't match
+// a parent record on its own.
+function extractEmailFromBody(body) {
+  if (!body) return '';
+
+  // Prefer an explicit "Email: ..." line, which is what the contact form emits.
+  const labeledMatch = String(body).match(
+    /email\s*:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i,
+  );
+  if (labeledMatch) return labeledMatch[1].toLowerCase().trim();
+
+  // Fall back to the first email-looking string anywhere in the body.
+  const anyMatch = String(body).match(
+    /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/,
+  );
+  return anyMatch ? anyMatch[0].toLowerCase().trim() : '';
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Parent / player / registration / payment / team lookups
 // ─────────────────────────────────────────────────────────────────────────────
@@ -346,14 +367,28 @@ async function generateAiDraft({ from, subject = '', body }) {
 
   const settings = await getAiSettings();
   const normalizedFrom = extractEmailAddress(from);
-  const parent = await findParent(normalizedFrom);
-  const context = await buildParentContext(parent);
 
-  console.log('DB context:', JSON.stringify(context, null, 2));
-  console.log(
-    'Mongoose readyState:',
-    require('mongoose').connection.readyState,
-  );
+  let parent = await findParent(normalizedFrom);
+  let effectiveEmail = normalizedFrom;
+
+  // Contact-form emails arrive "from" the site's own address, not the
+  // visitor's — if the envelope sender doesn't match a parent, try the
+  // email address embedded in the message body instead.
+  if (!parent) {
+    const bodyEmail = extractEmailFromBody(body);
+    if (bodyEmail && bodyEmail !== normalizedFrom) {
+      const bodyParent = await findParent(bodyEmail);
+      if (bodyParent) {
+        parent = bodyParent;
+        effectiveEmail = bodyEmail;
+        console.log(
+          `Envelope sender "${normalizedFrom}" had no parent match; found parent via body email "${bodyEmail}" instead.`,
+        );
+      }
+    }
+  }
+
+  const context = await buildParentContext(parent);
 
   const systemPrompt = `
 You are the Bothell Select parent email assistant.
@@ -432,7 +467,7 @@ Confidence must be 0-100. Higher = more certain the response is correct.
   const userPrompt = `
 Incoming parent email:
 
-From: ${normalizedFrom}
+From: ${effectiveEmail}
 Subject: ${subject}
 
 Message:
@@ -751,4 +786,5 @@ module.exports = {
 
   extractJsonFromText,
   extractEmailAddress,
+  extractEmailFromBody,
 };
