@@ -349,6 +349,12 @@ async function generateAiDraft({ from, subject = '', body }) {
   const parent = await findParent(normalizedFrom);
   const context = await buildParentContext(parent);
 
+  console.log('DB context:', JSON.stringify(context, null, 2));
+  console.log(
+    'Mongoose readyState:',
+    require('mongoose').connection.readyState,
+  );
+
   const systemPrompt = `
 You are the Bothell Select parent email assistant.
 
