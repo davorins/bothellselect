@@ -180,7 +180,7 @@ async function getAiEmailById(id) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Context building (with the fix for fullName + nested seasons)
+// Context building
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function buildParentContext(parent) {
@@ -196,9 +196,7 @@ async function buildParentContext(parent) {
 
   const players = await findPlayersByParent(parent._id);
 
-  // Flatten every player's `seasons` array into a single registrations list,
-  // since the tryout registration lives inside the Player document rather than
-  // in a separate PlayerRegistration collection.
+  // Flatten every player's `seasons` array into a single registrations list
   const registrationsFromSeasons = players.flatMap((player) =>
     (player.seasons || []).map((season) => ({
       playerId: player._id.toString(),
@@ -218,8 +216,7 @@ async function buildParentContext(parent) {
     })),
   );
 
-  // Also pull the standalone PlayerRegistration collection (if any exist) so
-  // the AI sees both sources of truth.
+  // Also pull the standalone PlayerRegistration collection
   const standaloneRegistrations = await findRegistrationsByParent(parent._id);
 
   const normalizedStandalone = standaloneRegistrations.map((reg) => ({
@@ -290,6 +287,41 @@ async function buildParentContext(parent) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Robust JSON extraction from AI response
+// ─────────────────────────────────────────────────────────────────────────────
+
+function extractJsonFromText(rawOutput) {
+  if (!rawOutput) {
+    throw new Error('Empty AI output');
+  }
+
+  let cleaned = String(rawOutput).trim();
+
+  // Remove BOM and normalize whitespace
+  cleaned = cleaned.replace(/^\uFEFF/, '');
+
+  // Strip ```json ... ``` or ``` ... ``` fences
+  if (cleaned.startsWith('```')) {
+    cleaned = cleaned.replace(/^```(?:json)?\s*/i, '');
+    cleaned = cleaned.replace(/\s*```\s*$/i, '');
+  }
+
+  // Trim any leading prose before the first {
+  const firstBrace = cleaned.indexOf('{');
+  const lastBrace = cleaned.lastIndexOf('}');
+
+  if (firstBrace === -1 || lastBrace === -1 || lastBrace < firstBrace) {
+    throw new Error(
+      `No JSON object found in AI output. Raw: ${cleaned.slice(0, 300)}`,
+    );
+  }
+
+  cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+
+  return JSON.parse(cleaned);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // AI draft generation
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -322,15 +354,15 @@ You are given a "context" object containing verified Bothell Select data:
 IMPORTANT RULES
 
 1. Never invent facts. Only use what is in the context.
-2. Match children by context.players[*].fullName. Names may be
-   "First Last" format.
-3. To answer "is my child registered?", check context.players[*].registrationComplete
-   AND context.registrations[*].registrationComplete for that child.
-4. To answer "did I pay?", check context.players[*].paymentComplete
-   AND context.registrations[*].paymentComplete for that child.
-   Include amountPaid, paymentDate, and cardLast4 when confirming.
+2. Match children by context.players[*].fullName.
+3. To answer "is my child registered?", check
+   context.players[*].registrationComplete AND
+   context.registrations[*].registrationComplete for that child.
+4. To answer "did I pay?", check context.players[*].paymentComplete AND
+   context.registrations[*].paymentComplete for that child. Include
+   amountPaid, paymentDate, and cardLast4 when confirming.
 5. If the context is missing information the parent asked about, say that
-   the administrator needs to verify it in the internal system — do NOT guess.
+   the administrator needs to verify it — do NOT guess.
 6. Do not expose passwords or internal IDs.
 7. Do not make team placement decisions or approve refunds.
 8. Sound like a helpful Bothell Select administrator. Be warm and concise.
@@ -349,7 +381,11 @@ CATEGORIES
 - general
 - other
 
-Return ONLY valid JSON with this exact structure:
+Return ONLY valid JSON. Do NOT wrap it in markdown fences. Do NOT include
+any text before or after the JSON. The response must start with { and end
+with }.
+
+JSON structure:
 
 {
   "category": "one of the allowed categories",
@@ -361,7 +397,7 @@ Return ONLY valid JSON with this exact structure:
   "reviewReason": "why a human should review this response"
 }
 
-Confidence must be 0–100. Higher = more certain the response is correct.
+Confidence must be 0-100. Higher = more certain the response is correct.
 `;
 
   const userPrompt = `
@@ -399,13 +435,21 @@ ${JSON.stringify(
   });
 
   const rawOutput = response.output_text;
-  if (!rawOutput) throw new Error('OpenAI returned an empty response');
+
+  if (!rawOutput) {
+    throw new Error('OpenAI returned an empty response');
+  }
+
+  console.log('=== AI RAW OUTPUT (first 500 chars) ===');
+  console.log(rawOutput.slice(0, 500));
+  console.log('=======================================');
 
   let result;
   try {
-    result = JSON.parse(rawOutput);
-  } catch (error) {
-    throw new Error(`OpenAI returned invalid JSON: ${rawOutput}`);
+    result = extractJsonFromText(rawOutput);
+  } catch (parseError) {
+    console.error('JSON extraction failed:', parseError.message);
+    throw new Error(`OpenAI returned invalid JSON: ${parseError.message}`);
   }
 
   const allowedCategories = [
@@ -588,9 +632,16 @@ async function processIncomingEmail(emailData) {
     await aiEmail.save();
     return aiEmail;
   } catch (error) {
+    console.error('=== AI PROCESSING FAILED ===');
+    console.error('Message:', error.message);
+    console.error('Stack:', error.stack);
+    console.error('============================');
+
     aiEmail.status = 'new';
     aiEmail.requiresHumanReview = true;
-    aiEmail.reviewReason = 'AI processing failed and requires manual review.';
+    aiEmail.reviewReason = `AI processing failed: ${error.message}`;
+    aiEmail.aiDraft = `[AI draft failed: ${error.message}]`;
+
     await aiEmail.save();
     throw error;
   }
@@ -649,4 +700,6 @@ module.exports = {
   evaluateAutoSendEligibility,
   sendAiReply,
   manualSendAiEmail,
+
+  extractJsonFromText,
 };
