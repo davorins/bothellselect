@@ -78,9 +78,10 @@ const aiEmailSchema = new mongoose.Schema(
       type: String,
       default: '',
     },
+    // FIXED: Changed from [String] to Mixed to accept the diagnostic object
     dataUsed: {
-      type: [String],
-      default: [],
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
     },
 
     // Review and workflow
