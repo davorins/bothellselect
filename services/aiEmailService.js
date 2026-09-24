@@ -18,6 +18,12 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 
 const VERIFIED_SENDER = 'Bothell Select <info@bothellselect.com>';
 
+// Addresses that belong to the site itself, never to a parent. Contact-form
+// submissions always arrive "from" one of these — even if one of them
+// happens to also exist as a Parent record (e.g. an admin/site account),
+// it must never be treated as the matched parent for an inbound email.
+const SITE_OWNED_EMAILS = new Set(['info@bothellselect.com']);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Settings
 // ─────────────────────────────────────────────────────────────────────────────
@@ -198,16 +204,29 @@ async function createAiEmail(emailData) {
   });
 }
 
-async function getPendingAiEmails() {
-  return AiEmail.find({
-    status: { $in: ['new', 'draft_ready', 'reviewed'] },
-  }).sort({ receivedAt: -1 });
+async function getPendingAiEmails({ page = 1, limit = 25 } = {}) {
+  const filter = { status: { $in: ['new', 'draft_ready', 'reviewed'] } };
+  const skip = (Math.max(1, page) - 1) * limit;
+
+  const [emails, total] = await Promise.all([
+    AiEmail.find(filter).sort({ receivedAt: -1 }).skip(skip).limit(limit),
+    AiEmail.countDocuments(filter),
+  ]);
+
+  return { emails, total, page: Math.max(1, page), limit };
 }
 
-async function getAllAiEmails({ limit = 100, status = null } = {}) {
+async function getAllAiEmails({ page = 1, limit = 25, status = null } = {}) {
   const filter = {};
   if (status) filter.status = status;
-  return AiEmail.find(filter).sort({ receivedAt: -1 }).limit(limit);
+  const skip = (Math.max(1, page) - 1) * limit;
+
+  const [emails, total] = await Promise.all([
+    AiEmail.find(filter).sort({ receivedAt: -1 }).skip(skip).limit(limit),
+    AiEmail.countDocuments(filter),
+  ]);
+
+  return { emails, total, page: Math.max(1, page), limit };
 }
 
 async function getAiEmailById(id) {
@@ -367,22 +386,34 @@ async function generateAiDraft({ from, subject = '', body }) {
 
   const settings = await getAiSettings();
   const normalizedFrom = extractEmailAddress(from);
+  const fromIsSiteOwned = SITE_OWNED_EMAILS.has(normalizedFrom);
 
-  let parent = await findParent(normalizedFrom);
-  let effectiveEmail = normalizedFrom;
+  // Best-guess reply target: never the site's own address. Prefer whatever
+  // email is embedded in the body when the envelope sender is site-owned,
+  // even if that address doesn't match a known parent record.
+  const bodyEmail = extractEmailFromBody(body);
+  let effectiveEmail = fromIsSiteOwned
+    ? bodyEmail || normalizedFrom
+    : normalizedFrom;
+
+  let parent = fromIsSiteOwned ? null : await findParent(normalizedFrom);
 
   // Contact-form emails arrive "from" the site's own address, not the
-  // visitor's — if the envelope sender doesn't match a parent, try the
-  // email address embedded in the message body instead.
+  // visitor's — if the envelope sender is a site-owned address, or if it
+  // simply didn't match a parent, try the email address embedded in the
+  // message body instead.
   if (!parent) {
-    const bodyEmail = extractEmailFromBody(body);
-    if (bodyEmail && bodyEmail !== normalizedFrom) {
+    if (
+      bodyEmail &&
+      bodyEmail !== normalizedFrom &&
+      !SITE_OWNED_EMAILS.has(bodyEmail)
+    ) {
       const bodyParent = await findParent(bodyEmail);
       if (bodyParent) {
         parent = bodyParent;
         effectiveEmail = bodyEmail;
         console.log(
-          `Envelope sender "${normalizedFrom}" had no parent match; found parent via body email "${bodyEmail}" instead.`,
+          `Envelope sender "${normalizedFrom}" ${fromIsSiteOwned ? 'is site-owned' : 'had no parent match'}; found parent via body email "${bodyEmail}" instead.`,
         );
       }
     }
@@ -568,11 +599,12 @@ ${JSON.stringify(
   if (!context.parentFound) {
     result.confidence = Math.min(result.confidence, 20);
     result.requiresHumanReview = true;
-    result.reviewReason =
-      'No matching parent record found for this email address — verify manually.';
+    result.reviewReason = fromIsSiteOwned
+      ? "Sent from the site's own address with no parent email found in the message body — verify manually."
+      : 'No matching parent record found for this email address — verify manually.';
   }
 
-  return { ...result, parent, context, effectiveEmail };
+  return { ...result, parent, context, effectiveEmail, fromIsSiteOwned };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -655,13 +687,30 @@ async function sendAiReply(aiEmail) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function processIncomingEmail(emailData) {
-  const aiEmail = await createAiEmail(emailData);
+  // Contact-form submissions arrive with "from" set to the site's own
+  // address (info@bothellselect.com), not the visitor's. Replace it with
+  // the parent's actual email — parsed out of the body — before anything
+  // else touches this record, so `from` is always the real sender.
+  const normalizedFrom = extractEmailAddress(emailData.from);
+  let resolvedEmailData = emailData;
+
+  if (SITE_OWNED_EMAILS.has(normalizedFrom)) {
+    const bodyEmail = extractEmailFromBody(emailData.body);
+    if (bodyEmail && !SITE_OWNED_EMAILS.has(bodyEmail)) {
+      console.log(
+        `"from" was site-owned address "${normalizedFrom}"; replacing with body email "${bodyEmail}".`,
+      );
+      resolvedEmailData = { ...emailData, from: bodyEmail };
+    }
+  }
+
+  const aiEmail = await createAiEmail(resolvedEmailData);
 
   try {
     const result = await generateAiDraft({
-      from: emailData.from,
-      subject: emailData.subject || '',
-      body: emailData.body,
+      from: resolvedEmailData.from,
+      subject: resolvedEmailData.subject || '',
+      body: resolvedEmailData.body,
     });
 
     aiEmail.category = result.category;
@@ -669,7 +718,7 @@ async function processIncomingEmail(emailData) {
     aiEmail.aiDraft = result.draft;
     aiEmail.aiReason = result.reason;
     aiEmail.dataUsed = result.dataUsed;
-    aiEmail.replyToEmail = result.effectiveEmail || emailData.from;
+    aiEmail.replyToEmail = result.effectiveEmail || resolvedEmailData.from;
 
     if (result.parent) {
       aiEmail.parentId = result.parent._id;
