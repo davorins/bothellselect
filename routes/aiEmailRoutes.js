@@ -44,11 +44,24 @@ router.patch('/settings', authenticate, isAdmin, async (req, res) => {
 
 router.get('/', authenticate, isAdmin, async (req, res) => {
   try {
-    const { status, limit } = req.query;
-    const emails = status
-      ? await getAllAiEmails({ status, limit: Number(limit) || 100 })
-      : await getPendingAiEmails();
-    res.json({ success: true, emails });
+    const { status, limit, page } = req.query;
+    const pageNum = Math.max(1, Number(page) || 1);
+    const limitNum = Math.min(100, Math.max(1, Number(limit) || 25));
+
+    const result = status
+      ? await getAllAiEmails({ status, page: pageNum, limit: limitNum })
+      : await getPendingAiEmails({ page: pageNum, limit: limitNum });
+
+    res.json({
+      success: true,
+      emails: result.emails,
+      pagination: {
+        total: result.total,
+        page: result.page,
+        limit: result.limit,
+        totalPages: Math.max(1, Math.ceil(result.total / result.limit)),
+      },
+    });
   } catch (error) {
     console.error('Error loading AI emails:', error);
     res
