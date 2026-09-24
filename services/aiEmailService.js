@@ -1,8 +1,46 @@
+/**
+ * aiEmailService.js
+ *
+ * Bothell Select AI Parent Email Assistant
+ *
+ * Architecture:
+ *
+ *   Incoming Email
+ *        ↓
+ *   Find Parent
+ *        ↓
+ *   Find Players
+ *        ↓
+ *   Find Registrations
+ *        ↓
+ *   Find Payments
+ *        ↓
+ *   Find TournamentConfig
+ *        ↓
+ *   Find eventconfigs
+ *        ↓
+ *   Build VERIFIED MongoDB context
+ *        ↓
+ *   OpenAI generates email
+ *        ↓
+ *   Save AI email
+ *        ↓
+ *   Optional auto-send
+ *
+ * IMPORTANT:
+ * OpenAI does NOT decide whether to query MongoDB.
+ * Node.js retrieves the database information first.
+ */
+
 require('dotenv').config();
 
 const mongoose = require('mongoose');
 const OpenAI = require('openai');
 const { Resend } = require('resend');
+
+// -----------------------------------------------------------------------------
+// MODELS
+// -----------------------------------------------------------------------------
 
 const AiEmail = require('../models/AiEmail');
 const AiSettings = require('../models/AiSettings');
@@ -13,399 +51,623 @@ const Payment = require('../models/Payment');
 const Team = require('../models/Team');
 const TournamentConfig = require('../models/TournamentConfig');
 
-if (!process.env.OPENAI_API_KEY) {
-  console.warn('[aiEmailService] OPENAI_API_KEY is not set.');
-}
+// IMPORTANT:
+// Change this path/name if your model is named differently.
+const EventConfig = require('../models/EventConfig');
 
-if (!process.env.RESEND_API_KEY) {
-  console.warn('[aiEmailService] RESEND_API_KEY is not set.');
-}
+// -----------------------------------------------------------------------------
+// CLIENTS
+// -----------------------------------------------------------------------------
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+const resend = process.env.RESEND_API_KEY
+  ? new Resend(process.env.RESEND_API_KEY)
+  : null;
 
-const VERIFIED_SENDER =
-  process.env.VERIFIED_SENDER || 'Bothell Select <info@bothellselect.com>';
+// -----------------------------------------------------------------------------
+// CONFIG
+// -----------------------------------------------------------------------------
 
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-4o';
 
-const SITE_OWNED_EMAILS = new Set(
-  [
-    'info@bothellselect.com',
-    'bothellselect@proton.me',
-    process.env.VERIFIED_SENDER_EMAIL,
-  ]
-    .filter(Boolean)
-    .map((e) => e.toLowerCase()),
-);
+const CURRENT_TRYOUT_YEAR = Number(process.env.CURRENT_TRYOUT_YEAR) || 2026;
 
-const ADDITIONAL_ALLOWED_DOMAINS = (process.env.AI_ALLOWED_DOMAINS || '')
-  .split(',')
-  .map((d) => d.trim().toLowerCase())
-  .filter(Boolean);
+const CURRENT_TRYOUT_ID = process.env.CURRENT_TRYOUT_ID || '';
 
-const ALLOWED_CATEGORIES = [
-  'tryouts',
-  'registration',
-  'payments',
-  'schedules',
-  'teams',
-  'practices',
-  'programs',
-  'technical',
-  'general',
-  'other',
-];
+const VERIFIED_SENDER =
+  process.env.VERIFIED_SENDER || 'Bothell Select Basketball';
 
-function normalizeIdList(value) {
-  if (value == null) return [];
+const VERIFIED_SENDER_EMAIL =
+  process.env.VERIFIED_SENDER_EMAIL || 'bothellselect@proton.me';
 
-  if (Array.isArray(value)) {
-    return value
-      .flat(Infinity)
-      .map((v) => (v == null ? '' : String(v).trim()))
-      .filter(Boolean);
-  }
+const AI_ALLOWED_DOMAINS = process.env.AI_ALLOWED_DOMAINS
+  ? process.env.AI_ALLOWED_DOMAINS.split(',')
+      .map((x) => x.trim().toLowerCase())
+      .filter(Boolean)
+  : [];
 
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
+// -----------------------------------------------------------------------------
+// LOGGING
+// -----------------------------------------------------------------------------
 
-    if (!trimmed) return [];
-
-    if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
-      try {
-        const parsed = JSON.parse(trimmed);
-
-        if (Array.isArray(parsed)) {
-          return normalizeIdList(parsed);
-        }
-      } catch {
-        // Continue as normal string.
-      }
-    }
-
-    return [trimmed];
-  }
-
-  return [String(value).trim()].filter(Boolean);
+function log(...args) {
+  console.log('[AI EMAIL]', ...args);
 }
 
-async function getAiSettings() {
-  let settings = await AiSettings.findOne({
-    key: 'default',
-  });
-
-  if (!settings) {
-    settings = await AiSettings.create({
-      key: 'default',
-    });
-  }
-
-  return settings;
+function logError(...args) {
+  console.error('[AI EMAIL ERROR]', ...args);
 }
 
-async function updateAiSettings(updates, updatedBy = null) {
-  const settings = await getAiSettings();
+// -----------------------------------------------------------------------------
+// GENERAL HELPERS
+// -----------------------------------------------------------------------------
 
-  const allowed = [
-    'enabled',
-    'automaticRepliesEnabled',
-    'confidenceThreshold',
-    'tone',
-    'allowedAutomaticCategories',
-    'alwaysRequireHumanReview',
-  ];
+function normalizeEmail(email) {
+  if (!email) return '';
 
-  for (const key of allowed) {
-    if (key in updates) {
-      settings[key] = updates[key];
-    }
-  }
-
-  if (updatedBy) {
-    settings.updatedBy = updatedBy;
-  }
-
-  await settings.save();
-
-  return settings;
+  return String(email).trim().toLowerCase();
 }
 
-function extractEmailAddress(rawFrom) {
-  if (!rawFrom) return '';
+function normalizeString(value) {
+  if (value === null || value === undefined) {
+    return '';
+  }
 
-  const match = String(rawFrom).match(/<([^>]+)>/);
+  return String(value).trim();
+}
 
-  const address = match ? match[1] : rawFrom;
+function toId(value) {
+  if (!value) return null;
 
-  return address.toLowerCase().trim();
+  try {
+    return String(value);
+  } catch {
+    return null;
+  }
+}
+
+function safeDate(value) {
+  if (!value) return null;
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+
+  return date.toISOString();
+}
+
+function uniqueIds(values = []) {
+  return [...new Set(values.filter(Boolean).map((value) => String(value)))];
+}
+
+function normalizeIdList(values = []) {
+  return uniqueIds(Array.isArray(values) ? values : [values]);
+}
+
+// -----------------------------------------------------------------------------
+// EMAIL EXTRACTION
+// -----------------------------------------------------------------------------
+
+function extractEmailAddress(value) {
+  if (!value) return null;
+
+  const text = String(value);
+
+  const match = text.match(/<([^<>@\s]+@[^<>@\s]+\.[^<>@\s]+)>/);
+
+  if (match) {
+    return normalizeEmail(match[1]);
+  }
+
+  const plain = text.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i);
+
+  return plain ? normalizeEmail(plain[0]) : null;
 }
 
 function extractEmailFromBody(body) {
-  if (!body) return '';
+  if (!body) return null;
 
-  const labeledMatch = String(body).match(
-    /email\s*:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i,
-  );
-
-  if (labeledMatch) {
-    return labeledMatch[1].toLowerCase().trim();
-  }
-
-  const anyMatch = String(body).match(
-    /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/,
-  );
-
-  return anyMatch ? anyMatch[0].toLowerCase().trim() : '';
+  return extractEmailAddress(body);
 }
 
-function isTryoutQuestion(subject = '', body = '') {
-  const text = `${subject}\n${body}`.toLowerCase();
+// -----------------------------------------------------------------------------
+// DATABASE STATE
+// -----------------------------------------------------------------------------
 
-  const phrases = [
-    'tryout',
-    'tryouts',
-    'where is',
-    'where are',
-    'where do',
-    'what time',
-    'when is',
-    'when are',
-    'when do',
-    'schedule',
-    'location',
-    'address',
-    'fee',
-    'cost',
-    'price',
-    'payment deadline',
-    'registration deadline',
-    'what to bring',
-    'bring',
-    'check-in',
-    'check in',
-  ];
-
-  return phrases.some((phrase) => text.includes(phrase));
-}
-
-function isRegistrationQuestion(subject = '', body = '') {
-  const text = `${subject}\n${body}`.toLowerCase();
-
-  return [
-    'registered',
-    'registration',
-    'register',
-    'sign up',
-    'signed up',
-    'enrolled',
-  ].some((phrase) => text.includes(phrase));
-}
-
-function isPaymentQuestion(subject = '', body = '') {
-  const text = `${subject}\n${body}`.toLowerCase();
-
-  return [
-    'payment',
-    'paid',
-    'pay',
-    'charge',
-    'charged',
-    'receipt',
-    'refund',
-    'reimbursement',
-    'credit card',
-    'card',
-  ].some((phrase) => text.includes(phrase));
-}
-
-async function shouldProcessEmail(fromEmail) {
-  const email = extractEmailAddress(fromEmail);
-
-  if (!email) {
-    return {
-      process: false,
-      reason: 'No sender email address.',
-    };
-  }
-
-  const parent = await Parent.findOne({
-    email,
-  })
-    .select('_id')
-    .lean();
-
-  if (parent) {
-    return {
-      process: true,
-      reason: 'Known parent.',
-    };
-  }
-
-  const domain = email.split('@')[1] || '';
-
-  if (ADDITIONAL_ALLOWED_DOMAINS.includes(domain)) {
-    return {
-      process: true,
-      reason: `Allowed domain (${domain}).`,
-    };
-  }
-
+function getMongoState() {
   return {
-    process: false,
-    reason: 'Sender is not a registered Bothell Select parent.',
+    readyState: mongoose.connection?.readyState,
+    ready: mongoose.connection?.readyState === 1,
+    database: mongoose.connection?.name || null,
+    host: mongoose.connection?.host || null,
   };
 }
 
-async function findParent(email) {
-  if (!email) return null;
+function assertMongoConnected() {
+  const state = getMongoState();
 
-  return Parent.findOne({
-    email: extractEmailAddress(email),
-  }).select('-password');
+  if (!state.ready) {
+    throw new Error(`MongoDB is not connected. readyState=${state.readyState}`);
+  }
+
+  return state;
+}
+
+// -----------------------------------------------------------------------------
+// AI SETTINGS
+// -----------------------------------------------------------------------------
+
+async function getAiSettings() {
+  let settings = await AiSettings.findOne({}).lean();
+
+  if (!settings) {
+    settings = {
+      enabled: true,
+      autoSend: false,
+      requireApproval: true,
+      minimumConfidence: 0.85,
+    };
+  }
+
+  return settings;
+}
+
+async function updateAiSettings(updates = {}) {
+  return AiSettings.findOneAndUpdate(
+    {},
+    {
+      $set: updates,
+    },
+    {
+      new: true,
+      upsert: true,
+    },
+  ).lean();
+}
+
+// -----------------------------------------------------------------------------
+// PARENT
+// -----------------------------------------------------------------------------
+
+async function findParent(email) {
+  const normalized = normalizeEmail(email);
+
+  if (!normalized) {
+    return null;
+  }
+
+  const parent = await Parent.findOne({
+    $or: [
+      { email: normalized },
+      { emailAddress: normalized },
+      { contactEmail: normalized },
+    ],
+  }).lean();
+
+  return parent;
 }
 
 async function findParentById(parentId) {
   if (!parentId) return null;
 
-  return Parent.findById(parentId).select('-password');
+  return Parent.findById(parentId).lean();
 }
 
+async function getParentByEmail(email) {
+  return findParent(email);
+}
+
+// -----------------------------------------------------------------------------
+// PLAYERS
+// -----------------------------------------------------------------------------
+
 async function findPlayersByParent(parentId) {
-  if (!parentId) return [];
+  if (!parentId) {
+    return [];
+  }
 
-  const parent = await Parent.findById(parentId).select('players').lean();
+  const players = await Player.find({
+    $or: [{ parentId }, { parents: parentId }, { parentIds: parentId }],
+  }).lean();
 
-  const playerIdsFromParentArray = (parent?.players || []).map((id) =>
-    String(id),
-  );
+  // Some systems store player references on Parent.players
+  if (players.length > 0) {
+    return players;
+  }
+
+  const parent = await findParentById(parentId);
+
+  if (!parent) {
+    return [];
+  }
+
+  const parentPlayerIds = [
+    ...(Array.isArray(parent.players) ? parent.players : []),
+    ...(Array.isArray(parent.playerIds) ? parent.playerIds : []),
+  ];
+
+  if (parentPlayerIds.length === 0) {
+    return [];
+  }
 
   return Player.find({
-    $or: [
-      { parentId },
-      {
-        _id: {
-          $in: playerIdsFromParentArray,
-        },
-      },
-    ],
-  });
+    _id: {
+      $in: parentPlayerIds,
+    },
+  }).lean();
 }
 
 async function findPlayer(playerId) {
   if (!playerId) return null;
 
-  return Player.findById(playerId);
+  return Player.findById(playerId).lean();
 }
+
+// -----------------------------------------------------------------------------
+// REGISTRATIONS
+// -----------------------------------------------------------------------------
 
 async function findRegistrationsByPlayer(playerId) {
-  if (!playerId) return [];
-
-  return PlayerRegistration.find({
-    playerId,
-  }).sort({
-    createdAt: -1,
-  });
-}
-
-async function findRegistrationsByParent(parentId) {
-  if (!parentId) return [];
-
-  const players = await Player.find({
-    parentId,
-  }).select('_id');
-
-  const playerIds = players.map((p) => p._id);
-
-  if (playerIds.length === 0) {
+  if (!playerId) {
     return [];
   }
 
   return PlayerRegistration.find({
-    playerId: {
-      $in: playerIds,
-    },
-  }).sort({
-    createdAt: -1,
-  });
+    $or: [{ playerId }, { playerIds: playerId }],
+  }).lean();
 }
 
+async function findRegistrationsByParent(parentId) {
+  if (!parentId) {
+    return [];
+  }
+
+  const players = await findPlayersByParent(parentId);
+
+  if (players.length === 0) {
+    return [];
+  }
+
+  const playerIds = players.map((player) => player._id).filter(Boolean);
+
+  return PlayerRegistration.find({
+    $or: [
+      {
+        playerId: {
+          $in: playerIds,
+        },
+      },
+      {
+        playerIds: {
+          $in: playerIds,
+        },
+      },
+      {
+        parentId,
+      },
+    ],
+  }).lean();
+}
+
+// -----------------------------------------------------------------------------
+// PAYMENTS
+// -----------------------------------------------------------------------------
+
 async function findPaymentsByParent(parentId) {
-  if (!parentId) return [];
+  if (!parentId) {
+    return [];
+  }
 
   return Payment.find({
-    parentId,
-  }).sort({
-    createdAt: -1,
-  });
+    $or: [{ parentId }, { parentIds: parentId }],
+  }).lean();
 }
 
 async function findPaymentsByPlayer(playerId) {
-  if (!playerId) return [];
+  if (!playerId) {
+    return [];
+  }
 
   return Payment.find({
-    $or: [
-      { playerId },
-      { playerIds: playerId },
-      { 'players.playerId': playerId },
-    ],
-  }).sort({
-    createdAt: -1,
-  });
+    $or: [{ playerId }, { playerIds: playerId }],
+  }).lean();
 }
 
 async function findPaymentsByTeam(teamId) {
-  if (!teamId) return [];
+  if (!teamId) {
+    return [];
+  }
 
   return Payment.find({
     $or: [{ teamId }, { teamIds: teamId }],
-  }).sort({
-    createdAt: -1,
-  });
+  }).lean();
 }
+
+// -----------------------------------------------------------------------------
+// TEAMS
+// -----------------------------------------------------------------------------
 
 async function findTeam(teamId) {
   if (!teamId) return null;
 
-  return Team.findById(teamId);
+  return Team.findById(teamId).lean();
 }
 
 async function findTeamsByCoach(coachId) {
   if (!coachId) return [];
 
   return Team.find({
-    coachIds: coachId,
-    isActive: true,
-  }).sort({
-    registrationYear: -1,
-    name: 1,
-  });
+    $or: [{ coachId }, { coaches: coachId }],
+  }).lean();
 }
 
-function sortSeasonsDesc(seasons) {
-  return [...(seasons || [])].sort((a, b) => {
-    const ay = Number(a.year) || 0;
-    const by = Number(b.year) || 0;
+// -----------------------------------------------------------------------------
+// TOURNAMENT CONFIG
+// -----------------------------------------------------------------------------
 
-    if (by !== ay) {
-      return by - ay;
-    }
+/**
+ * This intentionally uses TournamentConfig.collection.findOne()
+ * instead of relying only on the Mongoose schema.
+ *
+ * This is important because if tryoutDetails / tryoutSessions are
+ * missing from the Mongoose schema, the application can still retrieve
+ * the actual MongoDB document.
+ */
+async function getTournamentConfig() {
+  assertMongoConnected();
 
-    const ad = a.registrationDate ? new Date(a.registrationDate).getTime() : 0;
+  const collection = TournamentConfig.collection;
 
-    const bd = b.registrationDate ? new Date(b.registrationDate).getTime() : 0;
+  let config = null;
 
-    return bd - ad;
-  });
+  // ---------------------------------------------------------------
+  // Try configured event ID first.
+  // ---------------------------------------------------------------
+
+  if (CURRENT_TRYOUT_ID) {
+    config = await collection.findOne({
+      isActive: true,
+      $or: [{ eventId: CURRENT_TRYOUT_ID }, { tryoutId: CURRENT_TRYOUT_ID }],
+    });
+  }
+
+  // ---------------------------------------------------------------
+  // Try configured year.
+  // ---------------------------------------------------------------
+
+  if (!config) {
+    config = await collection.findOne({
+      tryoutYear: CURRENT_TRYOUT_YEAR,
+      isActive: true,
+    });
+  }
+
+  // ---------------------------------------------------------------
+  // Fallback to newest active tryout.
+  // ---------------------------------------------------------------
+
+  if (!config) {
+    config = await collection.findOne(
+      {
+        isActive: true,
+        eventId: {
+          $exists: true,
+        },
+      },
+      {
+        sort: {
+          tryoutYear: -1,
+          updatedAt: -1,
+          createdAt: -1,
+        },
+      },
+    );
+  }
+
+  return config;
 }
+
+// -----------------------------------------------------------------------------
+// EVENT CONFIG
+// -----------------------------------------------------------------------------
+
+/**
+ * General event configuration.
+ *
+ * This is the second source of truth.
+ *
+ * TournamentConfig is preferred when detailed sessions exist.
+ * eventconfigs is the fallback/general event source.
+ */
+async function getEventConfig() {
+  assertMongoConnected();
+
+  const collection = EventConfig.collection;
+
+  const event = await collection.findOne(
+    {
+      eventType: 'tryout',
+      isActive: true,
+    },
+    {
+      sort: {
+        startDate: -1,
+        updatedAt: -1,
+        createdAt: -1,
+      },
+    },
+  );
+
+  return event;
+}
+
+// -----------------------------------------------------------------------------
+// NORMALIZE LOCATION
+// -----------------------------------------------------------------------------
+
+function normalizeLocation(location) {
+  if (!location) {
+    return null;
+  }
+
+  return {
+    name: location.name || location.venue || null,
+
+    address: location.address || null,
+
+    city: location.city || null,
+
+    state: location.state || null,
+
+    zip: location.zip || location.postalCode || null,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// NORMALIZE TRYOUT SESSION
+// -----------------------------------------------------------------------------
+
+function normalizeSession(session = {}) {
+  return {
+    number: session.number ?? null,
+
+    date: session.date || null,
+
+    startTime: normalizeString(session.startTime) || null,
+
+    endTime: normalizeString(session.endTime) || null,
+
+    grades: session.grades || null,
+
+    gender: session.gender || null,
+
+    location: normalizeLocation(session.location),
+  };
+}
+
+// -----------------------------------------------------------------------------
+// GET CURRENT TRYOUT
+// -----------------------------------------------------------------------------
+
+async function getCurrentTryout() {
+  const [tournamentConfig, eventConfig] = await Promise.all([
+    getTournamentConfig(),
+    getEventConfig(),
+  ]);
+
+  log('Current tryout database lookup:', {
+    tournamentConfigFound: !!tournamentConfig,
+
+    eventConfigFound: !!eventConfig,
+
+    tournamentYear: tournamentConfig?.tryoutYear,
+
+    tournamentEventId: tournamentConfig?.eventId,
+
+    eventTitle: eventConfig?.title,
+  });
+
+  const tournamentDetails = tournamentConfig?.tryoutDetails || {};
+
+  const rawSessions = Array.isArray(tournamentDetails.tryoutSessions)
+    ? tournamentDetails.tryoutSessions
+    : [];
+
+  const sessions = rawSessions.map(normalizeSession);
+
+  const eventLocation = normalizeLocation(eventConfig?.location);
+
+  const firstSessionLocation =
+    sessions.find((session) => session.location)?.location || null;
+
+  const location = firstSessionLocation || eventLocation || null;
+
+  const hasDetailedSessions = sessions.length > 0;
+
+  const tryout = {
+    exists: !!tournamentConfig || !!eventConfig,
+
+    source: hasDetailedSessions
+      ? 'TournamentConfig'
+      : eventConfig
+        ? 'eventconfigs'
+        : tournamentConfig
+          ? 'TournamentConfig'
+          : null,
+
+    year: tournamentConfig?.tryoutYear || CURRENT_TRYOUT_YEAR,
+
+    title:
+      tournamentConfig?.displayName ||
+      tournamentConfig?.tryoutName ||
+      eventConfig?.title ||
+      'Bothell Select Tryouts',
+
+    eventId: tournamentConfig?.eventId || null,
+
+    date: tournamentDetails.startDate || eventConfig?.startDate || null,
+
+    gender: tournamentDetails.gender || eventConfig?.gender || null,
+
+    grades: eventConfig?.grades || null,
+
+    fee: tournamentConfig?.tryoutFee ?? eventConfig?.price ?? null,
+
+    registrationOpen: eventConfig?.registrationOpen ?? true,
+
+    registrationDeadline: tournamentConfig?.registrationDeadline || null,
+
+    paymentDeadline: tournamentConfig?.paymentDeadline || null,
+
+    refundPolicy: tournamentConfig?.refundPolicy || null,
+
+    dropOffTime: tournamentDetails.dropOffTime || null,
+
+    whatToBring:
+      tournamentDetails.whatToBring || eventConfig?.whatToBring || [],
+
+    whatToExpect: eventConfig?.whatToExpect || null,
+
+    hasLimitedSpots: tournamentConfig?.hasLimitedSpots ?? false,
+
+    contactEmail: tournamentConfig?.contactEmail || null,
+
+    location,
+
+    sessions,
+
+    /**
+     * This is retained only as a fallback/general event
+     * window. It must NOT override detailed sessions.
+     */
+    generalEventWindow: {
+      startTime: eventConfig?.startTime || null,
+
+      endTime: eventConfig?.endTime || null,
+    },
+  };
+
+  log('Normalized tryout:', JSON.stringify(tryout, null, 2));
+
+  return tryout;
+}
+
+// -----------------------------------------------------------------------------
+// FAMILY DATA
+// -----------------------------------------------------------------------------
 
 async function buildParentContext(parent) {
-  if (!parent) {
+  if (!parent?._id) {
     return {
-      parentFound: false,
       parent: null,
       players: [],
       registrations: [],
@@ -413,1581 +675,1106 @@ async function buildParentContext(parent) {
     };
   }
 
-  const players = await findPlayersByParent(parent._id);
+  const parentId = parent._id;
 
-  const registrationsFromSeasons = players.flatMap((player) =>
-    sortSeasonsDesc(player.seasons).map((season) => ({
-      registrationId: null,
-      playerId: player._id.toString(),
-      playerName: player.fullName || '',
-      season: season.season || '',
-      year: season.year || null,
-      tryoutId: season.tryoutId || null,
-      registrationDate: season.registrationDate || null,
+  const players = await findPlayersByParent(parentId);
 
-      registrationComplete: player.registrationComplete || false,
+  const registrations = await findRegistrationsByParent(parentId);
 
-      paymentComplete: season.paymentComplete || false,
+  // ---------------------------------------------------------------
+  // Fetch parent-level payments
+  // ---------------------------------------------------------------
 
-      paymentStatus: season.paymentStatus || 'unknown',
+  const parentPayments = await findPaymentsByParent(parentId);
 
-      paymentId: season.paymentId || null,
+  // ---------------------------------------------------------------
+  // Fetch player-level payments
+  // ---------------------------------------------------------------
 
-      amountPaid: season.amountPaid ?? null,
-
-      paymentDate: season.paymentDate || null,
-
-      cardLast4: season.cardLast4 || null,
-
-      cardBrand: season.cardBrand || null,
-    })),
+  const playerPaymentArrays = await Promise.all(
+    players.map((player) => findPaymentsByPlayer(player._id)),
   );
 
-  const standaloneRegistrations = await findRegistrationsByParent(parent._id);
+  const playerPayments = playerPaymentArrays.flat();
 
-  const normalizedStandalone = standaloneRegistrations.map((reg) => ({
-    registrationId: reg._id ? reg._id.toString() : null,
+  // ---------------------------------------------------------------
+  // Deduplicate payments
+  // ---------------------------------------------------------------
 
-    playerId: reg.playerId ? reg.playerId.toString() : null,
+  const paymentMap = new Map();
 
-    playerName: '',
+  [...parentPayments, ...playerPayments].forEach((payment) => {
+    if (!payment) return;
 
-    season: reg.season || '',
-    year: reg.year || null,
-    tryoutId: reg.tryoutId || null,
+    const id = payment._id ? String(payment._id) : JSON.stringify(payment);
 
-    registrationDate: reg.createdAt || null,
-
-    registrationComplete: reg.status === 'complete',
-
-    paymentComplete: reg.paymentComplete || false,
-
-    paymentStatus: reg.paymentStatus || 'unknown',
-
-    paymentId: reg.paymentId || null,
-
-    amountPaid: reg.amountPaid ?? null,
-
-    paymentDate: reg.paymentDate || null,
-
-    cardLast4: null,
-    cardBrand: null,
-  }));
-
-  const allRegistrations = [
-    ...registrationsFromSeasons,
-    ...normalizedStandalone,
-  ];
-
-  const allPayments = allRegistrations
-    .filter(
-      (registration) =>
-        registration.paymentId || registration.amountPaid != null,
-    )
-    .map((registration) => ({
-      playerId: registration.playerId,
-      playerName: registration.playerName,
-      season: registration.season,
-      year: registration.year,
-      tryoutId: registration.tryoutId,
-
-      paymentId: registration.paymentId ? String(registration.paymentId) : null,
-
-      amountPaid: registration.amountPaid,
-
-      status: registration.paymentStatus,
-
-      paidAt: registration.paymentDate,
-
-      cardLast4: registration.cardLast4,
-
-      cardBrand: registration.cardBrand,
-    }));
-
-  return {
-    parentFound: true,
-
-    parent: {
-      id: parent._id.toString(),
-      fullName: parent.fullName || '',
-      email: parent.email || '',
-      phone: parent.phone || '',
-      relationship: parent.relationship || '',
-      role: parent.role || '',
-    },
-
-    players: players.map((player) => ({
-      id: player._id.toString(),
-
-      fullName: player.fullName || '',
-
-      gender: player.gender || '',
-
-      grade: player.grade || '',
-
-      aauNumber: player.aauNumber || '',
-
-      registrationYear: player.registrationYear || null,
-
-      registrationComplete: player.registrationComplete || false,
-
-      paymentComplete: player.paymentComplete || false,
-
-      paymentStatus: player.paymentStatus || '',
-
-      lastPaymentDate: player.lastPaymentDate || null,
-
-      healthConcerns: player.healthConcerns || '',
-
-      seasons: sortSeasonsDesc(player.seasons).map((season) => ({
-        season: season.season || '',
-        year: season.year || null,
-        tryoutId: season.tryoutId || null,
-
-        registrationDate: season.registrationDate || null,
-
-        paymentComplete: season.paymentComplete || false,
-
-        paymentStatus: season.paymentStatus || 'unknown',
-
-        paymentId: season.paymentId || null,
-
-        amountPaid: season.amountPaid ?? null,
-
-        paymentDate: season.paymentDate || null,
-
-        cardLast4: season.cardLast4 || null,
-
-        cardBrand: season.cardBrand || null,
-      })),
-    })),
-
-    registrations: allRegistrations,
-
-    payments: allPayments,
-  };
-}
-
-async function getParentByEmail(email) {
-  const parent = await findParent(email);
-
-  if (!parent) {
-    return null;
-  }
-
-  return {
-    id: parent._id.toString(),
-    fullName: parent.fullName || '',
-    email: parent.email || '',
-    phone: parent.phone || '',
-    role: parent.role || '',
-  };
-}
-
-async function getFamilyData(parentId) {
-  const parent = await findParentById(parentId);
-
-  return buildParentContext(parent);
-}
-
-async function getCurrentTryout() {
-  const config = await TournamentConfig.findOne({
-    isActive: true,
-  })
-    .sort({
-      tryoutYear: -1,
-      createdAt: -1,
-    })
-    .lean();
-
-  if (!config) {
-    console.warn('[getCurrentTryout] No active TournamentConfig found.');
-
-    return null;
-  }
-
-  const details = config.tryoutDetails || {};
-
-  const sessions = (details.tryoutSessions || []).map((session) => ({
-    id: session.id ? String(session.id) : null,
-
-    number: session.number ?? null,
-
-    date: session.date || '',
-
-    startTime: String(session.startTime || '').trim(),
-
-    endTime: String(session.endTime || '').trim(),
-
-    grades: session.grades || '',
-
-    location: session.location
-      ? {
-          name: session.location.name || '',
-
-          address: session.location.address || '',
-
-          city: session.location.city || '',
-
-          state: session.location.state || '',
-
-          zipCode: session.location.zipCode || '',
-        }
-      : null,
-  }));
-
-  const result = {
-    id: config._id ? config._id.toString() : null,
-
-    eventId: config.eventId || null,
-
-    tryoutName:
-      config.tryoutName || config.displayName || 'Bothell Select Tryouts',
-
-    tryoutYear: config.tryoutYear || null,
-
-    season: config.season || '',
-
-    registrationDeadline: config.registrationDeadline || null,
-
-    paymentDeadline: config.paymentDeadline || null,
-
-    tryoutFee: config.tryoutFee ?? null,
-
-    refundPolicy: config.refundPolicy || '',
-
-    requiresPayment: !!config.requiresPayment,
-
-    requiresInsurance: !!config.requiresInsurance,
-
-    ageGroups: config.ageGroups || [],
-
-    contactEmail: details.contactEmail || '',
-
-    startDate: details.startDate || '',
-
-    endDate: details.endDate || '',
-
-    gender: details.gender || '',
-
-    dropOffTime: details.dropOffTime || '',
-
-    pickUpTime: details.pickUpTime || '',
-
-    whatToBring: details.whatToBring || [],
-
-    notes: details.notes || [],
-
-    hasLimitedSpots: !!details.hasLimitedSpots,
-
-    maxParticipants: details.maxParticipants ?? null,
-
-    sessions,
-  };
-
-  console.log('[getCurrentTryout] Loaded active TournamentConfig:', {
-    database: mongoose.connection.name,
-    host: mongoose.connection.host,
-    id: result.id,
-    eventId: result.eventId,
-    tryoutYear: result.tryoutYear,
-    tryoutName: result.tryoutName,
-    sessionCount: result.sessions.length,
+    if (!paymentMap.has(id)) {
+      paymentMap.set(id, payment);
+    }
   });
 
-  console.log(
-    '[getCurrentTryout] Sessions:',
-    JSON.stringify(result.sessions, null, 2),
-  );
+  const payments = [...paymentMap.values()];
 
-  return result;
+  return {
+    parent,
+    players,
+    registrations,
+    payments,
+  };
 }
 
-function normalizeName(name) {
-  return String(name || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+// -----------------------------------------------------------------------------
+// SAFE AI CONTEXT
+// -----------------------------------------------------------------------------
+
+/**
+ * We don't need to expose MongoDB internal IDs to OpenAI.
+ *
+ * This converts the raw database records into the information
+ * the AI actually needs to answer a parent.
+ */
+
+function buildAiSafeParent(parent) {
+  if (!parent) return null;
+
+  return {
+    firstName: parent.firstName || parent.firstname || null,
+
+    lastName: parent.lastName || parent.lastname || null,
+
+    fullName:
+      parent.fullName ||
+      [parent.firstName, parent.lastName].filter(Boolean).join(' ') ||
+      null,
+
+    email: parent.email || parent.emailAddress || parent.contactEmail || null,
+
+    phone: parent.phone || parent.phoneNumber || null,
+  };
 }
 
-const COMMON_NICKNAMES = {
-  theo: ['theodore'],
-  theodore: ['theo'],
+function buildAiSafePlayer(player) {
+  if (!player) return null;
 
-  alex: ['alexander', 'alexandra'],
-  alexander: ['alex'],
-  alexandra: ['alex'],
+  return {
+    firstName: player.firstName || player.firstname || null,
 
-  ari: ['ariana'],
-  ariana: ['ari'],
+    lastName: player.lastName || player.lastname || null,
 
-  mike: ['michael'],
-  michael: ['mike'],
+    fullName:
+      player.fullName ||
+      [player.firstName, player.lastName].filter(Boolean).join(' ') ||
+      null,
 
-  matt: ['matthew'],
-  matthew: ['matt'],
+    gender: player.gender || null,
 
-  nick: ['nicholas'],
-  nicholas: ['nick'],
+    grade: player.grade || player.currentGrade || player.schoolGrade || null,
 
-  dan: ['daniel'],
-  daniel: ['dan'],
+    birthDate: safeDate(player.birthDate || player.dateOfBirth),
 
-  ben: ['benjamin'],
-  benjamin: ['ben'],
-
-  sam: ['samuel', 'samantha'],
-  samuel: ['sam'],
-  samantha: ['sam'],
-};
-
-function namesMatch(nameA, nameB) {
-  const a = normalizeName(nameA);
-  const b = normalizeName(nameB);
-
-  if (!a || !b) return false;
-
-  if (a === b) return true;
-
-  const aParts = a.split(' ');
-  const bParts = b.split(' ');
-
-  if (
-    aParts.length > 0 &&
-    bParts.length > 0 &&
-    aParts[0] === bParts[0] &&
-    aParts[aParts.length - 1] === bParts[bParts.length - 1]
-  ) {
-    return true;
-  }
-
-  const aFirst = aParts[0];
-  const bFirst = bParts[0];
-
-  if (
-    COMMON_NICKNAMES[aFirst]?.includes(bFirst) ||
-    COMMON_NICKNAMES[bFirst]?.includes(aFirst)
-  ) {
-    const aLast = aParts[aParts.length - 1];
-
-    const bLast = bParts[bParts.length - 1];
-
-    return aLast === bLast;
-  }
-
-  return false;
+    status: player.status || null,
+  };
 }
 
-function detectGenderTerm(text) {
-  const lower = String(text || '').toLowerCase();
+function buildAiSafeRegistration(registration) {
+  if (!registration) return null;
 
-  if (/\b(my\s+)?son\b/.test(lower) || /\bboys?\b/.test(lower)) {
-    return 'Male';
+  return {
+    playerId: registration.playerId ? String(registration.playerId) : null,
+
+    status: registration.status || registration.registrationStatus || null,
+
+    registered: registration.registered ?? registration.isRegistered ?? null,
+
+    eventId: registration.eventId || null,
+
+    eventName: registration.eventName || registration.seasonName || null,
+
+    season: registration.season || null,
+
+    registrationDate: safeDate(
+      registration.registrationDate || registration.createdAt,
+    ),
+
+    paymentStatus: registration.paymentStatus || null,
+
+    amount: registration.amount ?? registration.price ?? null,
+  };
+}
+
+function buildAiSafePayment(payment) {
+  if (!payment) return null;
+
+  return {
+    status: payment.status || payment.paymentStatus || null,
+
+    amount: payment.amount ?? payment.total ?? payment.amountPaid ?? null,
+
+    currency: payment.currency || 'USD',
+
+    paymentDate: safeDate(
+      payment.paymentDate || payment.paidAt || payment.createdAt,
+    ),
+
+    playerId: payment.playerId ? String(payment.playerId) : null,
+
+    paymentId: payment.paymentId || payment.squarePaymentId || null,
+
+    receiptUrl: payment.receiptUrl || null,
+
+    description: payment.description || payment.memo || null,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// BUILD VERIFIED LIVE DATABASE CONTEXT
+// -----------------------------------------------------------------------------
+
+async function buildLiveDatabaseContext({ senderEmail, subject, body }) {
+  assertMongoConnected();
+
+  const normalizedSender = normalizeEmail(senderEmail);
+
+  log('Building LIVE MongoDB context for:', normalizedSender);
+
+  // ---------------------------------------------------------------
+  // Parent
+  // ---------------------------------------------------------------
+
+  const parent = await findParent(normalizedSender);
+
+  log('Parent found:', !!parent);
+
+  // ---------------------------------------------------------------
+  // Family
+  // ---------------------------------------------------------------
+
+  let family = {
+    parent: null,
+    players: [],
+    registrations: [],
+    payments: [],
+  };
+
+  if (parent) {
+    family = await buildParentContext(parent);
   }
 
-  if (/\b(my\s+)?daughter\b/.test(lower) || /\bgirls?\b/.test(lower)) {
-    return 'Female';
+  // ---------------------------------------------------------------
+  // ALWAYS load current tryout
+  //
+  // This is intentional.
+  //
+  // We don't ask OpenAI whether this is a tryout question.
+  // The database context is small enough to provide every time.
+  // ---------------------------------------------------------------
+
+  const tryout = await getCurrentTryout();
+
+  // ---------------------------------------------------------------
+  // Build AI-safe context
+  // ---------------------------------------------------------------
+
+  const context = {
+    request: {
+      senderEmail: normalizedSender,
+
+      subject: subject || '',
+
+      body: body || '',
+    },
+
+    parent: buildAiSafeParent(family.parent),
+
+    players: family.players.map(buildAiSafePlayer),
+
+    registrations: family.registrations.map(buildAiSafeRegistration),
+
+    payments: family.payments.map(buildAiSafePayment),
+
+    currentTryout: tryout,
+  };
+
+  log('LIVE DATABASE CONTEXT READY:', JSON.stringify(context, null, 2));
+
+  return {
+    raw: family,
+    tryout,
+    aiContext: context,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// PROMPT
+// -----------------------------------------------------------------------------
+
+function buildSystemPrompt(liveContext) {
+  return `
+You are the Bothell Select Basketball parent email assistant.
+
+Your job is to answer parent emails accurately, warmly, and concisely.
+
+========================================================
+CRITICAL DATABASE RULE
+========================================================
+
+The information below was retrieved DIRECTLY by the server
+from the Bothell Select MongoDB database immediately before
+this request.
+
+It is VERIFIED DATABASE DATA.
+
+You must use this data as the source of truth.
+
+NEVER claim that information is unavailable if it exists
+anywhere in this database context.
+
+NEVER invent information.
+
+NEVER guess.
+
+If information is not present, say that it is not available
+in the information provided and avoid making up an answer.
+
+========================================================
+TRYOUT DATA PRIORITY
+========================================================
+
+There may be two MongoDB sources:
+
+1. TournamentConfig
+2. eventconfigs
+
+TournamentConfig takes precedence when it contains detailed
+tryout sessions.
+
+The detailed sessions are more authoritative than the general
+event startTime/endTime.
+
+For example, if TournamentConfig contains:
+
+Girls: 12:00 PM - 1:30 PM
+Boys 4th-5th: 1:30 PM - 3:00 PM
+Boys 6th-8th: 3:00 PM - 4:30 PM
+
+you MUST use those session times.
+
+Do NOT replace them with the general eventconfigs window.
+
+========================================================
+PARENT / PLAYER RULES
+========================================================
+
+If the sender is a known parent:
+
+- Use the parent information provided.
+- Use the player's information provided.
+- If the parent says "my son", "my daughter", or "my child",
+  identify the matching player when possible.
+- If only one child matches, use that child.
+- If multiple children could match and you cannot determine
+  which one they mean, do not guess.
+
+If registration data says the player is registered, clearly
+tell the parent they are registered.
+
+If payment data confirms payment, clearly tell the parent
+payment was received.
+
+Do not tell a parent to register again if the database shows
+that they are already registered.
+
+Do not tell a parent to pay again if the database shows that
+payment has already been received.
+
+========================================================
+BUSINESS RULES
+========================================================
+
+You may provide factual information about:
+
+- Tryout date
+- Tryout time
+- Grade-specific session
+- Gender-specific session
+- Location
+- Address
+- Fee
+- Registration deadline
+- Payment deadline
+- What to bring
+- What to expect
+- Registration status
+- Payment status
+- Player information
+- Team information if provided
+
+Do NOT:
+
+- promise team placement
+- make roster decisions
+- approve refunds
+- invent exceptions
+- promise playing time
+- make eligibility decisions that are not in the database
+
+========================================================
+EMAIL STYLE
+========================================================
+
+Be warm and professional.
+
+Keep responses reasonably concise.
+
+Use the parent's name when available.
+
+When answering a schedule question, make the date/time/location
+easy to read.
+
+Always end with:
+
+Best regards,
+
+Bothell Select Basketball
+
+========================================================
+LIVE DATABASE CONTEXT
+========================================================
+
+${JSON.stringify(liveContext, null, 2)}
+`;
+}
+
+// -----------------------------------------------------------------------------
+// AI RESPONSE JSON EXTRACTION
+// -----------------------------------------------------------------------------
+
+function extractJsonFromText(text) {
+  if (!text) {
+    return null;
+  }
+
+  // Direct JSON
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Continue
+  }
+
+  // Markdown code block
+  const codeBlock = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+
+  if (codeBlock) {
+    try {
+      return JSON.parse(codeBlock[1]);
+    } catch {
+      // Continue
+    }
+  }
+
+  // First object
+  const start = text.indexOf('{');
+
+  const end = text.lastIndexOf('}');
+
+  if (start !== -1 && end !== -1 && end > start) {
+    try {
+      return JSON.parse(text.slice(start, end + 1));
+    } catch {
+      return null;
+    }
   }
 
   return null;
 }
 
-function findNamedPlayers(text, players) {
-  const matches = [];
+// -----------------------------------------------------------------------------
+// GENERATE AI DRAFT
+// -----------------------------------------------------------------------------
 
-  for (const player of players) {
-    if (player.fullName && namesMatch(player.fullName, text)) {
-      matches.push(player);
-    }
+async function generateAiDraft({ from, subject, body, liveContext }) {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error('OPENAI_API_KEY is not configured');
   }
 
-  return matches;
+  let contextPackage = liveContext;
+
+  // ---------------------------------------------------------------
+  // If caller didn't preload the context, do it now.
+  // ---------------------------------------------------------------
+
+  if (!contextPackage) {
+    contextPackage = await buildLiveDatabaseContext({
+      senderEmail: from,
+      subject,
+      body,
+    });
+  }
+
+  const systemPrompt = buildSystemPrompt(contextPackage.aiContext);
+
+  const userPrompt = `
+Write a reply to this parent email.
+
+Return ONLY valid JSON with exactly these fields:
+
+{
+  "subject": "string",
+  "body": "string",
+  "confidence": 0.0,
+  "requiresHumanReview": true,
+  "reason": "string"
 }
 
-function resolveRelevantPlayers(subject, body, players) {
-  const text = `${subject}\n${body}`;
+Parent email:
 
-  if (!players || players.length === 0) {
-    return {
-      players: [],
-      reason: 'No players found.',
-      ambiguous: false,
-    };
-  }
+From: ${from || ''}
+Subject: ${subject || ''}
 
-  const named = findNamedPlayers(text, players);
+${body || ''}
+`;
 
-  if (named.length > 0) {
-    return {
-      players: named,
-      reason: 'Matched by player name.',
-      ambiguous: named.length > 1,
-    };
-  }
+  const completion = await openai.chat.completions.create({
+    model: OPENAI_MODEL,
 
-  const gender = detectGenderTerm(text);
+    temperature: 0.2,
 
-  if (gender) {
-    const matches = players.filter(
-      (player) =>
-        String(player.gender || '').toLowerCase() === gender.toLowerCase(),
-    );
+    response_format: {
+      type: 'json_object',
+    },
 
-    if (matches.length > 0) {
-      return {
-        players: matches,
-        reason: `Matched by gender term (${gender}).`,
-        ambiguous: matches.length > 1,
-      };
-    }
-
-    return {
-      players: [],
-      reason: `No child matched gender term (${gender}).`,
-      ambiguous: false,
-    };
-  }
-
-  return {
-    players,
-    reason: 'No specific child identified; using all family players.',
-    ambiguous: players.length > 1,
-  };
-}
-
-function normalizeGrade(grade) {
-  return String(grade || '')
-    .toLowerCase()
-    .replace(/grade/g, '')
-    .replace(/th|st|nd|rd/g, '')
-    .trim();
-}
-
-function sessionMatchesPlayer(session, player) {
-  if (!session || !player) return false;
-
-  const grades = String(session.grades || '').toLowerCase();
-
-  const gender = String(player.gender || '').toLowerCase();
-
-  const grade = normalizeGrade(player.grade);
-
-  let genderMatches = true;
-
-  if (grades.includes('girls')) {
-    genderMatches = gender === 'female';
-  } else if (grades.includes('boys')) {
-    genderMatches = gender === 'male';
-  }
-
-  if (!genderMatches) {
-    return false;
-  }
-
-  if (!grade) {
-    return false;
-  }
-
-  if (
-    grades.includes('4th') &&
-    grades.includes('5th') &&
-    !grades.includes('6th')
-  ) {
-    return ['4', '5'].includes(grade);
-  }
-
-  if (grades.includes('4th') && grades.includes('8th')) {
-    return ['4', '5', '6', '7', '8'].includes(grade);
-  }
-
-  if (
-    grades.includes('6th') &&
-    grades.includes('7th') &&
-    grades.includes('8th')
-  ) {
-    return ['6', '7', '8'].includes(grade);
-  }
-
-  return false;
-}
-
-function attachTryoutSessionsToPlayers(family, tryout) {
-  if (!family || !tryout) return family;
-
-  const players = (family.players || []).map((player) => {
-    const matchingSessions = (tryout.sessions || []).filter((session) =>
-      sessionMatchesPlayer(session, player),
-    );
-
-    return {
-      ...player,
-      currentTryoutSessions: matchingSessions,
-    };
-  });
-
-  return {
-    ...family,
-    players,
-  };
-}
-
-async function populateAiEmail(query) {
-  const doc = await query.populate({
-    path: 'parentId',
-    select: 'fullName email',
-  });
-
-  if (!doc) return doc;
-
-  const docs = Array.isArray(doc) ? doc : [doc];
-
-  const allPlayerIds = [
-    ...new Set(
-      docs.flatMap((d) => (d.playerIds || []).map((id) => String(id))),
-    ),
-  ].filter((id) => mongoose.Types.ObjectId.isValid(id));
-
-  let byId = new Map();
-
-  if (allPlayerIds.length > 0) {
-    const players = await Player.find({
-      _id: {
-        $in: allPlayerIds,
+    messages: [
+      {
+        role: 'system',
+        content: systemPrompt,
       },
-    }).select('fullName');
+      {
+        role: 'user',
+        content: userPrompt,
+      },
+    ],
+  });
 
-    byId = new Map(players.map((p) => [String(p._id), p.fullName]));
+  const content = completion.choices?.[0]?.message?.content || '';
+
+  let result = extractJsonFromText(content);
+
+  // ---------------------------------------------------------------
+  // Fallback if model returned malformed JSON
+  // ---------------------------------------------------------------
+
+  if (!result) {
+    result = {
+      subject: subject
+        ? `Re: ${subject.replace(/^re:\s*/i, '')}`
+        : 'Bothell Select Basketball',
+
+      body:
+        content ||
+        'Thank you for contacting Bothell Select Basketball. We will review your message and get back to you.',
+
+      confidence: 0,
+
+      requiresHumanReview: true,
+
+      reason: 'AI response was not returned in the expected JSON format.',
+    };
   }
 
-  for (const d of docs) {
-    d.playerIds = (d.playerIds || []).map((id) => ({
-      _id: String(id),
-      fullName: byId.get(String(id)) || null,
-    }));
+  // ---------------------------------------------------------------
+  // Normalize output
+  // ---------------------------------------------------------------
+
+  const draft = {
+    subject:
+      result.subject ||
+      (subject
+        ? `Re: ${subject.replace(/^re:\s*/i, '')}`
+        : 'Bothell Select Basketball'),
+
+    body: result.body || '',
+
+    confidence: Number(result.confidence) || 0,
+
+    requiresHumanReview: result.requiresHumanReview !== false,
+
+    reason: result.reason || '',
+  };
+
+  // ---------------------------------------------------------------
+  // SAFETY:
+  // The application, not the AI, controls review status.
+  // ---------------------------------------------------------------
+
+  if (draft.confidence < 0.85) {
+    draft.requiresHumanReview = true;
   }
 
-  return doc;
+  return {
+    ...draft,
+
+    dataUsed: {
+      parentFound: !!contextPackage.raw.parent,
+
+      playerCount: contextPackage.raw.players?.length || 0,
+
+      registrationCount: contextPackage.raw.registrations?.length || 0,
+
+      paymentCount: contextPackage.raw.payments?.length || 0,
+
+      tryoutFound: !!contextPackage.tryout?.exists,
+
+      tryoutSource: contextPackage.tryout?.source || null,
+    },
+
+    liveContext: contextPackage,
+  };
 }
 
-async function createAiEmail(emailData) {
-  if (!emailData || !emailData.messageId) {
-    throw new Error('messageId is required to create an AI email');
+// -----------------------------------------------------------------------------
+// AI EMAIL CREATION
+// -----------------------------------------------------------------------------
+
+async function createAiEmail({ from, subject, body, messageId = null }) {
+  const normalizedFrom = normalizeEmail(from);
+
+  // ---------------------------------------------------------------
+  // Prevent duplicate processing
+  // ---------------------------------------------------------------
+
+  if (messageId) {
+    const existing = await AiEmail.findOne({
+      $or: [{ messageId }, { originalMessageId: messageId }],
+    }).lean();
+
+    if (existing) {
+      log('Email already processed:', messageId);
+
+      return existing;
+    }
   }
 
-  if (!emailData.from) {
-    throw new Error('from is required to create an AI email');
-  }
+  // ---------------------------------------------------------------
+  // Build LIVE DB context FIRST
+  // ---------------------------------------------------------------
 
-  if (!emailData.body) {
-    throw new Error('body is required to create an AI email');
-  }
+  const liveContext = await buildLiveDatabaseContext({
+    senderEmail: normalizedFrom,
 
-  return AiEmail.create({
-    messageId: emailData.messageId,
-    threadId: emailData.threadId || null,
-    from: emailData.from,
-    to: emailData.to || null,
-    subject: emailData.subject || '',
-    body: emailData.body,
-    receivedAt: emailData.receivedAt || new Date(),
+    subject,
+
+    body,
+  });
+
+  // ---------------------------------------------------------------
+  // Generate draft
+  // ---------------------------------------------------------------
+
+  const draft = await generateAiDraft({
+    from: normalizedFrom,
+
+    subject,
+
+    body,
+
+    liveContext,
+  });
+
+  // ---------------------------------------------------------------
+  // Build IDs for persistence
+  // ---------------------------------------------------------------
+
+  const parentId = liveContext.raw.parent?._id || null;
+
+  const playerIds = liveContext.raw.players
+    .map((player) => player._id)
+    .filter(Boolean);
+
+  const registrationIds = liveContext.raw.registrations
+    .map((registration) => registration._id)
+    .filter(Boolean);
+
+  const paymentIds = liveContext.raw.payments
+    .map((payment) => payment._id)
+    .filter(Boolean);
+
+  // ---------------------------------------------------------------
+  // Save
+  // ---------------------------------------------------------------
+
+  const aiEmail = await AiEmail.create({
+    messageId,
+
+    originalMessageId: messageId,
+
+    from: normalizedFrom,
+
+    to: VERIFIED_SENDER_EMAIL,
+
+    subject,
+
+    originalBody: body,
+
+    parentId,
+
+    playerIds,
+
+    registrationIds,
+
+    paymentIds,
+
+    aiSubject: draft.subject,
+
+    aiBody: draft.body,
+
+    confidence: draft.confidence,
+
+    requiresHumanReview: draft.requiresHumanReview,
 
     status: 'new',
 
-    requiresHumanReview: true,
+    dataUsed: draft.dataUsed,
+
+    aiReason: draft.reason,
   });
+
+  return aiEmail;
 }
 
-async function getPendingAiEmails({ page = 1, limit = 25 } = {}) {
-  const filter = {
+// -----------------------------------------------------------------------------
+// PENDING EMAILS
+// -----------------------------------------------------------------------------
+
+async function getPendingAiEmails() {
+  return AiEmail.find({
     status: {
-      $in: ['new', 'draft_ready', 'reviewed'],
+      $in: ['new', 'pending', 'review'],
     },
-  };
-
-  const safePage = Math.max(1, Number(page) || 1);
-
-  const safeLimit = Math.max(1, Number(limit) || 25);
-
-  const skip = (safePage - 1) * safeLimit;
-
-  const [emails, total] = await Promise.all([
-    populateAiEmail(
-      AiEmail.find(filter)
-        .sort({
-          receivedAt: -1,
-        })
-        .skip(skip)
-        .limit(safeLimit),
-    ),
-
-    AiEmail.countDocuments(filter),
-  ]);
-
-  return {
-    emails,
-    total,
-    page: safePage,
-    limit: safeLimit,
-  };
+  })
+    .sort({
+      createdAt: -1,
+    })
+    .lean();
 }
 
-async function getAllAiEmails({ page = 1, limit = 25, status = null } = {}) {
-  const filter = {};
+async function getAllAiEmails(options = {}) {
+  const limit = Number(options.limit) || 100;
 
-  if (status) {
-    filter.status = status;
-  }
-
-  const safePage = Math.max(1, Number(page) || 1);
-
-  const safeLimit = Math.max(1, Number(limit) || 25);
-
-  const skip = (safePage - 1) * safeLimit;
-
-  const [emails, total] = await Promise.all([
-    populateAiEmail(
-      AiEmail.find(filter)
-        .sort({
-          receivedAt: -1,
-        })
-        .skip(skip)
-        .limit(safeLimit),
-    ),
-
-    AiEmail.countDocuments(filter),
-  ]);
-
-  return {
-    emails,
-    total,
-    page: safePage,
-    limit: safeLimit,
-  };
+  return AiEmail.find({})
+    .sort({
+      createdAt: -1,
+    })
+    .limit(limit)
+    .lean();
 }
 
 async function getAiEmailById(id) {
   if (!id) return null;
 
-  return populateAiEmail(AiEmail.findById(id));
+  return AiEmail.findById(id).lean();
 }
 
-function buildSystemPrompt(settings) {
-  return `
-You are the Bothell Select parent email assistant.
+// -----------------------------------------------------------------------------
+// PROCESS INCOMING EMAIL
+// -----------------------------------------------------------------------------
 
-Your job is to analyze an incoming parent email and prepare a professional,
-warm, concise draft response for a Bothell Select administrator.
+async function processIncomingEmail({
+  from,
+  to,
+  subject,
+  body,
+  messageId = null,
+}) {
+  const normalizedFrom = normalizeEmail(from);
 
-IMPORTANT:
-The supplied DATABASE CONTEXT is authoritative.
+  log('Processing incoming email:', {
+    from: normalizedFrom,
 
-Never invent, assume, estimate, or use prior knowledge for:
-- player registration
-- payment status
-- payment amount
-- payment date
-- tryout dates
-- tryout times
-- tryout locations
-- tryout grade groups
-- tryout fees
-- registration deadlines
-- payment deadlines
-- what to bring
+    subject,
 
-If database data is present, use it.
+    messageId,
+  });
 
-CURRENT TRYOUT INFORMATION:
-The current tryout information comes directly from the active
-TournamentConfig MongoDB document. It is the authoritative source for
-the current Bothell Select tryouts.
+  // ---------------------------------------------------------------
+  // Check whether we should process it
+  // ---------------------------------------------------------------
 
-CHILD MATCHING:
+  const processCheck = await shouldProcessEmail(normalizedFrom);
 
-If the parent names a child:
-- Match the name against the family players.
-- Common nicknames such as Theo/Theodore, Alex/Alexander,
-  Ariana/Ari are acceptable matches.
+  if (!processCheck.process) {
+    log('Email ignored:', processCheck.reason);
 
-If the parent says "my son":
-- Use male children.
+    return {
+      processed: false,
 
-If the parent says "my daughter":
-- Use female children.
-
-If multiple children match:
-- Do not silently choose one.
-- Include the relevant information for each child.
-- Briefly explain that more than one child matches.
-
-If exactly one child matches:
-- Answer confidently.
-
-If no child matches the gender term:
-- State that an administrator will verify.
-- List the children found in the account.
-
-TRYOUT SESSION MATCHING:
-
-Match the child's gender and grade to the current tryout session.
-
-For example:
-- Girls: grades 4th thru 8th
-- Boys: grades 4th & 5th
-- Boys: grades 6th, 7th, & 8th
-
-If a matching session has been supplied in DATABASE CONTEXT,
-use its date, time, venue and address directly.
-
-When answering "when/where is the tryout?", include:
-- date
-- start time
-- end time
-- venue
-- street address
-- city/state/ZIP when available
-
-REGISTRATION:
-
-To answer whether a child is registered:
-- Check the current-season registration data.
-- registrationComplete must be true to confidently confirm registration.
-
-PAYMENTS:
-
-To answer whether a child paid:
-- Check paymentComplete/paymentStatus.
-- When confirming a payment, include amountPaid and paymentDate
-  when available.
-- Include cardLast4/cardBrand when available.
-- Never expose complete card numbers.
-
-MULTIPLE PAYMENTS:
-
-If multiple payments exist for a child:
-- List them separately.
-- Never combine multiple payment IDs into one value.
-
-NO PARENT:
-
-If no parent record was found:
-- Do not claim the parent is registered.
-- Say an administrator will verify.
-- Confidence must be 20 or lower.
-
-IMPORTANT CONFIDENCE RULE:
-
-Confidence reflects the quality and completeness of the actual database
-information available to answer the question.
-
-If the parent and relevant child/database information clearly answers the
-question, confidence should normally be 90-100.
-
-If information is ambiguous or incomplete, reduce confidence.
-
-Never lower confidence merely because a child had to be resolved from
-"my son" or "my daughter" when the database clearly identifies the child.
-
-DO NOT:
-- invent facts
-- mention internal MongoDB IDs
-- expose passwords
-- approve refunds
-- make roster/team placement decisions
-- promise something that the database does not establish
-- tell the parent to "refer to the latest communication" when the supplied
-  current tryout data directly answers their question
-- say "according to our records" when the information is unambiguous
-  and directly confirms the answer
-
-STYLE:
-
-Be warm, concise and professional.
-
-The response should sound like a helpful Bothell Select administrator.
-
-Sign the response exactly:
-
-Bothell Select Basketball
-
-Return ONLY valid JSON.
-
-Required JSON format:
-
-{
-  "category": "one of: ${ALLOWED_CATEGORIES.join(', ')}",
-  "confidence": 0,
-  "draft": "draft response",
-  "reason": "short explanation",
-  "dataUsed": [],
-  "requiresHumanReview": true,
-  "reviewReason": "why human review is required"
-}
-
-Confidence must be an integer from 0 to 100.
-
-Settings:
-tone=${settings.tone}
-confidenceThreshold=${settings.confidenceThreshold}
-automaticRepliesEnabled=${settings.automaticRepliesEnabled}
-`.trim();
-}
-
-function extractJsonFromText(rawOutput) {
-  if (!rawOutput) {
-    throw new Error('Empty AI output');
+      reason: processCheck.reason,
+    };
   }
 
-  let cleaned = String(rawOutput).trim();
+  // ---------------------------------------------------------------
+  // Duplicate protection
+  // ---------------------------------------------------------------
 
-  cleaned = cleaned.replace(/^\uFEFF/, '');
+  if (messageId) {
+    const existing = await AiEmail.findOne({
+      $or: [
+        { messageId },
+        {
+          originalMessageId: messageId,
+        },
+      ],
+    }).lean();
 
-  if (cleaned.startsWith('```')) {
-    cleaned = cleaned.replace(/^```(?:json)?\s*/i, '');
+    if (existing) {
+      return {
+        processed: false,
 
-    cleaned = cleaned.replace(/\s*```\s*$/i, '');
-  }
+        duplicate: true,
 
-  const firstBrace = cleaned.indexOf('{');
-
-  const lastBrace = cleaned.lastIndexOf('}');
-
-  if (firstBrace === -1 || lastBrace === -1 || lastBrace < firstBrace) {
-    throw new Error(
-      `No JSON object found in AI output. Raw: ${cleaned.slice(0, 300)}`,
-    );
-  }
-
-  cleaned = cleaned.slice(firstBrace, lastBrace + 1);
-
-  return JSON.parse(cleaned);
-}
-
-async function generateAiDraft({ from, subject = '', body }) {
-  if (!from) {
-    throw new Error('from is required');
-  }
-
-  if (!body) {
-    throw new Error('body is required');
-  }
-
-  const settings = await getAiSettings();
-
-  // ─────────────────────────────────────────────────────────────
-  // STEP 1 — ALWAYS resolve parent directly in MongoDB
-  // ─────────────────────────────────────────────────────────────
-
-  const parent = await getParentByEmail(from);
-
-  console.log(
-    '[AI] Parent lookup:',
-    parent ? `${parent.fullName} (${parent.email})` : 'NOT FOUND',
-  );
-
-  // ─────────────────────────────────────────────────────────────
-  // STEP 2 — ALWAYS load family data when parent exists
-  // ─────────────────────────────────────────────────────────────
-
-  let family = null;
-
-  if (parent) {
-    family = await getFamilyData(parent.id);
-
-    console.log('[AI] Family loaded:', {
-      parentFound: family.parentFound,
-      players: family.players?.length || 0,
-      registrations: family.registrations?.length || 0,
-      payments: family.payments?.length || 0,
-    });
-  }
-
-  // ─────────────────────────────────────────────────────────────
-  // STEP 3 — Load current tryout directly from MongoDB
-  // whenever relevant
-  // ─────────────────────────────────────────────────────────────
-
-  let tryout = null;
-
-  if (isTryoutQuestion(subject, body)) {
-    tryout = await getCurrentTryout();
-
-    console.log(
-      '[AI] Tryout loaded:',
-      tryout
-        ? {
-            year: tryout.tryoutYear,
-            name: tryout.tryoutName,
-            sessions: tryout.sessions.length,
-          }
-        : 'NOT FOUND',
-    );
-  }
-
-  // ─────────────────────────────────────────────────────────────
-  // STEP 4 — Resolve relevant children ourselves
-  // ─────────────────────────────────────────────────────────────
-
-  let resolvedFamily = family;
-
-  let playerResolution = null;
-
-  if (family?.players) {
-    playerResolution = resolveRelevantPlayers(subject, body, family.players);
-
-    console.log('[AI] Player resolution:', {
-      reason: playerResolution.reason,
-      ambiguous: playerResolution.ambiguous,
-      players: playerResolution.players.map((p) => ({
-        name: p.fullName,
-        gender: p.gender,
-        grade: p.grade,
-      })),
-    });
-
-    if (tryout) {
-      resolvedFamily = attachTryoutSessionsToPlayers(family, tryout);
+        email: existing,
+      };
     }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // STEP 5 — Build deterministic database context
-  // ─────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------
+  // Create AI email
+  // ---------------------------------------------------------------
 
-  const databaseContext = {
-    parent: parent || null,
+  const aiEmail = await createAiEmail({
+    from: normalizedFrom,
 
-    family: resolvedFamily || {
-      parentFound: false,
-      parent: null,
-      players: [],
-      registrations: [],
-      payments: [],
-    },
+    subject,
 
-    relevantPlayers: playerResolution?.players || [],
+    body,
 
-    playerResolution: playerResolution
-      ? {
-          reason: playerResolution.reason,
-          ambiguous: playerResolution.ambiguous,
-        }
-      : null,
-
-    currentTryout: tryout || null,
-  };
-
-  console.log('[AI] DATABASE CONTEXT SUMMARY:', {
-    parentFound: !!parent,
-    players: databaseContext.family.players?.length || 0,
-    relevantPlayers: databaseContext.relevantPlayers?.length || 0,
-    registrations: databaseContext.family.registrations?.length || 0,
-    payments: databaseContext.family.payments?.length || 0,
-    tryoutLoaded: !!databaseContext.currentTryout,
-    tryoutSessions: databaseContext.currentTryout?.sessions?.length || 0,
+    messageId,
   });
 
-  // ─────────────────────────────────────────────────────────────
-  // STEP 6 — Give the actual DB data directly to OpenAI
-  // ─────────────────────────────────────────────────────────────
+  // ---------------------------------------------------------------
+  // Determine auto-send
+  // ---------------------------------------------------------------
 
-  const systemPrompt = buildSystemPrompt(settings);
+  const autoSendCheck = await evaluateAutoSendEligibility(aiEmail);
 
-  const userMessage = `
-INCOMING EMAIL
+  if (autoSendCheck.allowed) {
+    try {
+      await sendAiReply(aiEmail);
 
-From:
-${from}
+      return {
+        processed: true,
 
-Subject:
-${subject}
+        autoSent: true,
 
-Message:
-${body}
+        email: aiEmail,
+      };
+    } catch (error) {
+      logError('Auto-send failed:', error);
 
+      return {
+        processed: true,
 
-DATABASE CONTEXT
+        autoSent: false,
 
-${JSON.stringify(databaseContext, null, 2)}
+        sendError: error.message,
 
-
-IMPORTANT:
-
-The DATABASE CONTEXT above was retrieved directly by the server from
-MongoDB immediately before this AI request.
-
-Treat it as authoritative.
-
-Do not use external knowledge or assumptions to replace database values.
-
-If the parent asks about the current tryout, use currentTryout.sessions.
-
-If the parent asks about their child, use relevantPlayers first, then the
-full family data if needed.
-
-If relevantPlayers contains exactly one matching child, use that child.
-
-If relevantPlayers contains multiple matching children, acknowledge the
-ambiguity and provide the relevant information for each.
-
-Generate the requested JSON response now.
-`.trim();
-
-  const messages = [
-    {
-      role: 'system',
-      content: systemPrompt,
-    },
-    {
-      role: 'user',
-      content: userMessage,
-    },
-  ];
-
-  const completion = await openai.chat.completions.create({
-    model: OPENAI_MODEL,
-    messages,
-    temperature: 0.2,
-    max_tokens: 2500,
-  });
-
-  const choice = completion.choices && completion.choices[0];
-
-  if (!choice) {
-    throw new Error('OpenAI returned no choices');
-  }
-
-  const rawOutput = choice.message?.content || '';
-
-  if (!rawOutput) {
-    throw new Error('OpenAI returned an empty final message');
-  }
-
-  console.log('=== AI RAW OUTPUT ===');
-
-  console.log(rawOutput.slice(0, 1000));
-
-  console.log('====================');
-
-  let result;
-
-  try {
-    result = extractJsonFromText(rawOutput);
-  } catch (parseError) {
-    console.error('JSON extraction failed:', parseError.message);
-
-    throw new Error(`OpenAI returned invalid JSON: ${parseError.message}`);
-  }
-
-  // ─────────────────────────────────────────────────────────────
-  // Normalize AI output
-  // ─────────────────────────────────────────────────────────────
-
-  if (!ALLOWED_CATEGORIES.includes(result.category)) {
-    result.category = 'other';
-  }
-
-  result.confidence = Math.max(
-    0,
-    Math.min(100, Number(result.confidence) || 0),
-  );
-
-  if (!Array.isArray(result.dataUsed)) {
-    result.dataUsed = [];
-  }
-
-  if (!result.draft) {
-    result.draft =
-      'Thank you for contacting Bothell Select. We will review your message and get back to you shortly.\n\nBothell Select Basketball';
-  }
-
-  if (!result.reason) {
-    result.reason =
-      'AI generated a draft using the available database context.';
-  }
-
-  if (!result.reviewReason) {
-    result.reviewReason = 'Human review is required.';
-  }
-
-  // If no parent was found, confidence MUST be <= 20.
-  if (!parent) {
-    result.confidence = Math.min(result.confidence, 20);
-
-    result.requiresHumanReview = true;
-
-    result.reviewReason =
-      'No matching parent record was found for this email address — verify manually.';
-  }
-
-  // If tryout information was requested but could not
-  // be loaded, force human review.
-  if (isTryoutQuestion(subject, body) && !tryout) {
-    result.confidence = Math.min(result.confidence, 40);
-
-    result.requiresHumanReview = true;
-
-    result.reviewReason =
-      'The current tryout database configuration could not be loaded.';
-  }
-
-  // If the email asks about registration/payment but there
-  // are no family records, require review.
-  if (
-    parent &&
-    (isRegistrationQuestion(subject, body) ||
-      isPaymentQuestion(subject, body)) &&
-    !family
-  ) {
-    result.confidence = Math.min(result.confidence, 40);
-
-    result.requiresHumanReview = true;
-
-    result.reviewReason = 'Family registration/payment data was not available.';
+        email: aiEmail,
+      };
+    }
   }
 
   return {
-    ...result,
+    processed: true,
 
-    parent: parent || null,
+    autoSent: false,
 
-    context: resolvedFamily || {
-      parentFound: false,
-      parent: null,
-      players: [],
-      registrations: [],
-      payments: [],
-    },
+    requiresReview: true,
 
-    tryout: tryout || null,
+    autoSendReason: autoSendCheck.reason,
 
-    relevantPlayers: playerResolution?.players || [],
-
-    effectiveEmail: from,
+    email: aiEmail,
   };
 }
+
+// -----------------------------------------------------------------------------
+// SHOULD PROCESS EMAIL
+// -----------------------------------------------------------------------------
+
+async function shouldProcessEmail(email) {
+  const normalized = normalizeEmail(email);
+
+  if (!normalized) {
+    return {
+      process: false,
+
+      reason: 'No sender email address.',
+    };
+  }
+
+  // ---------------------------------------------------------------
+  // Never process our own outbound emails
+  // ---------------------------------------------------------------
+
+  if (normalized === normalizeEmail(VERIFIED_SENDER_EMAIL)) {
+    return {
+      process: false,
+
+      reason: 'Email originated from Bothell Select.',
+    };
+  }
+
+  // ---------------------------------------------------------------
+  // Registered parent
+  // ---------------------------------------------------------------
+
+  const parent = await findParent(normalized);
+
+  if (parent) {
+    return {
+      process: true,
+
+      reason: 'Known Bothell Select parent.',
+    };
+  }
+
+  // ---------------------------------------------------------------
+  // Optional allowed domains
+  // ---------------------------------------------------------------
+
+  if (AI_ALLOWED_DOMAINS.length) {
+    const domain = normalized.split('@')[1];
+
+    if (domain && AI_ALLOWED_DOMAINS.includes(domain)) {
+      return {
+        process: true,
+
+        reason: 'Sender belongs to an allowed domain.',
+      };
+    }
+  }
+
+  return {
+    process: false,
+
+    reason: 'Sender is not a recognized parent or allowed sender.',
+  };
+}
+
+// -----------------------------------------------------------------------------
+// AUTO-SEND ELIGIBILITY
+// -----------------------------------------------------------------------------
 
 async function evaluateAutoSendEligibility(aiEmail) {
   const settings = await getAiSettings();
 
   if (!settings.enabled) {
     return {
-      eligible: false,
+      allowed: false,
+
       reason: 'AI assistant is disabled.',
     };
   }
 
-  if (!settings.automaticRepliesEnabled) {
+  if (!settings.autoSend) {
     return {
-      eligible: false,
-      reason: 'Automatic replies are disabled.',
+      allowed: false,
+
+      reason: 'Auto-send is disabled.',
     };
   }
 
-  if (aiEmail.confidence < settings.confidenceThreshold) {
+  if (settings.requireApproval) {
     return {
-      eligible: false,
-      reason: `Confidence ${aiEmail.confidence}% is below threshold ${settings.confidenceThreshold}%.`,
+      allowed: false,
+
+      reason: 'Human approval is required.',
     };
   }
 
-  if (
-    Array.isArray(settings.alwaysRequireHumanReview) &&
-    settings.alwaysRequireHumanReview.includes(aiEmail.category)
-  ) {
+  const minimumConfidence = Number(settings.minimumConfidence) || 0.85;
+
+  if (Number(aiEmail.confidence) < minimumConfidence) {
     return {
-      eligible: false,
-      reason: `Category "${aiEmail.category}" always requires human review.`,
+      allowed: false,
+
+      reason: `AI confidence ${aiEmail.confidence} is below minimum ${minimumConfidence}.`,
     };
   }
 
-  if (
-    Array.isArray(settings.allowedAutomaticCategories) &&
-    settings.allowedAutomaticCategories.length > 0 &&
-    !settings.allowedAutomaticCategories.includes(aiEmail.category)
-  ) {
+  if (aiEmail.requiresHumanReview) {
     return {
-      eligible: false,
-      reason: `Category "${aiEmail.category}" is not in the allowed automatic categories.`,
+      allowed: false,
+
+      reason: 'AI marked this response for human review.',
+    };
+  }
+
+  if (!aiEmail.aiBody) {
+    return {
+      allowed: false,
+
+      reason: 'AI response body is empty.',
     };
   }
 
   return {
-    eligible: true,
-    reason: 'All auto-send conditions met.',
+    allowed: true,
+
+    reason: 'Passed auto-send requirements.',
   };
 }
 
+// -----------------------------------------------------------------------------
+// SEND AI REPLY
+// -----------------------------------------------------------------------------
+
 async function sendAiReply(aiEmail) {
-  const body = aiEmail.humanEditedDraft || aiEmail.aiDraft;
-
-  if (!body) {
-    throw new Error('No draft body available to send.');
+  if (!aiEmail) {
+    throw new Error('AI email record is required.');
   }
 
-  const headers = {};
-
-  if (aiEmail.messageId) {
-    headers['In-Reply-To'] = aiEmail.messageId;
-
-    headers.References = aiEmail.messageId;
+  if (!aiEmail.aiBody) {
+    throw new Error('AI email body is empty.');
   }
 
-  const subject = aiEmail.subject
-    ? `Re: ${aiEmail.subject.replace(/^Re:\s*/i, '')}`
-    : 'Re: Your message to Bothell Select';
+  if (!resend) {
+    throw new Error('RESEND_API_KEY is not configured.');
+  }
 
-  const replyTarget = aiEmail.replyToEmail || aiEmail.from;
+  const recipient = normalizeEmail(aiEmail.from);
 
-  const { data, error } = await resend.emails.send({
-    from: VERIFIED_SENDER,
-    to: replyTarget,
-    subject,
-    text: body,
-    headers,
+  if (!recipient) {
+    throw new Error('Recipient email address is missing.');
+  }
+
+  const response = await resend.emails.send({
+    from: VERIFIED_SENDER_EMAIL,
+
+    to: recipient,
+
+    subject:
+      aiEmail.aiSubject ||
+      `Re: ${aiEmail.subject || 'Bothell Select Basketball'}`,
+
+    text: aiEmail.aiBody,
+
+    headers: aiEmail.messageId
+      ? {
+          'In-Reply-To': aiEmail.messageId,
+
+          References: aiEmail.messageId,
+        }
+      : undefined,
   });
 
-  if (error) {
-    throw new Error(error.message || 'Resend send failed');
-  }
+  // ---------------------------------------------------------------
+  // Update database
+  // ---------------------------------------------------------------
 
-  return data?.id || null;
+  await AiEmail.findByIdAndUpdate(aiEmail._id, {
+    $set: {
+      status: 'sent',
+
+      sentAt: new Date(),
+
+      resendId: response?.data?.id || null,
+    },
+  });
+
+  return response;
 }
 
-async function processIncomingEmail(emailData) {
-  const normalizedFrom = extractEmailAddress(emailData.from);
+// -----------------------------------------------------------------------------
+// MANUAL SEND
+// -----------------------------------------------------------------------------
 
-  let resolvedEmailData = emailData;
+async function manualSendAiEmail(aiEmailId) {
+  const aiEmail = await AiEmail.findById(aiEmailId);
 
-  // Some inbound providers may show our own mailbox
-  // as the sender while the actual parent email is
-  // contained in the message body.
-  if (SITE_OWNED_EMAILS.has(normalizedFrom)) {
-    const bodyEmail = extractEmailFromBody(emailData.body);
-
-    if (bodyEmail && !SITE_OWNED_EMAILS.has(bodyEmail)) {
-      console.log(
-        `"from" was site-owned ("${normalizedFrom}"); replacing with body email "${bodyEmail}".`,
-      );
-
-      resolvedEmailData = {
-        ...emailData,
-        from: bodyEmail,
-      };
-    } else {
-      console.log(
-        `"from" was site-owned ("${normalizedFrom}") and no usable body email was found.`,
-      );
-    }
-  }
-
-  console.log('=== PROCESSING EMAIL ===');
-
-  console.log('From:', resolvedEmailData.from);
-
-  console.log('Subject:', resolvedEmailData.subject);
-
-  console.log('Body length:', (resolvedEmailData.body || '').length);
-
-  // ─────────────────────────────────────────────────────────────
-  // Filter
-  // ─────────────────────────────────────────────────────────────
-
-  const filterResult = await shouldProcessEmail(resolvedEmailData.from);
-
-  if (!filterResult.process) {
-    console.log(`Skipping email — ${filterResult.reason}`);
-
-    try {
-      const skipped = await AiEmail.create({
-        messageId: emailData.messageId,
-
-        threadId: emailData.threadId || null,
-
-        from: resolvedEmailData.from,
-
-        to: resolvedEmailData.to || null,
-
-        subject: resolvedEmailData.subject || '',
-
-        body: resolvedEmailData.body,
-
-        receivedAt: emailData.receivedAt || new Date(),
-
-        status: 'skipped',
-
-        skipReason: filterResult.reason,
-
-        requiresHumanReview: false,
-
-        reviewReason: filterResult.reason,
-      });
-
-      return skipped;
-    } catch (saveErr) {
-      if (saveErr.code === 11000) {
-        console.log('Skipped email already recorded.');
-
-        return null;
-      }
-
-      throw saveErr;
-    }
-  }
-
-  // ─────────────────────────────────────────────────────────────
-  // Create AI email
-  // ─────────────────────────────────────────────────────────────
-
-  const aiEmail = await createAiEmail(resolvedEmailData);
-
-  console.log('Created AiEmail:', aiEmail._id.toString());
-
-  try {
-    console.log('Generating AI draft using direct MongoDB context...');
-
-    const result = await generateAiDraft({
-      from: resolvedEmailData.from,
-
-      subject: resolvedEmailData.subject || '',
-
-      body: resolvedEmailData.body,
-    });
-
-    console.log('AI result summary:', {
-      category: result.category,
-
-      confidence: result.confidence,
-
-      hasParent: !!result.parent,
-
-      playerCount: result.context?.players?.length || 0,
-
-      relevantPlayers: result.relevantPlayers?.length || 0,
-
-      hasTryout: !!result.tryout,
-
-      tryoutSessions: result.tryout?.sessions?.length || 0,
-    });
-
-    aiEmail.category = result.category;
-
-    aiEmail.confidence = result.confidence;
-
-    aiEmail.aiDraft = result.draft;
-
-    aiEmail.aiReason = result.reason;
-
-    aiEmail.dataUsed = result.dataUsed;
-
-    aiEmail.replyToEmail = result.effectiveEmail || resolvedEmailData.from;
-
-    // Parent ID
-    if (result.parent) {
-      const pid = result.parent.id || result.parent._id || null;
-
-      if (pid && mongoose.Types.ObjectId.isValid(pid)) {
-        aiEmail.parentId = pid;
-      }
-    }
-
-    // Player IDs
-    if (result.context?.players) {
-      aiEmail.playerIds = normalizeIdList(
-        result.context.players.map((player) => player.id),
-      );
-    }
-
-    // REAL registration IDs
-    if (result.context?.registrations) {
-      aiEmail.registrationIds = normalizeIdList(
-        result.context.registrations
-          .map((registration) => registration.registrationId)
-          .filter(Boolean),
-      );
-    }
-
-    // Payment IDs
-    if (result.context?.payments) {
-      aiEmail.paymentIds = normalizeIdList(
-        result.context.payments
-          .map((payment) => payment.paymentId)
-          .filter(Boolean),
-      );
-    }
-
-    // ─────────────────────────────────────────────────────────
-    // Auto send
-    // ─────────────────────────────────────────────────────────
-
-    const eligibility = await evaluateAutoSendEligibility(aiEmail);
-
-    if (eligibility.eligible) {
-      try {
-        const sentMessageId = await sendAiReply(aiEmail);
-
-        aiEmail.status = 'sent';
-
-        aiEmail.requiresHumanReview = false;
-
-        aiEmail.finalResponse = aiEmail.aiDraft;
-
-        aiEmail.sentAt = new Date();
-
-        aiEmail.sentMessageId = sentMessageId;
-
-        aiEmail.autoSent = true;
-
-        aiEmail.reviewReason = `Auto-sent. ${eligibility.reason}`;
-      } catch (sendError) {
-        console.error('Auto-send failed:', sendError.message);
-
-        aiEmail.status = 'draft_ready';
-
-        aiEmail.requiresHumanReview = true;
-
-        aiEmail.reviewReason = `Auto-send failed: ${sendError.message}`;
-      }
-    } else {
-      aiEmail.status = 'draft_ready';
-
-      aiEmail.requiresHumanReview = true;
-
-      aiEmail.reviewReason = eligibility.reason;
-    }
-
-    await aiEmail.save();
-
-    console.log('AiEmail saved:', aiEmail.status);
-
-    return aiEmail;
-  } catch (error) {
-    console.error('=== AI PROCESSING FAILED ===');
-
-    console.error(error.message);
-
-    console.error(error.stack);
-
-    console.error('============================');
-
-    aiEmail.status = 'new';
-
-    aiEmail.requiresHumanReview = true;
-
-    aiEmail.reviewReason = `AI processing failed: ${error.message}`;
-
-    aiEmail.aiDraft =
-      aiEmail.aiDraft ||
-      `[AI draft failed] ${error.message}\n\nOriginal message:\n${resolvedEmailData.body}`;
-
-    aiEmail.category = aiEmail.category || 'other';
-
-    aiEmail.confidence = aiEmail.confidence || 0;
-
-    try {
-      await aiEmail.save();
-
-      console.log('Saved fallback AiEmail.');
-    } catch (saveError) {
-      console.error(
-        'CRITICAL: Failed to save AiEmail after AI failure:',
-        saveError.message,
-      );
-    }
-
-    throw error;
-  }
-}
-
-async function manualSendAiEmail(aiEmail, { draft, reviewedBy } = {}) {
   if (!aiEmail) {
-    throw new Error('AI email not found');
+    throw new Error('AI email not found.');
   }
 
-  if (aiEmail.status === 'sent') {
-    throw new Error('Email has already been sent');
-  }
-
-  if (typeof draft === 'string' && draft.trim()) {
-    aiEmail.humanEditedDraft = draft.trim();
-  }
-
-  const sentMessageId = await sendAiReply(aiEmail);
-
-  aiEmail.status = 'sent';
-
-  aiEmail.requiresHumanReview = false;
-
-  aiEmail.finalResponse = aiEmail.humanEditedDraft || aiEmail.aiDraft;
-
-  aiEmail.sentAt = new Date();
-
-  aiEmail.sentMessageId = sentMessageId;
-
-  aiEmail.autoSent = false;
-
-  if (reviewedBy) {
-    aiEmail.reviewedBy = reviewedBy;
-
-    aiEmail.reviewedAt = new Date();
-  }
-
-  await aiEmail.save();
-
-  return aiEmail;
+  return sendAiReply(aiEmail);
 }
+
+// -----------------------------------------------------------------------------
+// DEBUG / DIAGNOSTICS
+// -----------------------------------------------------------------------------
+
+async function debugCurrentTryout() {
+  const state = assertMongoConnected();
+
+  const tryout = await getCurrentTryout();
+
+  return {
+    mongo: state,
+
+    tryout,
+  };
+}
+
+// -----------------------------------------------------------------------------
+// EXPORTS
+// -----------------------------------------------------------------------------
 
 module.exports = {
+  // Settings
   getAiSettings,
   updateAiSettings,
 
+  // Parent
   findParent,
   findParentById,
+  getParentByEmail,
 
+  // Players
   findPlayersByParent,
   findPlayer,
 
+  // Registrations
   findRegistrationsByPlayer,
   findRegistrationsByParent,
 
+  // Payments
   findPaymentsByParent,
   findPaymentsByPlayer,
   findPaymentsByTeam,
 
+  // Teams
   findTeam,
   findTeamsByCoach,
 
-  createAiEmail,
-  getPendingAiEmails,
-  getAllAiEmails,
-  getAiEmailById,
-
-  getParentByEmail,
-  getFamilyData,
-
+  // Tryout/event
+  getTournamentConfig,
+  getEventConfig,
   getCurrentTryout,
+
+  // Context
   buildParentContext,
+  buildLiveDatabaseContext,
 
+  // AI
   generateAiDraft,
+
+  // Email
+  createAiEmail,
   processIncomingEmail,
-
   shouldProcessEmail,
-
   evaluateAutoSendEligibility,
   sendAiReply,
   manualSendAiEmail,
 
+  // AI email records
+  getPendingAiEmails,
+  getAllAiEmails,
+  getAiEmailById,
+
+  // Utilities
   extractJsonFromText,
   extractEmailAddress,
   extractEmailFromBody,
-
   normalizeIdList,
 
-  isTryoutQuestion,
-  isRegistrationQuestion,
-  isPaymentQuestion,
-
-  resolveRelevantPlayers,
-  sessionMatchesPlayer,
+  // Debug
+  debugCurrentTryout,
 };
