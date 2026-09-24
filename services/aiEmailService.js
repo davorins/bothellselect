@@ -11,6 +11,7 @@ const Player = require('../models/Player');
 const PlayerRegistration = require('../models/PlayerRegistration');
 const Payment = require('../models/Payment');
 const Team = require('../models/Team');
+const TournamentConfig = require('../models/TournamentConfig');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Clients + config
@@ -48,10 +49,6 @@ const SITE_OWNED_EMAILS = new Set(
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ID-list normalization
-//
-// The AI occasionally returns a list field as a scalar, as a JSON-encoded
-// array string, or as a nested array. This flattens any of those shapes into
-// a clean array of trimmed strings so Mongoose's save() never chokes.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function normalizeIdList(value) {
@@ -68,20 +65,18 @@ function normalizeIdList(value) {
     const trimmed = value.trim();
     if (!trimmed) return [];
 
-    // Guard against JSON-encoded arrays like: '["a", "b"]'
     if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
       try {
         const parsed = JSON.parse(trimmed);
         if (Array.isArray(parsed)) return normalizeIdList(parsed);
       } catch {
-        // not valid JSON — fall through and treat as a plain string
+        // not valid JSON — fall through
       }
     }
 
     return [trimmed];
   }
 
-  // Any other scalar (number, ObjectId, etc.)
   return [String(value).trim()].filter(Boolean);
 }
 
@@ -229,9 +224,6 @@ async function findTeamsByCoach(coachId) {
 // AiEmail CRUD
 // ─────────────────────────────────────────────────────────────────────────────
 
-// playerIds is [String] in the schema, so .populate() can't auto-resolve
-// names. We populate parentId normally and then manually look up player names
-// in a single query, replacing each id with { _id, fullName } for the UI.
 async function populateAiEmail(query) {
   const doc = await query.populate({
     path: 'parentId',
@@ -472,6 +464,76 @@ async function getFamilyData(parentId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Current tryout lookup
+//
+// Returns the active tryout config trimmed to what the AI needs:
+// dates, sessions with grade ranges, locations, fees, deadlines, what to bring.
+// The AI matches a player's gender + grade to the right session.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function getCurrentTryout() {
+  const envYear = Number(process.env.CURRENT_TRYOUT_YEAR) || null;
+
+  let config = null;
+
+  if (envYear) {
+    config = await TournamentConfig.findOne({
+      tryoutYear: envYear,
+      isActive: true,
+    }).lean();
+  }
+
+  if (!config) {
+    config = await TournamentConfig.findOne({ isActive: true })
+      .sort({ tryoutYear: -1, createdAt: -1 })
+      .lean();
+  }
+
+  if (!config) return null;
+
+  const details = config.tryoutDetails || {};
+
+  return {
+    tryoutName:
+      config.tryoutName || config.displayName || 'Bothell Select Tryouts',
+    tryoutYear: config.tryoutYear || null,
+    season: config.season || '',
+    registrationDeadline: config.registrationDeadline || null,
+    paymentDeadline: config.paymentDeadline || null,
+    tryoutFee: config.tryoutFee ?? null,
+    refundPolicy: config.refundPolicy || '',
+    requiresPayment: !!config.requiresPayment,
+    requiresInsurance: !!config.requiresInsurance,
+    ageGroups: config.ageGroups || [],
+    contactEmail: details.contactEmail || '',
+    startDate: details.startDate || '',
+    endDate: details.endDate || '',
+    gender: details.gender || '',
+    dropOffTime: details.dropOffTime || '',
+    pickUpTime: details.pickUpTime || '',
+    whatToBring: details.whatToBring || [],
+    notes: details.notes || [],
+    hasLimitedSpots: !!details.hasLimitedSpots,
+    sessions: (details.tryoutSessions || []).map((s) => ({
+      number: s.number,
+      date: s.date,
+      startTime: (s.startTime || '').trim(),
+      endTime: (s.endTime || '').trim(),
+      grades: s.grades || '',
+      location: s.location
+        ? {
+            name: s.location.name || '',
+            address: s.location.address || '',
+            city: s.location.city || '',
+            state: s.location.state || '',
+            zipCode: s.location.zipCode || '',
+          }
+        : null,
+    })),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // JSON extraction
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -550,6 +612,19 @@ const TOOL_DEFINITIONS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'get_current_tryout',
+      description:
+        'Get the current/upcoming Bothell Select tryout event details: dates, times, locations, age/gender groupings per session, fee, deadlines, what to bring, and contact email. Call this whenever the parent asks about tryout dates, times, locations, schedules, what to bring, or fees.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: [],
+      },
+    },
+  },
 ];
 
 async function executeToolCall(call, toolContext) {
@@ -569,6 +644,12 @@ async function executeToolCall(call, toolContext) {
   if (call.function.name === 'get_family_data') {
     const result = await getFamilyData(args.parentId);
     toolContext.family = result;
+    return result;
+  }
+
+  if (call.function.name === 'get_current_tryout') {
+    const result = await getCurrentTryout();
+    toolContext.tryout = result;
     return result;
   }
 
@@ -594,14 +675,32 @@ You are the Bothell Select parent email assistant.
 Your job is to analyze an incoming email from a parent and prepare a
 professional draft response for a Bothell Select administrator.
 
-You have access to two tools backed by the live database:
+You have access to three tools backed by the live database:
 - get_parent_by_email: look up the parent account from the sender's email.
 - get_family_data: given a parentId, get that family's players,
   registrations, payments, and teams.
+- get_current_tryout: get the current/upcoming tryout event details —
+  dates, times, locations, age/gender groupings per session, fee,
+  deadlines, what to bring, and contact email.
 
 ALWAYS call get_parent_by_email first, using the sender's email address.
 If it finds a parent, ALWAYS follow up with get_family_data using that
 parent's id before answering anything about registration or payment status.
+
+ALWAYS call get_current_tryout whenever the parent asks about tryout
+dates, times, locations, schedules, what to bring, fees, deadlines, or
+"where/when" questions. Never say "please refer to the latest
+communication" if the tryout tool returned the data — answer directly
+using the sessions in the tool result.
+
+When answering "when/where is the tryout?", match the child's gender and
+grade to the correct session:
+- "Girls: grades 4th thru 8th" → the girls session
+- "Boys: grades 4th & 5th" → the boys lower session
+- "Boys: grades 6th, 7th, & 8th" → the boys upper session
+Include the session date, start time, end time, and the full venue name
+and street address. If the parent's child doesn't clearly match one
+session, list all applicable sessions or say a coach will confirm.
 
 ${currentSeasonLine}
 
@@ -609,28 +708,32 @@ IMPORTANT RULES
 
 1. Never invent facts. Only use what the tools return.
 2. Match children by fullName within the family data. Common nicknames
-   (Theo/Theodore, Alex/Alexander, etc.) may match — use context.
+   (Theo/Theodore, Alex/Alexander, Ariana/Ari, etc.) may match — use context.
 3. To answer "is my child registered?", check that child's
    registrationComplete field (both on the player and within their
    registrations for the current season).
 4. To answer "did I pay?", check paymentComplete / paymentStatus for that
    child's current-season registration, and include amountPaid,
    paymentDate, and cardLast4 when confirming.
-5. When multiple payments exist for the same child, list each one
+5. For any question about tryout dates, times, locations, schedules, what
+   to bring, or fees, ALWAYS call get_current_tryout and answer directly
+   from the returned session data. Do NOT hedge with "please refer to the
+   latest communication" when the tool returned usable info.
+6. When multiple payments exist for the same child, list each one
    separately. The "paymentId" field in your response must always be a
    single string, never an array.
-6. When the data unambiguously confirms what the parent asked (e.g.
+7. When the data unambiguously confirms what the parent asked (e.g.
    registrationComplete: true AND the current-season registration has
    paymentComplete: true for the exact child they mentioned), confirm it
    directly and confidently. Do NOT hedge with "appears to be" or
    "according to our records."
-7. If get_parent_by_email finds no parent, or the child the parent asked
+8. If get_parent_by_email finds no parent, or the child the parent asked
    about isn't in the family data, say the administrator needs to verify
    it manually — do NOT guess, and set confidence to 20 or lower.
-8. Do not expose passwords or internal MongoDB ids.
-9. Do not make team placement decisions or approve refunds.
-10. Sound like a helpful Bothell Select administrator. Be warm and concise.
-11. Sign the response as "Bothell Select Basketball".
+9. Do not expose passwords or internal MongoDB ids.
+10. Do not make team placement decisions or approve refunds.
+11. Sound like a helpful Bothell Select administrator. Be warm and concise.
+12. Sign the response as "Bothell Select Basketball".
 
 CONFIDENCE
 "confidence" must reflect whether you actually had the data to answer the
@@ -647,7 +750,7 @@ or after it, in exactly this shape:
   "confidence": 0,
   "draft": "draft response",
   "reason": "short explanation of category and confidence",
-  "dataUsed": ["parent", "players", "registrations", "payments"],
+  "dataUsed": ["parent", "players", "registrations", "payments", "tryout"],
   "requiresHumanReview": true,
   "reviewReason": "why a human should review this response"
 }
@@ -776,6 +879,7 @@ async function generateAiDraft({ from, subject = '', body }) {
     ...result,
     parent: toolContext.parent || null,
     context,
+    tryout: toolContext.tryout || null,
     effectiveEmail: from,
   };
 }
@@ -890,6 +994,7 @@ async function processIncomingEmail(emailData) {
       hasParent: !!result.parent,
       parentFound: result.context?.parentFound,
       playerCount: result.context?.players?.length || 0,
+      hasTryout: !!result.tryout,
     });
 
     aiEmail.category = result.category;
@@ -1025,6 +1130,7 @@ module.exports = {
 
   getParentByEmail,
   getFamilyData,
+  getCurrentTryout,
   buildParentContext,
   generateAiDraft,
   processIncomingEmail,
