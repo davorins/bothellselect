@@ -15,7 +15,6 @@ const openai = new OpenAI({
 });
 
 const resend = new Resend(process.env.RESEND_API_KEY);
-
 const VERIFIED_SENDER = 'Bothell Select <info@bothellselect.com>';
 
 // Addresses that belong to the site itself, never to a parent. Contact-form
@@ -235,7 +234,7 @@ async function getAiEmailById(id) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Context building
+// Context building (shared by the legacy path and the AI tool-calling path)
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function buildParentContext(parent) {
@@ -342,6 +341,33 @@ async function buildParentContext(parent) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// AI tool functions — called by the model via function-calling
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function getParentByEmail(email) {
+  const parent = await findParent(email);
+  if (!parent) return null;
+
+  return {
+    id: parent._id.toString(),
+    fullName: parent.fullName || '',
+    email: parent.email || '',
+    phone: parent.phone || '',
+    role: parent.role || '',
+  };
+}
+
+// Returns the same normalized shape as buildParentContext — flattened
+// seasons-based registrations/payments, `.id` keys — so the model sees
+// consistent field names and the downstream linking code (playerIds,
+// registrationIds, paymentIds) works whether context came from the legacy
+// path or the tool-calling path.
+async function getFamilyData(parentId) {
+  const parent = await findParentById(parentId);
+  return buildParentContext(parent);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Robust JSON extraction from AI response
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -376,8 +402,21 @@ function extractJsonFromText(rawOutput) {
   return JSON.parse(cleaned);
 }
 
+const ALLOWED_CATEGORIES = [
+  'tryouts',
+  'registration',
+  'payments',
+  'schedules',
+  'teams',
+  'practices',
+  'programs',
+  'technical',
+  'general',
+  'other',
+];
+
 // ─────────────────────────────────────────────────────────────────────────────
-// AI draft generation
+// AI draft generation (tool-calling)
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function generateAiDraft({ from, subject = '', body }) {
@@ -385,72 +424,35 @@ async function generateAiDraft({ from, subject = '', body }) {
   if (!body) throw new Error('body is required');
 
   const settings = await getAiSettings();
-  const normalizedFrom = extractEmailAddress(from);
-  const fromIsSiteOwned = SITE_OWNED_EMAILS.has(normalizedFrom);
-
-  // Best-guess reply target: never the site's own address. Prefer whatever
-  // email is embedded in the body when the envelope sender is site-owned,
-  // even if that address doesn't match a known parent record.
-  const bodyEmail = extractEmailFromBody(body);
-  let effectiveEmail = fromIsSiteOwned
-    ? bodyEmail || normalizedFrom
-    : normalizedFrom;
-
-  let parent = fromIsSiteOwned ? null : await findParent(normalizedFrom);
-
-  // Contact-form emails arrive "from" the site's own address, not the
-  // visitor's — if the envelope sender is a site-owned address, or if it
-  // simply didn't match a parent, try the email address embedded in the
-  // message body instead.
-  if (!parent) {
-    if (
-      bodyEmail &&
-      bodyEmail !== normalizedFrom &&
-      !SITE_OWNED_EMAILS.has(bodyEmail)
-    ) {
-      const bodyParent = await findParent(bodyEmail);
-      if (bodyParent) {
-        parent = bodyParent;
-        effectiveEmail = bodyEmail;
-        console.log(
-          `Envelope sender "${normalizedFrom}" ${fromIsSiteOwned ? 'is site-owned' : 'had no parent match'}; found parent via body email "${bodyEmail}" instead.`,
-        );
-      }
-    }
-  }
-
-  const context = await buildParentContext(parent);
 
   const systemPrompt = `
 You are the Bothell Select parent email assistant.
 
-Your job is to analyze an incoming email from a parent and prepare
-a professional draft response for a Bothell Select administrator.
+Your job is to analyze an incoming email from a parent and prepare a
+professional draft response for a Bothell Select administrator.
 
-DATA YOU RECEIVE
-You are given a "context" object containing verified Bothell Select data:
+You have access to two tools backed by the live database:
+- get_parent_by_email: look up the parent account from the sender's email.
+- get_family_data: given a parentId, get that family's players,
+  registrations, and payments.
 
-- context.parent: the parent's fullName, email, phone, relationship.
-- context.players: each child with fullName, grade, gender,
-  registrationComplete, paymentComplete, paymentStatus.
-- context.registrations: each registration with playerName, season, year,
-  tryoutId, registrationDate, registrationComplete, paymentComplete,
-  paymentStatus, amountPaid, paymentDate, cardLast4, cardBrand.
-- context.payments: each payment with playerName, amountPaid, status,
-  paidAt, cardLast4, cardBrand.
+ALWAYS call get_parent_by_email first, using the sender's email address.
+If it finds a parent, ALWAYS follow up with get_family_data using that
+parent's id before answering anything about registration or payment status.
 
 IMPORTANT RULES
 
-1. Never invent facts. Only use what is in the context.
-2. Match children by context.players[*].fullName.
-3. To answer "is my child registered?", check
-   context.players[*].registrationComplete AND
-   context.registrations[*].registrationComplete for that child.
-4. To answer "did I pay?", check context.players[*].paymentComplete AND
-   context.registrations[*].paymentComplete for that child. Include
-   amountPaid, paymentDate, and cardLast4 when confirming.
-5. If the context is missing information the parent asked about, say that
-   the administrator needs to verify it — do NOT guess.
+1. Never invent facts. Only use what the tools return.
+2. Match children by fullName within the family data.
+3. To answer "is my child registered?", check that child's
+   registrationComplete field (both on the player and within their
+   registrations).
+4. To answer "did I pay?", check paymentComplete / paymentStatus for that
+   child, and include amountPaid, paymentDate, and cardLast4 when
+   confirming.
+5. If get_parent_by_email finds no parent, or the child the parent asked
+   about isn't in the family data, say the administrator needs to verify
+   it manually — do NOT guess, and set confidence to 20 or lower.
 6. Do not expose passwords or internal IDs.
 7. Do not make team placement decisions or approve refunds.
 8. Sound like a helpful Bothell Select administrator. Be warm and concise.
@@ -458,32 +460,16 @@ IMPORTANT RULES
 
 CONFIDENCE
 "confidence" must reflect whether you actually had the data to answer the
-parent's question — not just whether you picked the right category. If
-context.parentFound is false, or the child the parent asked about is not
-in context.players, confidence must be 20 or lower, regardless of how
-clear the category is.
+parent's question — not just whether you picked the right category. If no
+parent was found, or the child asked about isn't in the family data,
+confidence must be 20 or lower, regardless of how clear the category is.
 
-CATEGORIES
-
-- tryouts
-- registration
-- payments
-- schedules
-- teams
-- practices
-- programs
-- technical
-- general
-- other
-
-Return ONLY valid JSON. Do NOT wrap it in markdown fences. Do NOT include
-any text before or after the JSON. The response must start with { and end
-with }.
-
-JSON structure:
+Once you have gathered whatever data is available (or confirmed none
+exists), respond with ONLY valid JSON, no markdown fences, no text before
+or after it, in exactly this shape:
 
 {
-  "category": "one of the allowed categories",
+  "category": "one of: ${ALLOWED_CATEGORIES.join(', ')}",
   "confidence": 0,
   "draft": "draft response",
   "reason": "short explanation of category and confidence",
@@ -492,44 +478,97 @@ JSON structure:
   "reviewReason": "why a human should review this response"
 }
 
-Confidence must be 0-100. Higher = more certain the response is correct.
+Confidence must be 0-100.
+Settings: tone=${settings.tone}, confidenceThreshold=${settings.confidenceThreshold}, automaticRepliesEnabled=${settings.automaticRepliesEnabled}
 `;
 
   const userPrompt = `
-Incoming parent email:
-
-From: ${effectiveEmail}
+From: ${from}
 Subject: ${subject}
 
 Message:
 ${body}
-
-Verified Bothell Select data (this is the only source of truth):
-
-${JSON.stringify(context, null, 2)}
-
-AI assistant settings:
-
-${JSON.stringify(
-  {
-    tone: settings.tone,
-    confidenceThreshold: settings.confidenceThreshold,
-    automaticRepliesEnabled: settings.automaticRepliesEnabled,
-  },
-  null,
-  2,
-)}
 `;
 
-  const response = await openai.responses.create({
-    model: 'gpt-5-mini',
+  let response = await openai.responses.create({
+    model: 'gpt-5',
     input: [
       { role: 'system', content: systemPrompt },
       { role: 'user', content: userPrompt },
     ],
-    max_output_tokens: 2000,
+    max_output_tokens: 3000,
     reasoning: { effort: 'low' },
+    tools: [
+      {
+        type: 'function',
+        name: 'get_parent_by_email',
+        description: 'Find the parent account from the sender email address.',
+        parameters: {
+          type: 'object',
+          properties: {
+            email: { type: 'string' },
+          },
+          required: ['email'],
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_family_data',
+        description:
+          'Get players, registrations, and payments for a parent, by parentId.',
+        parameters: {
+          type: 'object',
+          properties: {
+            parentId: { type: 'string' },
+          },
+          required: ['parentId'],
+        },
+      },
+    ],
   });
+
+  const toolContext = {};
+  let iterations = 0;
+  const MAX_ITERATIONS = 6;
+
+  while (
+    response.output.some((o) => o.type === 'function_call') &&
+    iterations < MAX_ITERATIONS
+  ) {
+    iterations += 1;
+    const outputs = [];
+
+    for (const call of response.output.filter(
+      (o) => o.type === 'function_call',
+    )) {
+      const args = JSON.parse(call.arguments || '{}');
+      let result = null;
+
+      if (call.name === 'get_parent_by_email') {
+        result = await getParentByEmail(args.email);
+        toolContext.parent = result;
+      }
+
+      if (call.name === 'get_family_data') {
+        result = await getFamilyData(args.parentId);
+        toolContext.family = result;
+      }
+
+      outputs.push({
+        type: 'function_call_output',
+        call_id: call.call_id,
+        output: JSON.stringify(result),
+      });
+    }
+
+    response = await openai.responses.create({
+      model: 'gpt-5',
+      previous_response_id: response.id,
+      input: outputs,
+      max_output_tokens: 3000,
+      reasoning: { effort: 'low' },
+    });
+  }
 
   if (response.status === 'incomplete') {
     const reason = response.incomplete_details?.reason || 'unknown';
@@ -556,20 +595,9 @@ ${JSON.stringify(
     throw new Error(`OpenAI returned invalid JSON: ${parseError.message}`);
   }
 
-  const allowedCategories = [
-    'tryouts',
-    'registration',
-    'payments',
-    'schedules',
-    'teams',
-    'practices',
-    'programs',
-    'technical',
-    'general',
-    'other',
-  ];
+  // ── Validation / defaults — don't trust the model's shape blindly ──
 
-  if (!allowedCategories.includes(result.category)) {
+  if (!ALLOWED_CATEGORIES.includes(result.category)) {
     result.category = 'other';
   }
 
@@ -593,18 +621,32 @@ ${JSON.stringify(
     result.reviewReason = 'Human review is required.';
   }
 
+  // Context comes from whatever the model's tool calls actually returned —
+  // default to "not found" if it never called the tools at all.
+  const context = toolContext.family || {
+    parentFound: false,
+    parent: null,
+    players: [],
+    registrations: [],
+    payments: [],
+  };
+
   // Enforce confidence/review in code — don't rely solely on the model to
-  // self-report when it actually had no data to work with. This is what
-  // stops a "parent not found" case from coming back as high-confidence.
+  // self-report when it actually had no data to work with.
   if (!context.parentFound) {
     result.confidence = Math.min(result.confidence, 20);
     result.requiresHumanReview = true;
-    result.reviewReason = fromIsSiteOwned
-      ? "Sent from the site's own address with no parent email found in the message body — verify manually."
-      : 'No matching parent record found for this email address — verify manually.';
+    result.reviewReason =
+      'No matching parent record found for this email address — verify manually.';
   }
 
-  return { ...result, parent, context, effectiveEmail, fromIsSiteOwned };
+  return {
+    ...result,
+    parent: toolContext.parent || null,
+    context,
+    effectiveEmail: from,
+    fromIsSiteOwned: false,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -721,7 +763,8 @@ async function processIncomingEmail(emailData) {
     aiEmail.replyToEmail = result.effectiveEmail || resolvedEmailData.from;
 
     if (result.parent) {
-      aiEmail.parentId = result.parent._id;
+      // getParentByEmail returns `.id` (a string), not a Mongoose `._id`.
+      aiEmail.parentId = result.parent.id || result.parent._id || null;
     }
 
     if (result.context.players) {
@@ -831,6 +874,8 @@ module.exports = {
   getAllAiEmails,
   getAiEmailById,
 
+  getParentByEmail,
+  getFamilyData,
   buildParentContext,
   generateAiDraft,
   processIncomingEmail,
