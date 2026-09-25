@@ -1,14 +1,44 @@
 const express = require('express');
 const router = express.Router();
 const MarketingAttribution = require('../models/MarketingAttribution');
+const Registration = require('../models/Registration');
 const { authenticate, isAdmin } = require('../utils/auth');
 
-// Get marketing attribution stats for dashboard
+// ---------------------------------------------------------------
+// Helpers — normalise the many shapes payment data can take
+// ---------------------------------------------------------------
+
+// Treat anything that means "money was collected" as paid.
+const PAID_STATUSES = new Set(['paid', 'completed', 'succeeded', 'complete']);
+
+function isPaid(reg) {
+  if (!reg) return false;
+  if (reg.paymentComplete === true) return true;
+  return PAID_STATUSES.has(String(reg.paymentStatus || '').toLowerCase());
+}
+
+function isPending(reg) {
+  if (!reg) return false;
+  return String(reg.paymentStatus || '').toLowerCase() === 'pending';
+}
+
+function getAmount(reg) {
+  if (!reg) return 0;
+  const amount =
+    reg.paymentDetails?.amountPaid ??
+    reg.payment?.amount ??
+    reg.amountPaid ??
+    0;
+  return Number(amount) || 0;
+}
+
+// ---------------------------------------------------------------
+// GET /marketing/attribution/stats
+// ---------------------------------------------------------------
 router.get('/attribution/stats', authenticate, isAdmin, async (req, res) => {
   try {
     const { campaign, source, eventType, startDate, endDate } = req.query;
 
-    // Build filter
     const filter = {};
     if (campaign) filter.campaign = campaign;
     if (source) filter.source = source;
@@ -19,70 +49,69 @@ router.get('/attribution/stats', authenticate, isAdmin, async (req, res) => {
       if (endDate) filter.createdAt.$lte = new Date(endDate);
     }
 
-    // Get all attributions with registration data
     const attributions = await MarketingAttribution.find(filter)
-      .populate('registrationId', 'paymentStatus paymentDetails player')
+      .populate(
+        'registrationId',
+        'paymentStatus paymentComplete paymentDetails amountPaid parent player',
+      )
       .populate('parentId', 'fullName email')
       .lean();
 
-    // Aggregate stats
     const stats = {
       totalRegistrations: attributions.length,
-      paidRegistrations: attributions.filter(
-        (a) => a.registrationId?.paymentStatus === 'paid',
-      ).length,
-      totalRevenue: attributions.reduce((sum, a) => {
-        return sum + (a.registrationId?.paymentDetails?.amountPaid || 0);
-      }, 0),
-      pendingPayments: attributions.filter(
-        (a) => a.registrationId?.paymentStatus === 'pending',
-      ).length,
+      paidRegistrations: 0,
+      totalRevenue: 0,
+      pendingPayments: 0,
       bySource: {},
       byCampaign: {},
       byEventType: {},
     };
 
-    // Group by source
-    attributions.forEach((a) => {
-      const source = a.source || 'direct';
-      if (!stats.bySource[source]) {
-        stats.bySource[source] = { count: 0, revenue: 0, paid: 0 };
-      }
-      stats.bySource[source].count++;
-      stats.bySource[source].revenue +=
-        a.registrationId?.paymentDetails?.amountPaid || 0;
-      if (a.registrationId?.paymentStatus === 'paid') {
-        stats.bySource[source].paid++;
-      }
-    });
+    const ensure = (bucket, key) => {
+      if (!bucket[key]) bucket[key] = { count: 0, revenue: 0, paid: 0 };
+      return bucket[key];
+    };
 
-    // Group by campaign
-    attributions.forEach((a) => {
-      const campaign = a.campaign || 'none';
-      if (!stats.byCampaign[campaign]) {
-        stats.byCampaign[campaign] = { count: 0, revenue: 0, paid: 0 };
-      }
-      stats.byCampaign[campaign].count++;
-      stats.byCampaign[campaign].revenue +=
-        a.registrationId?.paymentDetails?.amountPaid || 0;
-      if (a.registrationId?.paymentStatus === 'paid') {
-        stats.byCampaign[campaign].paid++;
-      }
-    });
+    for (const a of attributions) {
+      const reg = a.registrationId;
+      const paid = isPaid(reg);
+      const pending = isPending(reg);
+      const amount = getAmount(reg);
 
-    // Group by event type
-    attributions.forEach((a) => {
-      const type = a.eventType || 'player';
-      if (!stats.byEventType[type]) {
-        stats.byEventType[type] = { count: 0, revenue: 0, paid: 0 };
-      }
-      stats.byEventType[type].count++;
-      stats.byEventType[type].revenue +=
-        a.registrationId?.paymentDetails?.amountPaid || 0;
-      if (a.registrationId?.paymentStatus === 'paid') {
-        stats.byEventType[type].paid++;
-      }
-    });
+      if (paid) stats.paidRegistrations += 1;
+      if (pending) stats.pendingPayments += 1;
+      stats.totalRevenue += amount;
+
+      const sourceKey = a.source || 'direct';
+      const campaignKey = a.campaign || 'none';
+      const typeKey = a.eventType || 'player';
+
+      const s = ensure(stats.bySource, sourceKey);
+      s.count += 1;
+      s.revenue += amount;
+      if (paid) s.paid += 1;
+
+      const c = ensure(stats.byCampaign, campaignKey);
+      c.count += 1;
+      c.revenue += amount;
+      if (paid) c.paid += 1;
+
+      const t = ensure(stats.byEventType, typeKey);
+      t.count += 1;
+      t.revenue += amount;
+      if (paid) t.paid += 1;
+    }
+
+    // Round revenue values to 2dp so the UI doesn't show 12.340000000001
+    const round = (obj) => {
+      Object.values(obj).forEach((v) => {
+        v.revenue = Math.round(v.revenue * 100) / 100;
+      });
+    };
+    round(stats.bySource);
+    round(stats.byCampaign);
+    round(stats.byEventType);
+    stats.totalRevenue = Math.round(stats.totalRevenue * 100) / 100;
 
     res.json({
       success: true,
@@ -91,14 +120,13 @@ router.get('/attribution/stats', authenticate, isAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching marketing stats:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Get campaigns list
+// ---------------------------------------------------------------
+// GET /marketing/campaigns
+// ---------------------------------------------------------------
 router.get('/campaigns', authenticate, isAdmin, async (req, res) => {
   try {
     const campaigns = await MarketingAttribution.distinct('campaign');
@@ -108,14 +136,13 @@ router.get('/campaigns', authenticate, isAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching campaigns:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Get sources list
+// ---------------------------------------------------------------
+// GET /marketing/sources
+// ---------------------------------------------------------------
 router.get('/sources', authenticate, isAdmin, async (req, res) => {
   try {
     const sources = await MarketingAttribution.distinct('source');
@@ -125,38 +152,67 @@ router.get('/sources', authenticate, isAdmin, async (req, res) => {
     });
   } catch (error) {
     console.error('Error fetching sources:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
-// Get attribution for a specific registration
+// ---------------------------------------------------------------
+// GET /marketing/registration/:registrationId
+// ---------------------------------------------------------------
 router.get('/registration/:registrationId', authenticate, async (req, res) => {
   try {
-    const { registrationId } = req.params;
-    const attribution = await MarketingAttribution.findOne({ registrationId })
-      .populate('registrationId', 'paymentStatus paymentDetails')
+    const attribution = await MarketingAttribution.findOne({
+      registrationId: req.params.registrationId,
+    })
+      .populate(
+        'registrationId',
+        'paymentStatus paymentComplete paymentDetails',
+      )
       .lean();
 
     if (!attribution) {
-      return res.status(404).json({
-        success: false,
-        error: 'Attribution not found for this registration',
-      });
+      return res
+        .status(404)
+        .json({
+          success: false,
+          error: 'Attribution not found for this registration',
+        });
     }
+
+    res.json({ success: true, attribution });
+  } catch (error) {
+    console.error('Error fetching registration attribution:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ---------------------------------------------------------------
+// GET /marketing/debug  (temporary — helps you see what's really stored)
+// Remove this before going to production.
+// ---------------------------------------------------------------
+router.get('/debug', authenticate, isAdmin, async (req, res) => {
+  try {
+    const attr = await MarketingAttribution.findOne()
+      .populate('registrationId')
+      .lean();
+
+    const reg = attr?.registrationId;
 
     res.json({
       success: true,
-      attribution,
+      sample: {
+        attributionId: attr?._id,
+        registrationIdRaw: attr?.registrationId?._id ?? null,
+        registrationPaymentStatus: reg?.paymentStatus ?? null,
+        registrationPaymentComplete: reg?.paymentComplete ?? null,
+        registrationPaymentDetails: reg?.paymentDetails ?? null,
+        amountResolved: getAmount(reg),
+        isPaidResolved: isPaid(reg),
+      },
+      allPaymentStatuses: await Registration.distinct('paymentStatus'),
     });
   } catch (error) {
-    console.error('Error fetching registration attribution:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

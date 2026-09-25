@@ -1,14 +1,27 @@
 const MarketingAttribution = require('../models/MarketingAttribution');
+const Registration = require('../models/Registration');
 
 class MarketingService {
-  async createAttribution(registrationId, marketingData) {
+  async createAttribution({
+    registrationId,
+    parentId,
+    eventType,
+    marketingData,
+  }) {
+    if (!parentId) throw new Error('createAttribution requires parentId');
+    if (!registrationId)
+      throw new Error('createAttribution requires registrationId');
+
     const attribution = new MarketingAttribution({
       registrationId,
+      parentId,
+      eventType: eventType || 'player',
       source: marketingData.source || 'direct',
       medium: marketingData.medium || 'none',
       campaign: marketingData.campaign || 'none',
       content: marketingData.content || 'none',
       term: marketingData.term || 'none',
+      eventId: marketingData.eventId || null,
       landingPage: marketingData.landingPage,
       referrer: marketingData.referrer,
       userAgent: marketingData.userAgent,
@@ -17,10 +30,21 @@ class MarketingService {
     return await attribution.save();
   }
 
+  async attachRegistrationToAttribution(parentId, registrationId) {
+    return MarketingAttribution.findOneAndUpdate(
+      {
+        parentId,
+        $or: [{ registrationId: null }, { registrationId: { $exists: false } }],
+      },
+      { $set: { registrationId, registrationAt: new Date() } },
+      { new: true, sort: { createdAt: -1 } },
+    );
+  }
+
   async getMarketingStats(campaign = null) {
     const matchStage = campaign ? { campaign } : {};
 
-    const stats = await MarketingAttribution.aggregate([
+    return MarketingAttribution.aggregate([
       { $match: matchStage },
       {
         $group: {
@@ -30,19 +54,17 @@ class MarketingService {
         },
       },
     ]);
-
-    return stats;
   }
 
   async getCampaignPerformance(campaign) {
-    const registrations = await MarketingAttribution.find({ campaign })
+    const attributions = await MarketingAttribution.find({ campaign })
       .populate('registrationId')
       .lean();
 
     return {
-      totalRegistrations: registrations.length,
-      bySource: this.groupBySource(registrations),
-      totalRevenue: this.calculateRevenue(registrations),
+      totalRegistrations: attributions.length,
+      bySource: this.groupBySource(attributions),
+      totalRevenue: this.calculateRevenue(attributions),
     };
   }
 
@@ -55,11 +77,16 @@ class MarketingService {
 
   calculateRevenue(attributions) {
     return attributions.reduce((total, attr) => {
-      if (attr.registrationId && attr.registrationId.payment) {
-        // Assuming payment has amount field
-        return total + (attr.registrationId.payment.amount || 0);
-      }
-      return total;
+      const reg = attr.registrationId;
+      if (!reg) return total;
+
+      const amount =
+        reg.paymentDetails?.amountPaid ??
+        reg.payment?.amount ??
+        reg.amountPaid ??
+        0;
+
+      return total + Number(amount);
     }, 0);
   }
 }
