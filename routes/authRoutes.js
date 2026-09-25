@@ -402,55 +402,46 @@ router.post(
 
       if (parent && parent._id) {
         try {
-          // Import MarketingAttribution model (add at top of file)
           const MarketingAttribution = require('../models/MarketingAttribution');
 
-          // Check if we have marketing data
-          if (marketing) {
-            // Create marketing attribution
-            const attribution = new MarketingAttribution({
-              parentId: parent._id,
-              source: marketing.source || 'direct',
-              medium: marketing.medium || 'none',
-              campaign: marketing.campaign || 'none',
-              content: marketing.content || 'none',
-              term: marketing.term || 'none',
-              eventType: registrationType || 'player',
-              eventId: eventId || null,
-              registrationAt: new Date(),
-              // We don't have a registrationId yet for player registrations
-              // but we can update it later when a registration is created
-            });
-            await attribution.save();
-            console.log(
-              '✅ Marketing attribution saved for parent:',
-              parent._id,
-            );
-          } else {
-            // Always save a default attribution so we know where traffic comes from
-            const attribution = new MarketingAttribution({
-              parentId: parent._id,
-              source: 'direct',
-              medium: 'none',
-              campaign: 'none',
-              content: 'none',
-              term: 'none',
-              eventType: registrationType || 'player',
-              eventId: eventId || null,
-              registrationAt: new Date(),
-            });
-            await attribution.save();
-            console.log(
-              '✅ Default marketing attribution saved for parent:',
-              parent._id,
-            );
-          }
+          // ✅ Normalize BOTH shapes: { utm_source, utm_medium, ... } AND { source, medium, ... }
+          const m = marketing || {};
+          const normalized = {
+            source: m.utm_source || m.source || 'direct',
+            medium: m.utm_medium || m.medium || 'none',
+            campaign: m.utm_campaign || m.campaign || 'none',
+            content: m.utm_content || m.content || 'none',
+            term: m.utm_term || m.term || 'none',
+            landingPage: m.landingPage || null,
+            referrer: m.referrer || null,
+            userAgent: m.userAgent || null,
+            ipAddress: m.ipAddress || null,
+            firstTouchAt: m.firstTouchAt
+              ? new Date(m.firstTouchAt)
+              : new Date(),
+          };
+
+          await MarketingAttribution.create({
+            parentId: parent._id,
+            eventType: registrationType || 'player',
+            eventId: eventId || null,
+            ...normalized,
+            registrationAt: new Date(),
+          });
+
+          console.log(
+            '✅ Marketing attribution saved:',
+            parent._id,
+            '→',
+            normalized.source,
+            '/',
+            normalized.campaign,
+          );
         } catch (marketingError) {
           console.error(
             '⚠️ Failed to save marketing attribution:',
             marketingError,
           );
-          // Don't fail the registration if marketing attribution fails
         }
       }
 
