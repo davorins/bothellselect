@@ -1,5 +1,7 @@
 const express = require('express');
 const { Resend } = require('resend');
+const AiEmail = require('../models/AiEmail');
+
 const {
   processIncomingEmail,
   shouldProcessEmail,
@@ -12,10 +14,10 @@ router.post('/', async (req, res) => {
   console.log('📬 Resend webhook hit');
 
   try {
-    // req.body is a Buffer — express.raw() is applied in index.js before this router
     const payload = req.body.toString('utf8');
 
     let event;
+
     try {
       event = resend.webhooks.verify({
         payload,
@@ -26,110 +28,86 @@ router.post('/', async (req, res) => {
         },
         webhookSecret: process.env.RESEND_WEBHOOK_SECRET,
       });
-    } catch (verifyError) {
-      console.error(
-        '❌ Webhook signature verification failed:',
-        verifyError.message,
-      );
-      return res
-        .status(200)
-        .json({ success: false, error: 'verification_failed' });
+    } catch (err) {
+      console.error('Webhook verification failed:', err.message);
+      return res.status(200).json({ success: false });
     }
 
-    console.log('✅ Webhook verified. Event type:', event.type);
-
     if (event.type !== 'email.received') {
-      console.log('ℹ️ Ignoring non-email.received event');
-      return res.status(200).json({ status: 'ignored' });
+      return res.status(200).json({ ignored: true });
     }
 
     const { email_id, from, to, subject, created_at } = event.data;
-    console.log('📨 Inbound email metadata:', { email_id, from, to, subject });
 
-    // Webhook only sends metadata — fetch the full email body
-    let fullEmail;
-    try {
-      const result = await resend.emails.receiving.get(email_id);
-      fullEmail = result.data;
-      if (result.error) {
-        console.error(
-          '❌ Resend receiving.get() returned an error:',
-          result.error,
-        );
-        return res
-          .status(200)
-          .json({ success: false, error: 'receiving_get_failed' });
-      }
-    } catch (fetchError) {
-      console.error('❌ Failed to fetch full email body:', fetchError.message);
-      return res
-        .status(200)
-        .json({ success: false, error: 'fetch_body_failed' });
+    const result = await resend.emails.receiving.get(email_id);
+
+    if (result.error || !result.data) {
+      console.error(result.error);
+      return res.status(200).json({ success: false });
     }
 
-    if (!fullEmail) {
-      console.error(
-        '❌ receiving.get() returned no data for email_id:',
-        email_id,
-      );
-      return res.status(200).json({ success: false, error: 'no_email_data' });
-    }
+    const fullEmail = result.data;
 
-    const bodyText = fullEmail.text || fullEmail.html || 'No body content';
+    const body = fullEmail.text || fullEmail.html || '';
 
-    console.log('✅ Full email body fetched. Body length:', bodyText.length);
+    // --------------------------------------------------
+    // FILTER BEFORE AI
+    // --------------------------------------------------
 
-    // ─────────────────────────────────────────────────────────────
-    // PRE-AI FILTER — only registered parents reach the AI
-    // ─────────────────────────────────────────────────────────────
     const filter = await shouldProcessEmail({
       from,
-      subject: subject || '',
-      body: bodyText,
+      subject,
+      body,
     });
 
     if (!filter.process) {
-      console.log('⏭ Ignored before AI:', filter.reason);
+      console.log(`Ignored: ${filter.reason}`);
+
+      await AiEmail.create({
+        messageId: email_id,
+        threadId: null,
+        from,
+        to: Array.isArray(to) ? to[0] : to,
+        subject: subject || '',
+        body,
+        receivedAt: new Date(created_at),
+        status: 'ignored',
+        category: 'other',
+        confidence: 0,
+        requiresHumanReview: false,
+        reviewReason: filter.reason,
+      });
+
       return res.status(200).json({
         success: true,
         ignored: true,
-        reason: filter.reason,
       });
     }
 
-    console.log(
-      '✅ Passed filter — registered parent. Calling AI assistant...',
-    );
+    // --------------------------------------------------
+    // AI
+    // --------------------------------------------------
 
-    // ─────────────────────────────────────────────────────────────
-    // AI PROCESSING (registered parent only)
-    // ─────────────────────────────────────────────────────────────
     const aiEmail = await processIncomingEmail({
       messageId: email_id,
       threadId: null,
-      from: from,
+      from,
       to: Array.isArray(to) ? to[0] : to,
       subject: subject || '',
-      body: bodyText,
+      body,
       receivedAt: new Date(created_at),
     });
-
-    console.log(
-      '✅ processIncomingEmail completed. AiEmail id:',
-      aiEmail._id,
-      'status:',
-      aiEmail.status,
-    );
 
     return res.status(200).json({
       success: true,
       aiEmailId: aiEmail._id,
     });
-  } catch (error) {
-    console.error('❌ Resend webhook error:', error.message);
-    console.error(error.stack);
-    // Return 200 so Resend doesn't endlessly retry a malformed payload
-    res.status(200).json({ success: false, error: error.message });
+  } catch (err) {
+    console.error(err);
+    return res.status(200).json({
+      success: false,
+      error: err.message,
+    });
   }
 });
 

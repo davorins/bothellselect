@@ -182,73 +182,120 @@ function extractEmailFromBody(body) {
  * @param {{ from: string, subject?: string, body?: string }} emailData
  * @returns {Promise<{ process: boolean, reason: string, parentId?: string, parent?: object }>}
  */
-async function shouldProcessEmail(emailData = {}) {
-  const rawFrom = emailData.from || '';
-  const email = extractEmailAddress(rawFrom);
-  const subject = String(emailData.subject || '').toLowerCase();
-  const body = String(emailData.body || '').toLowerCase();
+// ----------------------------------------------------
+// Parent-only AI filter
+// ----------------------------------------------------
 
-  // 1. Sender address must parse.
-  if (!email || !email.includes('@')) {
-    return { process: false, reason: 'Missing or unparseable sender address.' };
+const BLOCKED_SENDERS = [
+  'mailer-daemon',
+  'postmaster',
+  'no-reply',
+  'noreply',
+  'do-not-reply',
+  'notifications',
+  'notification',
+  'bounce',
+  'receipts',
+  'stripe',
+  'square',
+  'paypal',
+];
+
+const BLOCKED_SUBJECTS = [
+  'delivery status',
+  'undeliverable',
+  'returned mail',
+  'failure notice',
+  'automatic reply',
+  'auto reply',
+  'out of office',
+  'out-of-office',
+  'away from my',
+];
+
+const MARKETING_PHRASES = [
+  'unsubscribe',
+  'manage preferences',
+  'view in browser',
+  'privacy policy',
+  'you are receiving this email because',
+];
+
+async function shouldProcessEmail(emailData = {}) {
+  const email = extractEmailAddress(emailData.from || '');
+  const subject = (emailData.subject || '').toLowerCase();
+  const body = (emailData.body || '').toLowerCase();
+
+  if (!email) {
+    return {
+      process: false,
+      reason: 'Missing sender email',
+    };
   }
 
-  // 2. Never process our own mailboxes.
+  // Never process Bothell mailboxes
+
   if (SITE_OWNED_EMAILS.has(email)) {
     return {
       process: false,
-      reason: 'Sender is a Bothell Select mailbox, not a parent.',
+      reason: 'Internal Bothell mailbox',
     };
   }
 
-  // 3. Automated local parts (noreply, mailer-daemon, notifications, etc.).
-  const localPart = email.split('@')[0];
-  const blockedSender = BLOCKED_SENDER_FRAGMENTS.find(
-    (frag) => localPart.includes(frag) || email.includes(frag),
+  // Automated senders
+
+  const local = email.split('@')[0];
+
+  const blockedSender = BLOCKED_SENDERS.find(
+    (x) => local.includes(x) || email.includes(x),
   );
+
   if (blockedSender) {
     return {
       process: false,
-      reason: `Automated sender matched rule "${blockedSender}".`,
+      reason: `Automated sender (${blockedSender})`,
     };
   }
 
-  // 4. Automated subject lines.
-  const blockedSubject = BLOCKED_SUBJECT_FRAGMENTS.find((frag) =>
-    subject.includes(frag),
-  );
+  // Subject rules
+
+  const blockedSubject = BLOCKED_SUBJECTS.find((x) => subject.includes(x));
+
   if (blockedSubject) {
     return {
       process: false,
-      reason: `Subject matched rule "${blockedSubject}".`,
+      reason: `Automatic email (${blockedSubject})`,
     };
   }
 
-  // 5. Marketing / bulk mail.
-  const blockedBody = MARKETING_PHRASES.find((phrase) => body.includes(phrase));
-  if (blockedBody) {
+  // Newsletter rules
+
+  const marketing = MARKETING_PHRASES.find((x) => body.includes(x));
+
+  if (marketing) {
     return {
       process: false,
-      reason: `Body matched marketing rule "${blockedBody}".`,
+      reason: 'Marketing email',
     };
   }
 
-  // 6. The only real gate: must be a registered parent.
-  const parent = await Parent.findOne({ email })
-    .select('_id fullName email')
-    .lean();
+  // Parent lookup
+
+  const parent = await Parent.findOne({
+    email,
+  }).select('_id fullName email');
 
   if (!parent) {
     return {
       process: false,
-      reason: 'Sender is not a registered Bothell Select parent.',
+      reason: 'Unknown sender (not a registered parent)',
     };
   }
 
   return {
     process: true,
-    reason: 'Registered parent.',
-    parentId: parent._id ? String(parent._id) : null,
+    reason: 'Registered parent',
+    parentId: parent._id.toString(),
     parent,
   };
 }
@@ -1542,13 +1589,6 @@ module.exports = {
   findParentById,
   findPlayersByParent,
   findPlayer,
-  findRegistrationsByPlayer,
-  findRegistrationsByParent,
-  findPaymentsByParent,
-  findPaymentsByPlayer,
-  findPaymentsByTeam,
-  findTeam,
-  findTeamsByCoach,
 
   createAiEmail,
   getPendingAiEmails,
@@ -1559,18 +1599,17 @@ module.exports = {
   getFamilyData,
   getCurrentTryoutInfo,
   getFaqs,
-  buildParentContext,
+
   generateAiDraft,
   processIncomingEmail,
 
-  evaluateAutoSendEligibility,
-  sendAiReply,
-  manualSendAiEmail,
+  shouldProcessEmail,
 
-  extractJsonFromText,
+  manualSendAiEmail,
+  sendAiReply,
+  evaluateAutoSendEligibility,
+
   extractEmailAddress,
   extractEmailFromBody,
-
-  // Pre-AI filter
-  shouldProcessEmail,
+  extractJsonFromText,
 };
