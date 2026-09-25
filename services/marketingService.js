@@ -1,33 +1,86 @@
+// services/marketingService.js
 const MarketingAttribution = require('../models/MarketingAttribution');
-const Registration = require('../models/Registration');
 
 class MarketingService {
-  async createAttribution({
+  normalize(marketing = {}) {
+    const m = marketing || {};
+    return {
+      source: m.utm_source || m.source || 'direct',
+      medium: m.utm_medium || m.medium || 'none',
+      campaign: m.utm_campaign || m.campaign || 'none',
+      content: m.utm_content || m.content || 'none',
+      term: m.utm_term || m.term || 'none',
+      landingPage: m.landingPage || null,
+      referrer: m.referrer || null,
+      userAgent: m.userAgent || null,
+      ipAddress: m.ipAddress || null,
+      firstTouchAt: m.firstTouchAt ? new Date(m.firstTouchAt) : new Date(),
+    };
+  }
+
+  async createForRegistration({
     registrationId,
     parentId,
-    eventType,
-    marketingData,
+    marketing,
+    eventType = 'player',
+    eventId = null,
   }) {
-    if (!parentId) throw new Error('createAttribution requires parentId');
-    if (!registrationId)
-      throw new Error('createAttribution requires registrationId');
+    if (!registrationId) throw new Error('registrationId is required');
+    if (!parentId) throw new Error('parentId is required');
 
-    const attribution = new MarketingAttribution({
+    const existing = await MarketingAttribution.findOne({ registrationId });
+    if (existing) return existing;
+
+    const m = this.normalize(marketing);
+
+    return MarketingAttribution.create({
       registrationId,
       parentId,
-      eventType: eventType || 'player',
-      source: marketingData.source || 'direct',
-      medium: marketingData.medium || 'none',
-      campaign: marketingData.campaign || 'none',
-      content: marketingData.content || 'none',
-      term: marketingData.term || 'none',
-      eventId: marketingData.eventId || null,
-      landingPage: marketingData.landingPage,
-      referrer: marketingData.referrer,
-      userAgent: marketingData.userAgent,
-      ipAddress: marketingData.ipAddress,
+      eventType,
+      eventId,
+      ...m,
+      registrationAt: new Date(),
     });
-    return await attribution.save();
+  }
+
+  async attachOrCreate({
+    registrationId,
+    parentId,
+    marketing,
+    eventType = 'player',
+    eventId = null,
+  }) {
+    if (!registrationId) throw new Error('registrationId is required');
+    if (!parentId) throw new Error('parentId is required');
+
+    const linked = await MarketingAttribution.findOne({ registrationId });
+    if (linked) return linked;
+
+    const unlinked = await MarketingAttribution.findOneAndUpdate(
+      {
+        parentId,
+        $or: [{ registrationId: null }, { registrationId: { $exists: false } }],
+      },
+      {
+        $set: {
+          registrationId,
+          eventType,
+          eventId,
+          registrationAt: new Date(),
+        },
+      },
+      { new: true, sort: { createdAt: -1 } },
+    );
+
+    if (unlinked) return unlinked;
+
+    return this.createForRegistration({
+      registrationId,
+      parentId,
+      marketing,
+      eventType,
+      eventId,
+    });
   }
 
   async attachRegistrationToAttribution(parentId, registrationId) {
@@ -39,55 +92,6 @@ class MarketingService {
       { $set: { registrationId, registrationAt: new Date() } },
       { new: true, sort: { createdAt: -1 } },
     );
-  }
-
-  async getMarketingStats(campaign = null) {
-    const matchStage = campaign ? { campaign } : {};
-
-    return MarketingAttribution.aggregate([
-      { $match: matchStage },
-      {
-        $group: {
-          _id: '$source',
-          count: { $sum: 1 },
-          registrations: { $push: '$registrationId' },
-        },
-      },
-    ]);
-  }
-
-  async getCampaignPerformance(campaign) {
-    const attributions = await MarketingAttribution.find({ campaign })
-      .populate('registrationId')
-      .lean();
-
-    return {
-      totalRegistrations: attributions.length,
-      bySource: this.groupBySource(attributions),
-      totalRevenue: this.calculateRevenue(attributions),
-    };
-  }
-
-  groupBySource(attributions) {
-    return attributions.reduce((acc, curr) => {
-      acc[curr.source] = (acc[curr.source] || 0) + 1;
-      return acc;
-    }, {});
-  }
-
-  calculateRevenue(attributions) {
-    return attributions.reduce((total, attr) => {
-      const reg = attr.registrationId;
-      if (!reg) return total;
-
-      const amount =
-        reg.paymentDetails?.amountPaid ??
-        reg.payment?.amount ??
-        reg.amountPaid ??
-        0;
-
-      return total + Number(amount);
-    }, 0);
   }
 }
 

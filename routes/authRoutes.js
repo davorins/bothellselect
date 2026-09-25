@@ -20,6 +20,7 @@ const RegistrationFormConfig = require('../models/RegistrationFormConfig');
 const SeasonEvent = require('../models/SeasonEvent');
 const MergeRequest = require('../models/MergeRequest');
 const TryoutConfig = require('../models/TryoutConfig');
+const MarketingService = require('../services/marketingService');
 const {
   comparePasswords,
   hashPassword,
@@ -1161,6 +1162,21 @@ router.post('/players/register', authenticate, async (req, res) => {
 
     await session.commitTransaction();
 
+    if (registration && parentId) {
+      try {
+        await MarketingService.attachOrCreate({
+          registrationId: registration._id,
+          parentId,
+          marketing: req.body.marketing || {},
+          eventType: req.body.registrationType || 'player',
+          eventId: finalTryoutId || null,
+        });
+        console.log('✅ Attribution linked to registration:', registration._id);
+      } catch (attrErr) {
+        console.error('⚠️ Attribution link failed (non-fatal):', attrErr);
+      }
+    }
+
     console.log('✅ Registered player successfully:', {
       playerId: player._id,
       fullName: player.fullName,
@@ -1580,6 +1596,24 @@ router.post(
       }
 
       await session.commitTransaction();
+
+      try {
+        const marketing = req.body.marketing || {};
+        for (const reg of registrationDocs) {
+          await MarketingService.attachOrCreate({
+            registrationId: reg._id,
+            parentId: parent._id,
+            marketing,
+            eventType: 'tryout',
+            eventId: reg.tryoutId || null,
+          });
+        }
+        console.log(
+          `✅ Linked ${registrationDocs.length} attribution(s) for camp registration`,
+        );
+      } catch (attrErr) {
+        console.error('⚠️ Attribution link failed (non-fatal):', attrErr);
+      }
 
       // Send welcome email (async, no await)
       sendWelcomeEmail(parent._id, savedPlayers[0]._id).catch((err) =>
@@ -3432,6 +3466,20 @@ router.post('/payments/update-players', authenticate, async (req, res) => {
       if (amountPaid) registration.amountPaid = amountPaid / playerIds.length;
       if (cardLast4) registration.cardLast4 = cardLast4;
       if (cardBrand) registration.cardBrand = cardBrand;
+      if (!registration.paymentDetails) {
+        registration.paymentDetails = {};
+      }
+      if (amountPaid !== undefined && amountPaid !== null) {
+        registration.paymentDetails.amountPaid = amountPaid / playerIds.length;
+      }
+      if (paymentId) registration.paymentDetails.paymentId = paymentId;
+      if (cardLast4) registration.paymentDetails.cardLast4 = cardLast4;
+      if (cardBrand) registration.paymentDetails.cardBrand = cardBrand;
+      if (paymentStatus === 'paid') {
+        registration.paymentDetails.paymentDate = new Date();
+      }
+      registration.markModified('paymentDetails');
+
       registration.updatedAt = new Date();
 
       await registration.save({ session });
