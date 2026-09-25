@@ -11,6 +11,7 @@ const PlayerRegistration = require('../models/PlayerRegistration');
 const Payment = require('../models/Payment');
 const Team = require('../models/Team');
 const EventConfig = require('../models/EventConfig');
+const TryoutConfig = require('../models/TryoutConfig');
 const FAQ = require('../models/FAQ');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -399,41 +400,201 @@ async function getFamilyData(parentId) {
   return buildParentContext(parent);
 }
 
-// Authoritative schedule/location/logistics data for the current tryout,
-// sourced from EventConfig (eventType: 'tryout', isActive: true). This is
-// the source of truth for date/time/location/price/grades — never invent
-// these details, and never substitute registration/payment status as an
-// answer to a logistics question.
-async function getCurrentTryoutInfo() {
-  const config = await EventConfig.findOne({
-    eventType: 'tryout',
-    isActive: true,
-  }).sort({ startDate: -1 });
+// ─────────────────────────────────────────────────────────────────────────────
+// Tryout lookup — TryoutConfig first, EventConfig fallback
+// ─────────────────────────────────────────────────────────────────────────────
 
-  if (!config) return null;
+/**
+ * Authoritative schedule/location/logistics data for the current tryout.
+ *
+ * SOURCE PRIORITY:
+ *   1. TryoutConfig (collection: tryoutconfigs) — has detailed per-session
+ *      schedules, drop-off instructions, what-to-bring, etc. PREFERRED.
+ *   2. EventConfig  (collection: eventconfigs) — general event fallback.
+ *
+ * Never invent tryout details. Never substitute registration/payment
+ * status as an answer to a logistics question.
+ */
+async function getCurrentTryoutInfo() {
+  // ─────────────────────────────────────────────────────────────────
+  // 1. TryoutConfig — try configured ID first, then year, then newest
+  // ─────────────────────────────────────────────────────────────────
+  let tryoutConfig = null;
+
+  if (CURRENT_TRYOUT_ID) {
+    tryoutConfig = await TryoutConfig.findOne({
+      isActive: true,
+      $or: [{ eventId: CURRENT_TRYOUT_ID }, { season: CURRENT_TRYOUT_ID }],
+    }).lean();
+  }
+
+  if (!tryoutConfig && CURRENT_TRYOUT_YEAR) {
+    tryoutConfig = await TryoutConfig.findOne({
+      isActive: true,
+      tryoutYear: CURRENT_TRYOUT_YEAR,
+    })
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .lean();
+  }
+
+  if (!tryoutConfig) {
+    tryoutConfig = await TryoutConfig.findOne({ isActive: true })
+      .sort({ tryoutYear: -1, updatedAt: -1, createdAt: -1 })
+      .lean();
+  }
+
+  console.log(
+    '[aiEmailService] TryoutConfig lookup:',
+    tryoutConfig
+      ? `found "${tryoutConfig.tryoutName}" (year ${tryoutConfig.tryoutYear})`
+      : 'none',
+  );
+
+  // ─────────────────────────────────────────────────────────────────
+  // 2. EventConfig — general-event fallback (only if TryoutConfig missing)
+  // ─────────────────────────────────────────────────────────────────
+  let eventConfig = null;
+  if (!tryoutConfig) {
+    eventConfig = await EventConfig.findOne({
+      eventType: 'tryout',
+      isActive: true,
+    })
+      .sort({ startDate: -1, updatedAt: -1 })
+      .lean();
+
+    console.log(
+      '[aiEmailService] EventConfig fallback:',
+      eventConfig ? `found "${eventConfig.title}"` : 'none',
+    );
+  }
+
+  // Nothing anywhere
+  if (!tryoutConfig && !eventConfig) {
+    return null;
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // 3. Normalize sessions from TryoutConfig (the important part)
+  // ─────────────────────────────────────────────────────────────────
+  const details = tryoutConfig?.tryoutDetails || {};
+  const rawSessions = Array.isArray(details.tryoutSessions)
+    ? details.tryoutSessions
+    : [];
+
+  const sessions = rawSessions
+    .sort((a, b) => (a.number || 0) - (b.number || 0))
+    .map((s) => ({
+      number: s.number ?? null,
+      date: s.date || '',
+      startTime: (s.startTime || '').trim(),
+      endTime: (s.endTime || '').trim(),
+      grades: s.grades || '',
+      location: {
+        name: s.location?.name || '',
+        address: s.location?.address || '',
+        city: s.location?.city || '',
+        state: s.location?.state || '',
+        zip: s.location?.zipCode || s.location?.zip || '',
+      },
+    }));
+
+  // Prefer a session location (it's usually more specific than the header location)
+  const firstSessionLocation =
+    sessions.find((s) => s.location?.name || s.location?.address)?.location ||
+    null;
+
+  const headerLocation = details.location || {};
+  const eventLocation = eventConfig?.location || {};
+
+  const location = {
+    name:
+      firstSessionLocation?.name ||
+      headerLocation.name ||
+      eventLocation.name ||
+      '',
+    address:
+      firstSessionLocation?.address ||
+      headerLocation.address ||
+      eventLocation.address ||
+      '',
+    city:
+      firstSessionLocation?.city ||
+      headerLocation.city ||
+      eventLocation.city ||
+      '',
+    state:
+      firstSessionLocation?.state ||
+      headerLocation.state ||
+      eventLocation.state ||
+      '',
+    zip:
+      firstSessionLocation?.zip ||
+      headerLocation.zipCode ||
+      eventLocation.zip ||
+      '',
+  };
+
+  // ─────────────────────────────────────────────────────────────────
+  // 4. Build the merged response
+  // ─────────────────────────────────────────────────────────────────
+  const source = tryoutConfig ? 'TryoutConfig' : 'EventConfig';
 
   return {
-    title: config.title,
-    description: config.description || '',
-    startDate: config.startDate,
-    endDate: config.endDate || null,
-    startTime: config.startTime,
-    endTime: config.endTime,
-    location: {
-      name: config.location?.name || '',
-      address: config.location?.address || '',
-      city: config.location?.city || '',
-      state: config.location?.state || '',
-      zip: config.location?.zip || '',
-    },
-    gender: config.gender,
-    grades: config.grades,
-    ageGroups: config.ageGroups || [],
-    price: config.price,
-    registrationOpen: config.registrationOpen,
-    whatToBring: config.whatToBring || [],
-    whatToExpect: config.whatToExpect || '',
-    importantNotes: config.importantNotes || [],
+    source,
+
+    title:
+      tryoutConfig?.displayName ||
+      tryoutConfig?.tryoutName ||
+      eventConfig?.title ||
+      'Bothell Select Tryouts',
+
+    description: tryoutConfig?.description || eventConfig?.description || '',
+
+    // TryoutConfig stores date as a friendly string ("Sunday, September 27th").
+    // EventConfig stores it as ISODate. Keep both normalized.
+    startDate:
+      details.startDate ||
+      tryoutConfig?.registrationDeadline ||
+      eventConfig?.startDate ||
+      null,
+
+    endDate: details.endDate || eventConfig?.endDate || null,
+
+    // Header-level time window — only meaningful when there are NO sessions
+    startTime: eventConfig?.startTime || '',
+    endTime: eventConfig?.endTime || '',
+
+    // Per-session detail — this is what actually answers the parent's question
+    sessions,
+
+    location,
+
+    gender: details.gender || eventConfig?.gender || '',
+    grades: eventConfig?.grades || '',
+
+    ageGroups:
+      details.ageGroups ||
+      tryoutConfig?.ageGroups ||
+      eventConfig?.ageGroups ||
+      [],
+
+    price: tryoutConfig?.tryoutFee ?? eventConfig?.price ?? null,
+
+    registrationOpen: eventConfig?.registrationOpen ?? true,
+
+    registrationDeadline: tryoutConfig?.registrationDeadline || null,
+    paymentDeadline: tryoutConfig?.paymentDeadline || null,
+    refundPolicy: tryoutConfig?.refundPolicy || '',
+
+    dropOffTime: details.dropOffTime || '',
+    pickUpTime: details.pickUpTime || '',
+    contactEmail: details.contactEmail || '',
+
+    hasLimitedSpots: details.hasLimitedSpots ?? false,
+
+    whatToBring: details.whatToBring || eventConfig?.whatToBring || [],
+    whatToExpect: eventConfig?.whatToExpect || '',
+    importantNotes: eventConfig?.importantNotes || details.notes || [],
   };
 }
 
@@ -478,18 +639,27 @@ function formatTryoutInfoBlock(tryoutInfo) {
     grades,
     gender,
     registrationOpen,
+    sessions,
+    dropOffTime,
     whatToBring,
     whatToExpect,
     importantNotes,
+    registrationDeadline,
+    paymentDeadline,
+    refundPolicy,
+    contactEmail,
+    source,
   } = tryoutInfo;
 
   const dateStr = startDate
-    ? new Date(startDate).toLocaleDateString('en-US', {
-        weekday: 'long',
-        year: 'numeric',
-        month: 'long',
-        day: 'numeric',
-      })
+    ? startDate instanceof Date || !Number.isNaN(Date.parse(startDate))
+      ? new Date(startDate).toLocaleDateString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+        })
+      : String(startDate)
     : 'not set';
 
   const locationStr =
@@ -504,9 +674,9 @@ function formatTryoutInfoBlock(tryoutInfo) {
       .join(', ') || 'not set';
 
   const lines = [
+    `(Source: ${source})`,
     `Title: ${title || 'not set'}`,
     `Date: ${dateStr}`,
-    `Time: ${startTime || 'not set'} - ${endTime || 'not set'}`,
     `Location: ${locationStr}`,
     `Grades: ${grades || 'not set'}`,
     `Gender: ${gender || 'not set'}`,
@@ -514,15 +684,56 @@ function formatTryoutInfoBlock(tryoutInfo) {
     `Registration open: ${registrationOpen ? 'yes' : 'no'}`,
   ];
 
+  // ── Session schedule (the important part) ──
+  if (sessions && sessions.length > 0) {
+    lines.push('');
+    lines.push('TRYOUT SESSIONS (authoritative — use these exact times):');
+    sessions.forEach((s, i) => {
+      const sessLoc =
+        [
+          s.location?.name,
+          s.location?.address,
+          s.location?.city
+            ? `${s.location.city}, ${s.location.state} ${s.location.zip}`.trim()
+            : '',
+        ]
+          .filter(Boolean)
+          .join(', ') || locationStr;
+
+      lines.push(
+        `  ${i + 1}. ${s.grades || 'all grades'} — ${s.date || dateStr}: ` +
+          `${s.startTime || '?'} – ${s.endTime || '?'} at ${sessLoc}`,
+      );
+    });
+    lines.push(
+      'If a parent asks about a specific grade/gender, answer with the matching session above. Do NOT use a general time window.',
+    );
+  } else if (startTime && endTime) {
+    lines.push(`Time (general window): ${startTime} – ${endTime}`);
+  } else {
+    lines.push(
+      'Time: not set at session level — an administrator will confirm.',
+    );
+  }
+
+  if (dropOffTime) lines.push(`Drop-off: ${dropOffTime}`);
+  if (registrationDeadline) {
+    lines.push(
+      `Registration deadline: ${new Date(registrationDeadline).toDateString()}`,
+    );
+  }
+  if (paymentDeadline) {
+    lines.push(`Payment deadline: ${new Date(paymentDeadline).toDateString()}`);
+  }
+  if (refundPolicy) lines.push(`Refund policy: ${refundPolicy}`);
   if (whatToBring && whatToBring.length) {
     lines.push(`What to bring: ${whatToBring.join(', ')}`);
   }
-  if (whatToExpect) {
-    lines.push(`What to expect: ${whatToExpect}`);
-  }
+  if (whatToExpect) lines.push(`What to expect: ${whatToExpect}`);
   if (importantNotes && importantNotes.length) {
     lines.push(`Important notes: ${importantNotes.join('; ')}`);
   }
+  if (contactEmail) lines.push(`Contact: ${contactEmail}`);
 
   return lines.join('\n');
 }
@@ -673,7 +884,7 @@ const TOOL_DEFINITIONS = [
     function: {
       name: 'get_current_tryout_info',
       description:
-        'Get the authoritative date, time, location, price, eligible grades/ages, and what-to-bring details for the current active tryout. Returns null if no active tryout is configured. This is the only reliable source for tryout logistics — never guess or infer these from registration/payment data.',
+        'Get the authoritative date, time, location, price, eligible grades/ages, per-session schedule, and what-to-bring details for the current active tryout. Prefers TryoutConfig, falls back to EventConfig. Returns null if no active tryout is configured. This is the only reliable source for tryout logistics — never guess or infer these from registration/payment data.',
       parameters: {
         type: 'object',
         properties: {},
@@ -770,6 +981,11 @@ detail is "not set" or that no active tryout is configured, say plainly
 that you don't have that detail and an administrator will confirm it — do
 NOT guess, and do NOT substitute an unrelated fact (like registration
 status) as if it answers the question.
+
+If the CURRENT TRYOUT DETAILS block contains a "TRYOUT SESSIONS" list, you
+MUST use the specific session that matches the parent's grade and gender
+(e.g. "Boys: grades 6th, 7th, & 8th — September 27th: 3:00 pm – 4:30 pm").
+Do NOT answer with the general time window when session detail is available.
 
 You also have access to three tools backed by the live database, for cases
 the blocks above don't cover:
@@ -1102,6 +1318,8 @@ async function processIncomingEmail(emailData) {
       parentFound: result.context?.parentFound,
       playerCount: result.context?.players?.length || 0,
       hasTryoutInfo: !!result.tryoutInfo,
+      tryoutSource: result.tryoutInfo?.source || null,
+      sessionCount: result.tryoutInfo?.sessions?.length || 0,
       faqMatches: result.faqs ? result.faqs.length : 0,
     });
 
