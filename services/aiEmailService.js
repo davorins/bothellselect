@@ -11,7 +11,7 @@ const PlayerRegistration = require('../models/PlayerRegistration');
 const Payment = require('../models/Payment');
 const Team = require('../models/Team');
 const EventConfig = require('../models/EventConfig');
-const FAQ = require('../models/FAQ');
+const FAQ = require('../models/Faq');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Clients + config
