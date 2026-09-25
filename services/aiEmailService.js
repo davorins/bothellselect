@@ -11,7 +11,7 @@ const PlayerRegistration = require('../models/PlayerRegistration');
 const Payment = require('../models/Payment');
 const Team = require('../models/Team');
 const EventConfig = require('../models/EventConfig');
-const FAQ = require('../models/Faq');
+const FAQ = require('../models/FAQ');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Clients + config
@@ -527,6 +527,15 @@ function formatTryoutInfoBlock(tryoutInfo) {
   return lines.join('\n');
 }
 
+// Returns just the first token of a full name, for use in salutations
+// ("Hello Jane," not "Hello Jane Smith,"). Computed in code rather than
+// left to the model, for the same reliability reason as the other
+// deterministic blocks above.
+function getFirstName(fullName) {
+  if (!fullName) return '';
+  return String(fullName).trim().split(/\s+/)[0] || '';
+}
+
 // Renders the parent + family lookup as plain text for direct injection
 // into the system prompt, so the model always has the correct parent
 // identity up front and never has to infer who to address from a child's
@@ -540,8 +549,11 @@ function formatFamilyContextBlock(parentSummary, family) {
     );
   }
 
+  const greetingName = getFirstName(parentSummary.fullName);
+
   const lines = [
-    `ADDRESS THIS PARENT AS: ${parentSummary.fullName || '(name not on file — use "Hello,")'}`,
+    `ADDRESS THIS PARENT AS: ${greetingName || '(name not on file — use "Hello,")'}`,
+    `Parent full name (for internal reference only — do NOT use the last name in the greeting): ${parentSummary.fullName || 'not set'}`,
     `Parent email: ${parentSummary.email || 'not set'}`,
     `Parent phone: ${parentSummary.phone || 'not set'}`,
   ];
