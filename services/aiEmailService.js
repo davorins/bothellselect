@@ -10,6 +10,8 @@ const Player = require('../models/Player');
 const PlayerRegistration = require('../models/PlayerRegistration');
 const Payment = require('../models/Payment');
 const Team = require('../models/Team');
+const EventConfig = require('../models/EventConfig');
+const FAQ = require('../models/FAQ');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Clients + config
@@ -397,6 +399,67 @@ async function getFamilyData(parentId) {
   return buildParentContext(parent);
 }
 
+// Authoritative schedule/location/logistics data for the current tryout,
+// sourced from EventConfig (eventType: 'tryout', isActive: true). This is
+// the source of truth for date/time/location/price/grades — never invent
+// these details, and never substitute registration/payment status as an
+// answer to a logistics question.
+async function getCurrentTryoutInfo() {
+  const config = await EventConfig.findOne({
+    eventType: 'tryout',
+    isActive: true,
+  }).sort({ startDate: -1 });
+
+  if (!config) return null;
+
+  return {
+    title: config.title,
+    description: config.description || '',
+    startDate: config.startDate,
+    endDate: config.endDate || null,
+    startTime: config.startTime,
+    endTime: config.endTime,
+    location: {
+      name: config.location?.name || '',
+      address: config.location?.address || '',
+      city: config.location?.city || '',
+      state: config.location?.state || '',
+      zip: config.location?.zip || '',
+    },
+    gender: config.gender,
+    grades: config.grades,
+    ageGroups: config.ageGroups || [],
+    price: config.price,
+    registrationOpen: config.registrationOpen,
+    whatToBring: config.whatToBring || [],
+    whatToExpect: config.whatToExpect || '',
+    importantNotes: config.importantNotes || [],
+  };
+}
+
+// General FAQ lookup. Pass a keyword to filter by category/question/answer
+// text; omit it to return every FAQ. Used for general "how does X work"
+// questions that aren't about a specific family's data.
+async function getFaqs(query) {
+  const faqs = await FAQ.find({}).lean();
+
+  const normalized = faqs.map((f) => ({
+    category: f.category || '',
+    questions: f.questions || [],
+    answers: f.answers || [],
+  }));
+
+  if (!query || !String(query).trim()) return normalized;
+
+  const q = String(query).toLowerCase();
+  return normalized.filter(
+    (f) =>
+      f.category.toLowerCase().includes(q) ||
+      f.questions.some((qq) => qq.toLowerCase().includes(q)) ||
+      f.answers.some((a) => a.toLowerCase().includes(q)),
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON extraction
 // ─────────────────────────────────────────────────────────────────────────────
@@ -476,6 +539,36 @@ const TOOL_DEFINITIONS = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'get_current_tryout_info',
+      description:
+        'Get the authoritative date, time, location, price, eligible grades/ages, and what-to-bring details for the current active tryout. Returns null if no active tryout is configured. This is the only reliable source for tryout logistics — never guess or infer these from registration/payment data.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_faqs',
+      description:
+        'Search the Bothell Select FAQ database for answers to general, non-family-specific questions (e.g. how sessions run, policies, program logistics). Pass a keyword to filter, or omit it to see all FAQs.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description:
+              'Optional keyword to filter FAQs by category, question, or answer text.',
+          },
+        },
+      },
+    },
+  },
 ];
 
 async function executeToolCall(call, toolContext) {
@@ -498,6 +591,18 @@ async function executeToolCall(call, toolContext) {
     return result;
   }
 
+  if (call.function.name === 'get_current_tryout_info') {
+    const result = await getCurrentTryoutInfo();
+    toolContext.tryoutInfo = result;
+    return result;
+  }
+
+  if (call.function.name === 'get_faqs') {
+    const result = await getFaqs(args.query);
+    toolContext.faqs = result;
+    return result;
+  }
+
   return { error: `Unknown tool: ${call.function.name}` };
 }
 
@@ -510,7 +615,10 @@ The current / upcoming season is "${CURRENT_TRYOUT_LABEL}" for year ${CURRENT_TR
       }.
 When a parent asks about "upcoming", "current", or "this year's" tryouts,
 that refers to this season. Only fall back to mentioning other seasons if
-the parent explicitly asks about a past one.
+the parent explicitly asks about a past one. This line only tells you WHICH
+season is current — for the actual date, time, location, price, grades, or
+what to bring, you must call get_current_tryout_info; never infer those
+details from this label alone.
 `.trim()
     : '';
 
@@ -520,14 +628,29 @@ You are the Bothell Select parent email assistant.
 Your job is to analyze an incoming email from a parent and prepare a
 professional draft response for a Bothell Select administrator.
 
-You have access to two tools backed by the live database:
+You have access to four tools backed by the live database:
 - get_parent_by_email: look up the parent account from the sender's email.
 - get_family_data: given a parentId, get that family's players,
   registrations, payments, and teams.
+- get_current_tryout_info: get the date, time, location, price, grades,
+  and what-to-bring details for the current active tryout.
+- get_faqs: search general FAQ content for non-family-specific questions.
 
 ALWAYS call get_parent_by_email first, using the sender's email address.
 If it finds a parent, ALWAYS follow up with get_family_data using that
 parent's id before answering anything about registration or payment status.
+
+ALWAYS call get_current_tryout_info before answering any question about
+tryout date, time, location, price, eligible grades/ages, or what to bring
+— even if you also called get_family_data for other parts of the message.
+Do not answer a logistics question (where/when) with registration or
+payment status instead — they are different questions.
+
+If the parent asks a general question that isn't about their own family's
+registration or payment (e.g. how sessions run, program policies, "how
+many kids per session"), call get_faqs with a relevant keyword before
+answering. If no keyword comes to mind, call it with no query to see all
+FAQs.
 
 ${currentSeasonLine}
 
@@ -550,15 +673,21 @@ IMPORTANT RULES
 6. If get_parent_by_email finds no parent, or the child the parent asked
    about isn't in the family data, say the administrator needs to verify
    it manually — do NOT guess, and set confidence to 20 or lower.
-7. Do not expose passwords or internal MongoDB ids.
-8. Do not make team placement decisions or approve refunds.
-9. Sound like a helpful Bothell Select administrator. Be warm and concise.
-10. Sign the response as "Bothell Select Basketball".
+7. If get_current_tryout_info returns null, or doesn't contain the specific
+   detail the parent asked about, say plainly that you don't have that
+   detail and an administrator will confirm it — do NOT guess, and do NOT
+   answer with an unrelated fact (like registration status) instead. Set
+   confidence to 20 or lower for that part of the question.
+8. Do not expose passwords or internal MongoDB ids.
+9. Do not make team placement decisions or approve refunds.
+10. Sound like a helpful Bothell Select administrator. Be warm and concise.
+11. Sign the response as "Bothell Select Basketball".
 
 CONFIDENCE
 "confidence" must reflect whether you actually had the data to answer the
 parent's question — not just whether you picked the right category. If no
-parent was found, or the child asked about isn't in the family data,
+parent was found, the child asked about isn't in the family data, or a
+logistics question couldn't be answered from get_current_tryout_info,
 confidence must be 20 or lower, regardless of how clear the category is.
 
 Once you have gathered whatever data is available (or confirmed none
@@ -570,7 +699,7 @@ or after it, in exactly this shape:
   "confidence": 0,
   "draft": "draft response",
   "reason": "short explanation of category and confidence",
-  "dataUsed": ["parent", "players", "registrations", "payments"],
+  "dataUsed": ["parent", "players", "registrations", "payments", "tryoutInfo", "faqs"],
   "requiresHumanReview": true,
   "reviewReason": "why a human should review this response"
 }
@@ -699,6 +828,8 @@ async function generateAiDraft({ from, subject = '', body }) {
     ...result,
     parent: toolContext.parent || null,
     context,
+    tryoutInfo: toolContext.tryoutInfo || null,
+    faqs: toolContext.faqs || null,
     effectiveEmail: from,
   };
 }
@@ -813,6 +944,8 @@ async function processIncomingEmail(emailData) {
       hasParent: !!result.parent,
       parentFound: result.context?.parentFound,
       playerCount: result.context?.players?.length || 0,
+      hasTryoutInfo: !!result.tryoutInfo,
+      faqMatches: result.faqs ? result.faqs.length : 0,
     });
 
     aiEmail.category = result.category;
@@ -945,6 +1078,8 @@ module.exports = {
 
   getParentByEmail,
   getFamilyData,
+  getCurrentTryoutInfo,
+  getFaqs,
   buildParentContext,
   generateAiDraft,
   processIncomingEmail,
