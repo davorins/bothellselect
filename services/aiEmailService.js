@@ -53,6 +53,61 @@ const SITE_OWNED_EMAILS = new Set(
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Pre-AI filtering rules
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Local-part fragments that indicate an automated sender, not a real person.
+const BLOCKED_SENDER_FRAGMENTS = [
+  'mailer-daemon',
+  'postmaster',
+  'no-reply',
+  'noreply',
+  'donotreply',
+  'do-not-reply',
+  'notifications',
+  'notification',
+  'bounce',
+  'bounces',
+  'automated',
+  'auto-confirm',
+  'support@resend.dev',
+  'receipts@',
+  'square',
+  'stripe',
+  'paypal',
+  'venmo',
+];
+
+// Subject fragments that indicate an automated reply, bounce, or OOO.
+const BLOCKED_SUBJECT_FRAGMENTS = [
+  'delivery status',
+  'delivery failure',
+  'undeliverable',
+  'returned mail',
+  'failure notice',
+  'out of office',
+  'out-of-office',
+  'automatic reply',
+  'auto reply',
+  'autoreply',
+  'auto-reply',
+  'read:',
+  'away from my',
+];
+
+// Body phrases that only appear in marketing / bulk mail.
+const MARKETING_PHRASES = [
+  'unsubscribe',
+  'manage preferences',
+  'view in browser',
+  'view this email in your browser',
+  'update your email preferences',
+  'privacy policy',
+  'you are receiving this email because',
+  'this is a promotional',
+];
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Settings
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -103,6 +158,99 @@ function extractEmailFromBody(body) {
     /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/,
   );
   return anyMatch ? anyMatch[0].toLowerCase().trim() : '';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pre-AI filter — only registered parents reach the assistant
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Decide whether an inbound email should be processed by the AI assistant.
+ *
+ * This runs BEFORE any OpenAI call, so filtered emails cost nothing.
+ *
+ * The pass/fail ladder, in order:
+ *   1. Must have a parseable sender address.
+ *   2. Sender must not be a site-owned mailbox.
+ *   3. Sender local-part must not match a known automated pattern.
+ *   4. Subject must not look like a bounce / OOO / auto-reply.
+ *   5. Body must not look like marketing or bulk mail.
+ *   6. Sender must exist in the Parent collection.
+ *
+ * Only if all six pass does the email go to the AI.
+ *
+ * @param {{ from: string, subject?: string, body?: string }} emailData
+ * @returns {Promise<{ process: boolean, reason: string, parentId?: string, parent?: object }>}
+ */
+async function shouldProcessEmail(emailData = {}) {
+  const rawFrom = emailData.from || '';
+  const email = extractEmailAddress(rawFrom);
+  const subject = String(emailData.subject || '').toLowerCase();
+  const body = String(emailData.body || '').toLowerCase();
+
+  // 1. Sender address must parse.
+  if (!email || !email.includes('@')) {
+    return { process: false, reason: 'Missing or unparseable sender address.' };
+  }
+
+  // 2. Never process our own mailboxes.
+  if (SITE_OWNED_EMAILS.has(email)) {
+    return {
+      process: false,
+      reason: 'Sender is a Bothell Select mailbox, not a parent.',
+    };
+  }
+
+  // 3. Automated local parts (noreply, mailer-daemon, notifications, etc.).
+  const localPart = email.split('@')[0];
+  const blockedSender = BLOCKED_SENDER_FRAGMENTS.find(
+    (frag) => localPart.includes(frag) || email.includes(frag),
+  );
+  if (blockedSender) {
+    return {
+      process: false,
+      reason: `Automated sender matched rule "${blockedSender}".`,
+    };
+  }
+
+  // 4. Automated subject lines.
+  const blockedSubject = BLOCKED_SUBJECT_FRAGMENTS.find((frag) =>
+    subject.includes(frag),
+  );
+  if (blockedSubject) {
+    return {
+      process: false,
+      reason: `Subject matched rule "${blockedSubject}".`,
+    };
+  }
+
+  // 5. Marketing / bulk mail.
+  const blockedBody = MARKETING_PHRASES.find((phrase) => body.includes(phrase));
+  if (blockedBody) {
+    return {
+      process: false,
+      reason: `Body matched marketing rule "${blockedBody}".`,
+    };
+  }
+
+  // 6. The only real gate: must be a registered parent.
+  const parent = await Parent.findOne({ email })
+    .select('_id fullName email')
+    .lean();
+
+  if (!parent) {
+    return {
+      process: false,
+      reason: 'Sender is not a registered Bothell Select parent.',
+    };
+  }
+
+  return {
+    process: true,
+    reason: 'Registered parent.',
+    parentId: parent._id ? String(parent._id) : null,
+    parent,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -404,21 +552,7 @@ async function getFamilyData(parentId) {
 // Tryout lookup — TryoutConfig first, EventConfig fallback
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Authoritative schedule/location/logistics data for the current tryout.
- *
- * SOURCE PRIORITY:
- *   1. TryoutConfig (collection: tryoutconfigs) — has detailed per-session
- *      schedules, drop-off instructions, what-to-bring, etc. PREFERRED.
- *   2. EventConfig  (collection: eventconfigs) — general event fallback.
- *
- * Never invent tryout details. Never substitute registration/payment
- * status as an answer to a logistics question.
- */
 async function getCurrentTryoutInfo() {
-  // ─────────────────────────────────────────────────────────────────
-  // 1. TryoutConfig — try configured ID first, then year, then newest
-  // ─────────────────────────────────────────────────────────────────
   let tryoutConfig = null;
 
   if (CURRENT_TRYOUT_ID) {
@@ -450,9 +584,6 @@ async function getCurrentTryoutInfo() {
       : 'none',
   );
 
-  // ─────────────────────────────────────────────────────────────────
-  // 2. EventConfig — general-event fallback (only if TryoutConfig missing)
-  // ─────────────────────────────────────────────────────────────────
   let eventConfig = null;
   if (!tryoutConfig) {
     eventConfig = await EventConfig.findOne({
@@ -468,14 +599,10 @@ async function getCurrentTryoutInfo() {
     );
   }
 
-  // Nothing anywhere
   if (!tryoutConfig && !eventConfig) {
     return null;
   }
 
-  // ─────────────────────────────────────────────────────────────────
-  // 3. Normalize sessions from TryoutConfig (the important part)
-  // ─────────────────────────────────────────────────────────────────
   const details = tryoutConfig?.tryoutDetails || {};
   const rawSessions = Array.isArray(details.tryoutSessions)
     ? details.tryoutSessions
@@ -498,7 +625,6 @@ async function getCurrentTryoutInfo() {
       },
     }));
 
-  // Prefer a session location (it's usually more specific than the header location)
   const firstSessionLocation =
     sessions.find((s) => s.location?.name || s.location?.address)?.location ||
     null;
@@ -534,9 +660,6 @@ async function getCurrentTryoutInfo() {
       '',
   };
 
-  // ─────────────────────────────────────────────────────────────────
-  // 4. Build the merged response
-  // ─────────────────────────────────────────────────────────────────
   const source = tryoutConfig ? 'TryoutConfig' : 'EventConfig';
 
   return {
@@ -550,8 +673,6 @@ async function getCurrentTryoutInfo() {
 
     description: tryoutConfig?.description || eventConfig?.description || '',
 
-    // TryoutConfig stores date as a friendly string ("Sunday, September 27th").
-    // EventConfig stores it as ISODate. Keep both normalized.
     startDate:
       details.startDate ||
       tryoutConfig?.registrationDeadline ||
@@ -560,11 +681,9 @@ async function getCurrentTryoutInfo() {
 
     endDate: details.endDate || eventConfig?.endDate || null,
 
-    // Header-level time window — only meaningful when there are NO sessions
     startTime: eventConfig?.startTime || '',
     endTime: eventConfig?.endTime || '',
 
-    // Per-session detail — this is what actually answers the parent's question
     sessions,
 
     location,
@@ -598,9 +717,6 @@ async function getCurrentTryoutInfo() {
   };
 }
 
-// General FAQ lookup. Pass a keyword to filter by category/question/answer
-// text; omit it to return every FAQ. Used for general "how does X work"
-// questions that aren't about a specific family's data.
 async function getFaqs(query) {
   const faqs = await FAQ.find({}).lean();
 
@@ -621,9 +737,6 @@ async function getFaqs(query) {
   );
 }
 
-// Renders getCurrentTryoutInfo()'s result as plain text for direct injection
-// into the system prompt, so the model always has it without needing to
-// decide to call a tool for it.
 function formatTryoutInfoBlock(tryoutInfo) {
   if (!tryoutInfo) {
     return "No active tryout is currently configured in the system. If asked about tryout date, time, or location, say plainly that you don't have that detail and an administrator will confirm it — do not guess.";
@@ -684,7 +797,6 @@ function formatTryoutInfoBlock(tryoutInfo) {
     `Registration open: ${registrationOpen ? 'yes' : 'no'}`,
   ];
 
-  // ── Session schedule (the important part) ──
   if (sessions && sessions.length > 0) {
     lines.push('');
     lines.push('TRYOUT SESSIONS (authoritative — use these exact times):');
@@ -738,19 +850,11 @@ function formatTryoutInfoBlock(tryoutInfo) {
   return lines.join('\n');
 }
 
-// Returns just the first token of a full name, for use in salutations
-// ("Hello Jane," not "Hello Jane Smith,"). Computed in code rather than
-// left to the model, for the same reliability reason as the other
-// deterministic blocks above.
 function getFirstName(fullName) {
   if (!fullName) return '';
   return String(fullName).trim().split(/\s+/)[0] || '';
 }
 
-// Renders the parent + family lookup as plain text for direct injection
-// into the system prompt, so the model always has the correct parent
-// identity up front and never has to infer who to address from a child's
-// name, the email address, or the message body.
 function formatFamilyContextBlock(parentSummary, family) {
   if (!parentSummary || !family || !family.parentFound) {
     return (
@@ -1466,4 +1570,7 @@ module.exports = {
   extractJsonFromText,
   extractEmailAddress,
   extractEmailFromBody,
+
+  // Pre-AI filter
+  shouldProcessEmail,
 };

@@ -1,6 +1,9 @@
 const express = require('express');
 const { Resend } = require('resend');
-const { processIncomingEmail } = require('../services/aiEmailService');
+const {
+  processIncomingEmail,
+  shouldProcessEmail,
+} = require('../services/aiEmailService');
 
 const router = express.Router();
 const resend = new Resend(process.env.RESEND_API_KEY);
@@ -72,19 +75,42 @@ router.post('/', async (req, res) => {
       return res.status(200).json({ success: false, error: 'no_email_data' });
     }
 
+    const bodyText = fullEmail.text || fullEmail.html || 'No body content';
+
+    console.log('✅ Full email body fetched. Body length:', bodyText.length);
+
+    // ─────────────────────────────────────────────────────────────
+    // PRE-AI FILTER — only registered parents reach the AI
+    // ─────────────────────────────────────────────────────────────
+    const filter = await shouldProcessEmail({
+      from,
+      subject: subject || '',
+      body: bodyText,
+    });
+
+    if (!filter.process) {
+      console.log('⏭ Ignored before AI:', filter.reason);
+      return res.status(200).json({
+        success: true,
+        ignored: true,
+        reason: filter.reason,
+      });
+    }
+
     console.log(
-      '✅ Full email body fetched. Body length:',
-      (fullEmail.text || fullEmail.html || '').length,
+      '✅ Passed filter — registered parent. Calling AI assistant...',
     );
 
-    console.log('🚀 Calling processIncomingEmail...');
+    // ─────────────────────────────────────────────────────────────
+    // AI PROCESSING (registered parent only)
+    // ─────────────────────────────────────────────────────────────
     const aiEmail = await processIncomingEmail({
       messageId: email_id,
       threadId: null,
       from: from,
       to: Array.isArray(to) ? to[0] : to,
       subject: subject || '',
-      body: fullEmail.text || fullEmail.html || 'No body content',
+      body: bodyText,
       receivedAt: new Date(created_at),
     });
 
@@ -95,7 +121,10 @@ router.post('/', async (req, res) => {
       aiEmail.status,
     );
 
-    res.status(200).json({ success: true });
+    return res.status(200).json({
+      success: true,
+      aiEmailId: aiEmail._id,
+    });
   } catch (error) {
     console.error('❌ Resend webhook error:', error.message);
     console.error(error.stack);
