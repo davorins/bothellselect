@@ -39,7 +39,8 @@ function getAmount(reg) {
 // ---------------------------------------------------------------
 router.get('/attribution/stats', authenticate, isAdmin, async (req, res) => {
   try {
-    const { campaign, source, eventType, startDate, endDate } = req.query;
+    const { campaign, source, eventType, startDate, endDate, season, year } =
+      req.query;
 
     const filter = {};
     if (campaign) filter.campaign = campaign;
@@ -51,13 +52,26 @@ router.get('/attribution/stats', authenticate, isAdmin, async (req, res) => {
       if (endDate) filter.createdAt.$lte = new Date(endDate);
     }
 
-    const attributions = await MarketingAttribution.find(filter)
-      .populate(
-        'registrationId',
-        'paymentStatus paymentComplete paymentDetails amountPaid parent player',
-      )
+    const populateFields =
+      'paymentStatus paymentComplete paymentDetails amountPaid parent player season year tryoutId';
+
+    let attributions = await MarketingAttribution.find(filter)
+      .populate('registrationId', populateFields)
       .populate('parentId', 'fullName email')
       .lean();
+
+    // ✅ Filter by season/year of the linked Registration.
+    // Attributed records without a linked registration are dropped when
+    // a season or year filter is applied.
+    if (season || year) {
+      attributions = attributions.filter((a) => {
+        const reg = a.registrationId;
+        if (!reg) return false;
+        if (season && reg.season !== season) return false;
+        if (year && Number(reg.year) !== Number(year)) return false;
+        return true;
+      });
+    }
 
     const stats = {
       totalRegistrations: attributions.length,
@@ -213,6 +227,58 @@ router.get('/debug', authenticate, isAdmin, async (req, res) => {
       },
     });
   } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ---------------------------------------------------------------
+// GET /marketing/seasons  (admin)
+// Distinct { season, year } pairs pulled from attributed registrations
+// ---------------------------------------------------------------
+router.get('/seasons', authenticate, isAdmin, async (req, res) => {
+  try {
+    const rows = await MarketingAttribution.aggregate([
+      // Look up the linked registration
+      {
+        $lookup: {
+          from: 'registrations',
+          localField: 'registrationId',
+          foreignField: '_id',
+          as: 'reg',
+        },
+      },
+      { $unwind: '$reg' },
+      // Only registrations with both season and year present
+      {
+        $match: {
+          'reg.season': { $exists: true, $ne: null },
+          'reg.year': { $exists: true, $ne: null },
+        },
+      },
+      // Distinct season/year pairs, with counts
+      {
+        $group: {
+          _id: { season: '$reg.season', year: '$reg.year' },
+          count: { $sum: 1 },
+        },
+      },
+      {
+        $project: {
+          _id: 0,
+          season: '$_id.season',
+          year: '$_id.year',
+          count: 1,
+          label: {
+            $concat: ['$_id.season', ' ', { $toString: '$_id.year' }],
+          },
+        },
+      },
+      { $sort: { year: -1, season: 1 } },
+    ]);
+
+    res.json({ success: true, seasons: rows });
+  } catch (error) {
+    console.error('Error fetching marketing seasons:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
