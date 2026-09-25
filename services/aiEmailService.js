@@ -527,6 +527,56 @@ function formatTryoutInfoBlock(tryoutInfo) {
   return lines.join('\n');
 }
 
+// Renders the parent + family lookup as plain text for direct injection
+// into the system prompt, so the model always has the correct parent
+// identity up front and never has to infer who to address from a child's
+// name, the email address, or the message body.
+function formatFamilyContextBlock(parentSummary, family) {
+  if (!parentSummary || !family || !family.parentFound) {
+    return (
+      'No parent account matches this sender email address. Use a neutral ' +
+      'greeting ("Hello,") — do NOT guess a name from the email address or ' +
+      'the message body. Tell the administrator this needs manual verification.'
+    );
+  }
+
+  const lines = [
+    `ADDRESS THIS PARENT AS: ${parentSummary.fullName || '(name not on file — use "Hello,")'}`,
+    `Parent email: ${parentSummary.email || 'not set'}`,
+    `Parent phone: ${parentSummary.phone || 'not set'}`,
+  ];
+
+  if (!family.players || family.players.length === 0) {
+    lines.push('Children on file: none');
+  } else {
+    lines.push('Children on file (NEVER use these names to greet the parent):');
+    family.players.forEach((p) => {
+      const seasonsStr = (p.seasons || [])
+        .map((s) => {
+          const parts = [
+            `${s.season || 'unknown season'} ${s.year || ''}`.trim(),
+          ];
+          parts.push(`payment: ${s.paymentStatus || 'unknown'}`);
+          if (s.amountPaid != null) parts.push(`$${s.amountPaid} paid`);
+          if (s.paymentDate) {
+            parts.push(`paid ${new Date(s.paymentDate).toDateString()}`);
+          }
+          if (s.cardLast4) parts.push(`card ending ${s.cardLast4}`);
+          return parts.join(', ');
+        })
+        .join(' | ');
+
+      lines.push(
+        `  - ${p.fullName || 'unnamed player'} (grade ${p.grade || 'unknown'}, gender ${p.gender || 'unknown'}): ` +
+          `registrationComplete=${p.registrationComplete}, paymentComplete=${p.paymentComplete}` +
+          `${seasonsStr ? ` — seasons: ${seasonsStr}` : ''}`,
+      );
+    });
+  }
+
+  return lines.join('\n');
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON extraction
 // ─────────────────────────────────────────────────────────────────────────────
@@ -673,7 +723,7 @@ async function executeToolCall(call, toolContext) {
   return { error: `Unknown tool: ${call.function.name}` };
 }
 
-function buildSystemPrompt(settings, tryoutInfo) {
+function buildSystemPrompt(settings, tryoutInfo, parentSummary, family) {
   const currentSeasonLine = CURRENT_TRYOUT_YEAR
     ? `
 CURRENT SEASON
@@ -686,12 +736,17 @@ that refers to this season.
     : '';
 
   const tryoutInfoBlock = formatTryoutInfoBlock(tryoutInfo);
+  const familyContextBlock = formatFamilyContextBlock(parentSummary, family);
 
   return `
 You are the Bothell Select parent email assistant.
 
 Your job is to analyze an incoming email from a parent and prepare a
 professional draft response for a Bothell Select administrator.
+
+FAMILY CONTEXT (authoritative — already looked up for you from the sender's
+email address; use this directly, without needing to call a tool for it)
+${familyContextBlock}
 
 CURRENT TRYOUT DETAILS (authoritative — already looked up for you; use this
 directly for any question about tryout date, time, location, price, grades,
@@ -704,18 +759,16 @@ that you don't have that detail and an administrator will confirm it — do
 NOT guess, and do NOT substitute an unrelated fact (like registration
 status) as if it answers the question.
 
-You also have access to three tools backed by the live database:
-- get_parent_by_email: look up the parent account from the sender's email.
-- get_family_data: given a parentId, get that family's players,
-  registrations, payments, and teams.
+You also have access to three tools backed by the live database, for cases
+the blocks above don't cover:
+- get_parent_by_email / get_family_data: only needed if the parent's
+  message refers to a DIFFERENT family than the sender's own (e.g. asking
+  on behalf of another guardian) — the sender's own family is already
+  provided above, don't call these for it.
 - get_faqs: search general FAQ content for non-family-specific questions.
 - get_current_tryout_info: only needed if the parent is asking about a
   different or past tryout than the one detailed above — the current one
   is already provided, don't call this tool for it.
-
-ALWAYS call get_parent_by_email first, using the sender's email address.
-If it finds a parent, ALWAYS follow up with get_family_data using that
-parent's id before answering anything about registration or payment status.
 
 If the parent asks a general question that isn't about their own family's
 registration or payment (e.g. how sessions run, program policies, "how
@@ -727,16 +780,16 @@ ${currentSeasonLine}
 
 IMPORTANT RULES
 
-1. Never invent facts. Only use what the tools return.
-2. Match children by fullName within the family data. Common nicknames
-   (Theo/Theodore, Alex/Alexander, etc.) may match — use context.
-3. Greet the parent using their OWN fullName from get_parent_by_email /
-   get_family_data (the "parent.fullName" field) — e.g. "Hello Jane,".
-   NEVER greet the parent using a child's fullName, even if it looks
-   similar to the sender's email address or a name mentioned in the
-   message body — parents and children are different people with
-   different names, and mixing them up is a real error, not a style
-   choice. If get_parent_by_email found no parent, use a neutral greeting
+1. Never invent facts. Only use what the blocks above or the tools return.
+2. Match children by fullName within the FAMILY CONTEXT block. Common
+   nicknames (Theo/Theodore, Alex/Alexander, etc.) may match — use context.
+3. Greet the parent using EXACTLY the name in "ADDRESS THIS PARENT AS"
+   above — e.g. "Hello Jane,". NEVER greet the parent using a child's
+   fullName from the "Children on file" list, even if it looks similar to
+   the sender's email address or a name mentioned in the message body —
+   parents and children are different people with different names, and
+   mixing them up is a real error, not a style choice. If the FAMILY
+   CONTEXT block says no parent account was found, use a neutral greeting
    like "Hello," instead of guessing a name from the email address.
 4. To answer "is my child registered?", check that child's
    registrationComplete field (both on the player and within their
@@ -749,9 +802,9 @@ IMPORTANT RULES
    paymentComplete: true for the exact child they mentioned), confirm it
    directly and confidently. Do NOT hedge with "appears to be" or
    "according to our records."
-7. If get_parent_by_email finds no parent, or the child the parent asked
-   about isn't in the family data, say the administrator needs to verify
-   it manually — do NOT guess, and set confidence to 20 or lower.
+7. If the FAMILY CONTEXT block shows no parent record, or the child the
+   parent asked about isn't listed there, say the administrator needs to
+   verify it manually — do NOT guess, and set confidence to 20 or lower.
 8. If the CURRENT TRYOUT DETAILS block above is missing the specific detail
    the parent asked about, say plainly that you don't have that detail and
    an administrator will confirm it — do NOT guess, and do NOT answer with
@@ -797,7 +850,16 @@ async function generateAiDraft({ from, subject = '', body }) {
 
   const settings = await getAiSettings();
   const tryoutInfo = await getCurrentTryoutInfo();
-  const systemPrompt = buildSystemPrompt(settings, tryoutInfo);
+  const parentSummary = await getParentByEmail(from);
+  const family = parentSummary
+    ? await getFamilyData(parentSummary.id)
+    : await buildParentContext(null);
+  const systemPrompt = buildSystemPrompt(
+    settings,
+    tryoutInfo,
+    parentSummary,
+    family,
+  );
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -807,7 +869,7 @@ async function generateAiDraft({ from, subject = '', body }) {
     },
   ];
 
-  const toolContext = { tryoutInfo };
+  const toolContext = { tryoutInfo, parent: parentSummary, family };
   let iterations = 0;
   const MAX_ITERATIONS = 6;
   let finalMessage = null;
