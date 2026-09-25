@@ -71,7 +71,7 @@ const BLOCKED_SENDER_FRAGMENTS = [
   'automated',
   'auto-confirm',
   'support@resend.dev',
-  'receipts@',
+  'receipts',
   'square',
   'stripe',
   'paypal',
@@ -167,9 +167,9 @@ function extractEmailFromBody(body) {
 /**
  * Decide whether an inbound email should be processed by the AI assistant.
  *
- * This runs BEFORE any OpenAI call, so filtered emails cost nothing.
+ * Runs BEFORE any OpenAI call, so filtered emails cost nothing.
  *
- * The pass/fail ladder, in order:
+ * Pass/fail ladder:
  *   1. Must have a parseable sender address.
  *   2. Sender must not be a site-owned mailbox.
  *   3. Sender local-part must not match a known automated pattern.
@@ -177,125 +177,75 @@ function extractEmailFromBody(body) {
  *   5. Body must not look like marketing or bulk mail.
  *   6. Sender must exist in the Parent collection.
  *
- * Only if all six pass does the email go to the AI.
- *
  * @param {{ from: string, subject?: string, body?: string }} emailData
  * @returns {Promise<{ process: boolean, reason: string, parentId?: string, parent?: object }>}
  */
-// ----------------------------------------------------
-// Parent-only AI filter
-// ----------------------------------------------------
-
-const BLOCKED_SENDERS = [
-  'mailer-daemon',
-  'postmaster',
-  'no-reply',
-  'noreply',
-  'do-not-reply',
-  'notifications',
-  'notification',
-  'bounce',
-  'receipts',
-  'stripe',
-  'square',
-  'paypal',
-];
-
-const BLOCKED_SUBJECTS = [
-  'delivery status',
-  'undeliverable',
-  'returned mail',
-  'failure notice',
-  'automatic reply',
-  'auto reply',
-  'out of office',
-  'out-of-office',
-  'away from my',
-];
-
-const MARKETING_PHRASES = [
-  'unsubscribe',
-  'manage preferences',
-  'view in browser',
-  'privacy policy',
-  'you are receiving this email because',
-];
-
 async function shouldProcessEmail(emailData = {}) {
   const email = extractEmailAddress(emailData.from || '');
-  const subject = (emailData.subject || '').toLowerCase();
-  const body = (emailData.body || '').toLowerCase();
+  const subject = String(emailData.subject || '').toLowerCase();
+  const body = String(emailData.body || '').toLowerCase();
 
-  if (!email) {
-    return {
-      process: false,
-      reason: 'Missing sender email',
-    };
+  // 1. Sender must parse.
+  if (!email || !email.includes('@')) {
+    return { process: false, reason: 'Missing or unparseable sender address.' };
   }
 
-  // Never process Bothell mailboxes
-
+  // 2. Never process our own mailboxes.
   if (SITE_OWNED_EMAILS.has(email)) {
     return {
       process: false,
-      reason: 'Internal Bothell mailbox',
+      reason: 'Sender is a Bothell Select mailbox, not a parent.',
     };
   }
 
-  // Automated senders
-
-  const local = email.split('@')[0];
-
-  const blockedSender = BLOCKED_SENDERS.find(
-    (x) => local.includes(x) || email.includes(x),
+  // 3. Automated local parts (noreply, mailer-daemon, notifications, etc.).
+  const localPart = email.split('@')[0];
+  const blockedSender = BLOCKED_SENDER_FRAGMENTS.find(
+    (frag) => localPart.includes(frag) || email.includes(frag),
   );
-
   if (blockedSender) {
     return {
       process: false,
-      reason: `Automated sender (${blockedSender})`,
+      reason: `Automated sender matched rule "${blockedSender}".`,
     };
   }
 
-  // Subject rules
-
-  const blockedSubject = BLOCKED_SUBJECTS.find((x) => subject.includes(x));
-
+  // 4. Automated subject lines.
+  const blockedSubject = BLOCKED_SUBJECT_FRAGMENTS.find((frag) =>
+    subject.includes(frag),
+  );
   if (blockedSubject) {
     return {
       process: false,
-      reason: `Automatic email (${blockedSubject})`,
+      reason: `Subject matched rule "${blockedSubject}".`,
     };
   }
 
-  // Newsletter rules
-
-  const marketing = MARKETING_PHRASES.find((x) => body.includes(x));
-
-  if (marketing) {
+  // 5. Marketing / bulk mail.
+  const blockedBody = MARKETING_PHRASES.find((phrase) => body.includes(phrase));
+  if (blockedBody) {
     return {
       process: false,
-      reason: 'Marketing email',
+      reason: `Body matched marketing rule "${blockedBody}".`,
     };
   }
 
-  // Parent lookup
-
-  const parent = await Parent.findOne({
-    email,
-  }).select('_id fullName email');
+  // 6. The only real gate: must be a registered parent.
+  const parent = await Parent.findOne({ email })
+    .select('_id fullName email')
+    .lean();
 
   if (!parent) {
     return {
       process: false,
-      reason: 'Unknown sender (not a registered parent)',
+      reason: 'Sender is not a registered Bothell Select parent.',
     };
   }
 
   return {
     process: true,
-    reason: 'Registered parent',
-    parentId: parent._id.toString(),
+    reason: 'Registered parent.',
+    parentId: parent._id ? String(parent._id) : null,
     parent,
   };
 }
@@ -316,9 +266,6 @@ async function findParentById(parentId) {
   return Parent.findById(parentId).select('-password');
 }
 
-// Look up the parent's players via BOTH the parent.players array AND the
-// player.parentId back-reference. This guarantees a player is never invisible
-// to the AI if one side of the relationship is stale.
 async function findPlayersByParent(parentId) {
   if (!parentId) return [];
 
@@ -1377,12 +1324,17 @@ async function evaluateAutoSendEligibility(aiEmail) {
       reason: `Confidence ${aiEmail.confidence}% is below threshold ${settings.confidenceThreshold}%.`,
     };
   }
-  if (settings.alwaysRequireHumanReview.includes(aiEmail.category)) {
+
+  const alwaysReview = Array.isArray(settings.alwaysRequireHumanReview)
+    ? settings.alwaysRequireHumanReview
+    : [];
+  if (alwaysReview.includes(aiEmail.category)) {
     return {
       eligible: false,
       reason: `Category "${aiEmail.category}" always requires human review.`,
     };
   }
+
   if (
     Array.isArray(settings.allowedAutomaticCategories) &&
     settings.allowedAutomaticCategories.length > 0 &&
@@ -1393,6 +1345,7 @@ async function evaluateAutoSendEligibility(aiEmail) {
       reason: `Category "${aiEmail.category}" is not in the allowed automatic categories.`,
     };
   }
+
   return { eligible: true, reason: 'All auto-send conditions met.' };
 }
 
