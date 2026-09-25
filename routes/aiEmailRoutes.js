@@ -49,9 +49,29 @@ router.get('/', authenticate, isAdmin, async (req, res) => {
     const pageNum = Math.max(1, Number(page) || 1);
     const limitNum = Math.min(100, Math.max(1, Number(limit) || 25));
 
-    const result = status
-      ? await getAllAiEmails({ status, page: pageNum, limit: limitNum })
-      : await getPendingAiEmails({ page: pageNum, limit: limitNum });
+    let result;
+
+    if (status && status !== 'all') {
+      // Explicit status filter (e.g. "ignored", "sent", "draft_ready")
+      result = await getAllAiEmails({
+        status,
+        page: pageNum,
+        limit: limitNum,
+      });
+    } else if (status === 'all') {
+      // Every email regardless of status
+      result = await getAllAiEmails({
+        status: null,
+        page: pageNum,
+        limit: limitNum,
+      });
+    } else {
+      // Default dashboard view: pending items only
+      result = await getPendingAiEmails({
+        page: pageNum,
+        limit: limitNum,
+      });
+    }
 
     res.json({
       success: true,
