@@ -460,6 +460,73 @@ async function getFaqs(query) {
   );
 }
 
+// Renders getCurrentTryoutInfo()'s result as plain text for direct injection
+// into the system prompt, so the model always has it without needing to
+// decide to call a tool for it.
+function formatTryoutInfoBlock(tryoutInfo) {
+  if (!tryoutInfo) {
+    return "No active tryout is currently configured in the system. If asked about tryout date, time, or location, say plainly that you don't have that detail and an administrator will confirm it — do not guess.";
+  }
+
+  const {
+    title,
+    startDate,
+    startTime,
+    endTime,
+    location,
+    price,
+    grades,
+    gender,
+    registrationOpen,
+    whatToBring,
+    whatToExpect,
+    importantNotes,
+  } = tryoutInfo;
+
+  const dateStr = startDate
+    ? new Date(startDate).toLocaleDateString('en-US', {
+        weekday: 'long',
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+      })
+    : 'not set';
+
+  const locationStr =
+    [
+      location?.name,
+      location?.address,
+      location?.city
+        ? `${location.city}, ${location.state} ${location.zip}`.trim()
+        : '',
+    ]
+      .filter(Boolean)
+      .join(', ') || 'not set';
+
+  const lines = [
+    `Title: ${title || 'not set'}`,
+    `Date: ${dateStr}`,
+    `Time: ${startTime || 'not set'} - ${endTime || 'not set'}`,
+    `Location: ${locationStr}`,
+    `Grades: ${grades || 'not set'}`,
+    `Gender: ${gender || 'not set'}`,
+    `Price: ${price != null ? `$${price}` : 'not set'}`,
+    `Registration open: ${registrationOpen ? 'yes' : 'no'}`,
+  ];
+
+  if (whatToBring && whatToBring.length) {
+    lines.push(`What to bring: ${whatToBring.join(', ')}`);
+  }
+  if (whatToExpect) {
+    lines.push(`What to expect: ${whatToExpect}`);
+  }
+  if (importantNotes && importantNotes.length) {
+    lines.push(`Important notes: ${importantNotes.join('; ')}`);
+  }
+
+  return lines.join('\n');
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON extraction
 // ─────────────────────────────────────────────────────────────────────────────
@@ -606,7 +673,7 @@ async function executeToolCall(call, toolContext) {
   return { error: `Unknown tool: ${call.function.name}` };
 }
 
-function buildSystemPrompt(settings) {
+function buildSystemPrompt(settings, tryoutInfo) {
   const currentSeasonLine = CURRENT_TRYOUT_YEAR
     ? `
 CURRENT SEASON
@@ -614,13 +681,11 @@ The current / upcoming season is "${CURRENT_TRYOUT_LABEL}" for year ${CURRENT_TR
         CURRENT_TRYOUT_ID ? ` (tryoutId: ${CURRENT_TRYOUT_ID})` : ''
       }.
 When a parent asks about "upcoming", "current", or "this year's" tryouts,
-that refers to this season. Only fall back to mentioning other seasons if
-the parent explicitly asks about a past one. This line only tells you WHICH
-season is current — for the actual date, time, location, price, grades, or
-what to bring, you must call get_current_tryout_info; never infer those
-details from this label alone.
+that refers to this season.
 `.trim()
     : '';
+
+  const tryoutInfoBlock = formatTryoutInfoBlock(tryoutInfo);
 
   return `
 You are the Bothell Select parent email assistant.
@@ -628,23 +693,29 @@ You are the Bothell Select parent email assistant.
 Your job is to analyze an incoming email from a parent and prepare a
 professional draft response for a Bothell Select administrator.
 
-You have access to four tools backed by the live database:
+CURRENT TRYOUT DETAILS (authoritative — already looked up for you; use this
+directly for any question about tryout date, time, location, price, grades,
+or what to bring, without needing to call a tool for it)
+${tryoutInfoBlock}
+
+If a parent asks about tryout date/time/location and the block above says a
+detail is "not set" or that no active tryout is configured, say plainly
+that you don't have that detail and an administrator will confirm it — do
+NOT guess, and do NOT substitute an unrelated fact (like registration
+status) as if it answers the question.
+
+You also have access to three tools backed by the live database:
 - get_parent_by_email: look up the parent account from the sender's email.
 - get_family_data: given a parentId, get that family's players,
   registrations, payments, and teams.
-- get_current_tryout_info: get the date, time, location, price, grades,
-  and what-to-bring details for the current active tryout.
 - get_faqs: search general FAQ content for non-family-specific questions.
+- get_current_tryout_info: only needed if the parent is asking about a
+  different or past tryout than the one detailed above — the current one
+  is already provided, don't call this tool for it.
 
 ALWAYS call get_parent_by_email first, using the sender's email address.
 If it finds a parent, ALWAYS follow up with get_family_data using that
 parent's id before answering anything about registration or payment status.
-
-ALWAYS call get_current_tryout_info before answering any question about
-tryout date, time, location, price, eligible grades/ages, or what to bring
-— even if you also called get_family_data for other parts of the message.
-Do not answer a logistics question (where/when) with registration or
-payment status instead — they are different questions.
 
 If the parent asks a general question that isn't about their own family's
 registration or payment (e.g. how sessions run, program policies, "how
@@ -659,36 +730,47 @@ IMPORTANT RULES
 1. Never invent facts. Only use what the tools return.
 2. Match children by fullName within the family data. Common nicknames
    (Theo/Theodore, Alex/Alexander, etc.) may match — use context.
-3. To answer "is my child registered?", check that child's
+3. Greet the parent using their OWN fullName from get_parent_by_email /
+   get_family_data (the "parent.fullName" field) — e.g. "Hello Jane,".
+   NEVER greet the parent using a child's fullName, even if it looks
+   similar to the sender's email address or a name mentioned in the
+   message body — parents and children are different people with
+   different names, and mixing them up is a real error, not a style
+   choice. If get_parent_by_email found no parent, use a neutral greeting
+   like "Hello," instead of guessing a name from the email address.
+4. To answer "is my child registered?", check that child's
    registrationComplete field (both on the player and within their
    registrations for the current season).
-4. To answer "did I pay?", check paymentComplete / paymentStatus for that
+5. To answer "did I pay?", check paymentComplete / paymentStatus for that
    child's current-season registration, and include amountPaid,
    paymentDate, and cardLast4 when confirming.
-5. When the data unambiguously confirms what the parent asked (e.g.
+6. When the data unambiguously confirms what the parent asked (e.g.
    registrationComplete: true AND the current-season registration has
    paymentComplete: true for the exact child they mentioned), confirm it
    directly and confidently. Do NOT hedge with "appears to be" or
    "according to our records."
-6. If get_parent_by_email finds no parent, or the child the parent asked
+7. If get_parent_by_email finds no parent, or the child the parent asked
    about isn't in the family data, say the administrator needs to verify
    it manually — do NOT guess, and set confidence to 20 or lower.
-7. If get_current_tryout_info returns null, or doesn't contain the specific
-   detail the parent asked about, say plainly that you don't have that
-   detail and an administrator will confirm it — do NOT guess, and do NOT
-   answer with an unrelated fact (like registration status) instead. Set
-   confidence to 20 or lower for that part of the question.
-8. Do not expose passwords or internal MongoDB ids.
-9. Do not make team placement decisions or approve refunds.
-10. Sound like a helpful Bothell Select administrator. Be warm and concise.
-11. Sign the response as "Bothell Select Basketball".
+8. If the CURRENT TRYOUT DETAILS block above is missing the specific detail
+   the parent asked about, say plainly that you don't have that detail and
+   an administrator will confirm it — do NOT guess, and do NOT answer with
+   an unrelated fact (like registration status) instead. Set confidence to
+   20 or lower for that part of the question. When the block DOES have the
+   detail, answer it directly and confidently — don't hedge or defer to an
+   administrator for something you were already given.
+9. Do not expose passwords or internal MongoDB ids.
+10. Do not make team placement decisions or approve refunds.
+11. Sound like a helpful Bothell Select administrator. Be warm and concise.
+12. Sign the response as "Bothell Select Basketball".
 
 CONFIDENCE
 "confidence" must reflect whether you actually had the data to answer the
 parent's question — not just whether you picked the right category. If no
 parent was found, the child asked about isn't in the family data, or a
-logistics question couldn't be answered from get_current_tryout_info,
-confidence must be 20 or lower, regardless of how clear the category is.
+logistics question couldn't be answered from the CURRENT TRYOUT DETAILS
+block, confidence must be 20 or lower, regardless of how clear the
+category is.
 
 Once you have gathered whatever data is available (or confirmed none
 exists), respond with ONLY valid JSON, no markdown fences, no text before
@@ -714,7 +796,8 @@ async function generateAiDraft({ from, subject = '', body }) {
   if (!body) throw new Error('body is required');
 
   const settings = await getAiSettings();
-  const systemPrompt = buildSystemPrompt(settings);
+  const tryoutInfo = await getCurrentTryoutInfo();
+  const systemPrompt = buildSystemPrompt(settings, tryoutInfo);
 
   const messages = [
     { role: 'system', content: systemPrompt },
@@ -724,7 +807,7 @@ async function generateAiDraft({ from, subject = '', body }) {
     },
   ];
 
-  const toolContext = {};
+  const toolContext = { tryoutInfo };
   let iterations = 0;
   const MAX_ITERATIONS = 6;
   let finalMessage = null;
