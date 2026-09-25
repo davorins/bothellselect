@@ -131,7 +131,7 @@ async function updateAiSettings(updates, updatedBy = null) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Email address normalization
+// Email address helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 function extractEmailAddress(rawFrom) {
@@ -141,36 +141,115 @@ function extractEmailAddress(rawFrom) {
   return address.toLowerCase().trim();
 }
 
+// Recognize any address that belongs to our infrastructure (Bothell,
+// ProtonMail forwarding envelopes, Resend, etc.). These should never be
+// treated as a "real" sender.
+function isInfrastructureAddress(address) {
+  if (!address) return false;
+  const a = String(address).toLowerCase().trim();
+
+  if (SITE_OWNED_EMAILS.has(a)) return true;
+
+  if (a.includes('@forward.protonmail.ch')) return true;
+  if (a.includes('@protonmail.ch')) return true;
+  if (a.includes('@protonmail.com')) return true;
+  if (a.includes('@resend.app')) return true;
+  if (a.includes('bothellselect=')) return true;
+  if (a.includes('bothellselect@')) return true;
+
+  return false;
+}
+
+// Extract the most likely real parent email from a string that might look
+// like "bothellselect=proton.me+bothellselect=aecalihele.resend.app@forward.protonmail.ch".
+// Returns '' if nothing salvageable.
+function unwrapForwardEnvelope(address) {
+  if (!address) return '';
+  const a = String(address).toLowerCase().trim();
+
+  // Not a forwarder — return as-is
+  if (!a.includes('forward.protonmail.ch') && !a.includes('resend.app')) {
+    return a;
+  }
+
+  // Look for an embedded email: something@something.tld that isn't an
+  // infrastructure address.
+  const matches = [...a.matchAll(/[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/gi)];
+
+  for (const m of matches) {
+    const candidate = m[0].toLowerCase().trim();
+    if (!isInfrastructureAddress(candidate)) {
+      return candidate;
+    }
+  }
+
+  return '';
+}
+
 function extractEmailFromBody(body) {
   if (!body) return '';
 
-  const text = String(body);
+  // 1. Decode HTML entities so &lt; &gt; &amp; become < > &
+  let text = String(body)
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&nbsp;/gi, ' ');
 
-  // 1. "email: someone@example.com" style (contact forms)
-  const labeledMatch = text.match(
-    /email\s*[:\-]\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i,
+  // 2. Strip tags so HTML forwards work
+  text = text
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(div|p|tr|li|h[1-6])>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ');
+
+  // 3. Collapse horizontal whitespace
+  text = text.replace(/[ \t]+/g, ' ');
+
+  // ---------- Priority 1: ProtonMail "Forwarded message" header ----------
+  const protonForwardMatch = text.match(
+    /-+\s*Forwarded message\s*-+[\s\S]{0,500}?\bFrom:\s*(?:.*?<)?([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})>?/i,
   );
-  if (labeledMatch) return labeledMatch[1].toLowerCase().trim();
+  if (protonForwardMatch) {
+    const candidate = protonForwardMatch[1].toLowerCase().trim();
+    if (!isInfrastructureAddress(candidate)) return candidate;
+  }
 
-  // 2. "From: Name <someone@example.com>" style (forwarded headers in body)
-  const fromHeaderMatch = text.match(
-    /^\s*From\s*:\s*(?:.*?<)?([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>?/im,
+  // ---------- Priority 2: Any "From:" line ----------
+  const fromLineMatch = text.match(
+    /^\s*From\s*:\s*(?:.*?<)?([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})>?/im,
   );
-  if (fromHeaderMatch) return fromHeaderMatch[1].toLowerCase().trim();
+  if (fromLineMatch) {
+    const candidate = fromLineMatch[1].toLowerCase().trim();
+    if (!isInfrastructureAddress(candidate)) return candidate;
+  }
 
-  // 3. "Reply-To: someone@example.com"
+  // ---------- Priority 3: "Reply-To:" line ----------
   const replyToMatch = text.match(
-    /^\s*Reply-?To\s*:\s*(?:.*?<)?([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>?/im,
+    /^\s*Reply-?To\s*:\s*(?:.*?<)?([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})>?/im,
   );
-  if (replyToMatch) return replyToMatch[1].toLowerCase().trim();
+  if (replyToMatch) {
+    const candidate = replyToMatch[1].toLowerCase().trim();
+    if (!isInfrastructureAddress(candidate)) return candidate;
+  }
 
-  // 4. Any email in the body that isn't a Bothell-owned address
+  // ---------- Priority 4: "email: x@y" (contact forms) ----------
+  const labeledMatch = text.match(
+    /email\s*[:\-]\s*([a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,})/i,
+  );
+  if (labeledMatch) {
+    const candidate = labeledMatch[1].toLowerCase().trim();
+    if (!isInfrastructureAddress(candidate)) return candidate;
+  }
+
+  // ---------- Priority 5: First non-infrastructure email in body ----------
   const allMatches = [
-    ...text.matchAll(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g),
+    ...text.matchAll(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g),
   ];
   for (const m of allMatches) {
     const candidate = m[0].toLowerCase().trim();
-    if (!SITE_OWNED_EMAILS.has(candidate)) {
+    if (!isInfrastructureAddress(candidate)) {
       return candidate;
     }
   }
@@ -183,34 +262,34 @@ function extractEmailFromBody(body) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * When ProtonMail auto-forwards an email to Resend, the `from` field Resend
- * sees is the forwarding mailbox, not the original parent. This function
- * recovers the real sender by inspecting, in order:
+ * Resolve the real sender. Priority:
  *
- *   1. The `replyTo` header (ProtonMail usually preserves this).
- *   2. Common forwarded-from headers.
- *   3. The email body — looking for `From:` / `Reply-To:` lines.
- *
- * Returns `{ originalFrom, source }` — the recovered address and where it
- * came from, or `{ originalFrom: null }` if nothing usable was found.
+ *   1. The `reply_to` header — ProtonMail preserves this as the original
+ *      sender when auto-forwarding, and Resend exposes it on the payload.
+ *   2. Forwarded-from headers (X-Original-From, Return-Path, etc.)
+ *   3. The body text — ProtonMail's "Forwarded message" block.
+ *   4. Peel the ProtonMail forwarder envelope out of the `from` field itself
+ *      (the ugly "bothellselect=proton.me+...@forward.protonmail.ch" string).
  */
-function resolveOriginalSender(fullEmail) {
-  if (!fullEmail) return { originalFrom: null, source: 'no-payload' };
+function resolveOriginalSender(fullEmail, rawFrom = '') {
+  if (!fullEmail && !rawFrom) {
+    return { originalFrom: null, source: 'no-payload' };
+  }
 
-  // 1. replyTo header
-  const replyToRaw = Array.isArray(fullEmail.reply_to)
+  // 1. reply_to header (highest priority — this is what ProtonMail sets)
+  const replyToRaw = Array.isArray(fullEmail?.reply_to)
     ? fullEmail.reply_to[0]
-    : fullEmail.replyTo || fullEmail.reply_to;
+    : fullEmail?.replyTo || fullEmail?.reply_to;
 
   if (replyToRaw) {
     const candidate = extractEmailAddress(replyToRaw);
-    if (candidate && !SITE_OWNED_EMAILS.has(candidate)) {
+    if (candidate && !isInfrastructureAddress(candidate)) {
       return { originalFrom: candidate, source: 'reply_to' };
     }
   }
 
-  // 2. Forwarded-from headers
-  const headers = fullEmail.headers || {};
+  // 2. Other headers
+  const headers = fullEmail?.headers || {};
   const headerKeys = [
     'x-original-from',
     'x-forwarded-from',
@@ -218,24 +297,29 @@ function resolveOriginalSender(fullEmail) {
     'return-path',
     'sender',
   ];
-
   for (const key of headerKeys) {
     const value = headers[key] || headers[key.toUpperCase()];
     if (value) {
       const candidate = extractEmailAddress(
         Array.isArray(value) ? value[0] : value,
       );
-      if (candidate && !SITE_OWNED_EMAILS.has(candidate)) {
+      if (candidate && !isInfrastructureAddress(candidate)) {
         return { originalFrom: candidate, source: `header:${key}` };
       }
     }
   }
 
   // 3. Body
-  const bodyText = fullEmail.text || fullEmail.html || '';
+  const bodyText = fullEmail?.text || fullEmail?.html || '';
   const bodyCandidate = extractEmailFromBody(bodyText);
-  if (bodyCandidate && !SITE_OWNED_EMAILS.has(bodyCandidate)) {
+  if (bodyCandidate && !isInfrastructureAddress(bodyCandidate)) {
     return { originalFrom: bodyCandidate, source: 'body' };
+  }
+
+  // 4. Unwrap the forwarder envelope in `from`
+  const unwrapped = unwrapForwardEnvelope(extractEmailAddress(rawFrom));
+  if (unwrapped && !isInfrastructureAddress(unwrapped)) {
+    return { originalFrom: unwrapped, source: 'unwrapped_from' };
   }
 
   return { originalFrom: null, source: 'not-found' };
@@ -245,17 +329,17 @@ function resolveOriginalSender(fullEmail) {
 // Pre-AI filter — only registered parents reach the assistant
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Decide whether an inbound email should be processed by the AI assistant.
- *
- * The `from` passed here should already be the resolved original sender
- * (via resolveOriginalSender) — not the ProtonMail forward address.
- *
- * @param {{ from: string, subject?: string, body?: string }} emailData
- * @returns {Promise<{ process: boolean, reason: string, parentId?: string, parent?: object }>}
- */
 async function shouldProcessEmail(emailData = {}) {
-  const email = extractEmailAddress(emailData.from || '');
+  const rawFrom = emailData.from || '';
+
+  // First, try to unwrap the envelope right here too, so this function is
+  // safe to call with the raw `from` if the webhook forgot to resolve.
+  let email = extractEmailAddress(rawFrom);
+  if (isInfrastructureAddress(email)) {
+    const unwrapped = unwrapForwardEnvelope(email);
+    if (unwrapped) email = unwrapped;
+  }
+
   const subject = String(emailData.subject || '').toLowerCase();
   const body = String(emailData.body || '').toLowerCase();
 
@@ -266,10 +350,10 @@ async function shouldProcessEmail(emailData = {}) {
     };
   }
 
-  if (SITE_OWNED_EMAILS.has(email)) {
+  if (isInfrastructureAddress(email)) {
     return {
       process: false,
-      reason: 'Sender is a Bothell Select mailbox, not a parent.',
+      reason: `Sender "${email}" is a forwarding envelope or Bothell Select mailbox, not a parent.`,
     };
   }
 
@@ -335,6 +419,7 @@ async function shouldProcessEmail(emailData = {}) {
     reason: 'Registered parent.',
     parentId: parent._id ? String(parent._id) : null,
     parent,
+    resolvedFrom: email,
   };
 }
 
@@ -1607,4 +1692,8 @@ module.exports = {
   extractEmailAddress,
   extractEmailFromBody,
   extractJsonFromText,
+
+  // Diagnostic helpers
+  isInfrastructureAddress,
+  unwrapForwardEnvelope,
 };

@@ -51,11 +51,12 @@ router.post('/', async (req, res) => {
 
     // ─────────────────────────────────────────────────────────────
     // STEP 1: Resolve the REAL sender (undo ProtonMail forwarding)
+    //         NOTE: resolveOriginalSender(fullEmail, rawFrom)
     // ─────────────────────────────────────────────────────────────
-    const { originalFrom, source: senderSource } = resolveOriginalSender({
-      ...fullEmail,
+    const { originalFrom, source: senderSource } = resolveOriginalSender(
+      fullEmail,
       from,
-    });
+    );
 
     const effectiveFrom = originalFrom || from;
 
@@ -63,6 +64,7 @@ router.post('/', async (req, res) => {
       headerFrom: from,
       resolvedFrom: originalFrom,
       resolutionSource: senderSource,
+      effectiveFrom,
     });
 
     // ─────────────────────────────────────────────────────────────
@@ -94,7 +96,6 @@ router.post('/', async (req, res) => {
           reviewReason: filter.reason,
         });
       } catch (saveErr) {
-        // Duplicate messageId is fine — ignore
         if (saveErr.code !== 11000) {
           console.error('Failed to save ignored email:', saveErr.message);
         }
@@ -115,7 +116,7 @@ router.post('/', async (req, res) => {
     const aiEmail = await processIncomingEmail({
       messageId: email_id,
       threadId: null,
-      from: effectiveFrom,
+      from: filter.resolvedFrom || effectiveFrom,
       originalFrom: originalFrom || null,
       to: Array.isArray(to) ? to[0] : to,
       subject: subject || '',
