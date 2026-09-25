@@ -38,14 +38,11 @@ const CURRENT_TRYOUT_ID = process.env.CURRENT_TRYOUT_ID || null;
 const CURRENT_TRYOUT_LABEL =
   process.env.CURRENT_TRYOUT_LABEL || 'Bothell Select Tryouts';
 
-// Addresses that belong to the site itself, never to a parent. Contact-form
-// submissions always arrive "from" one of these. Even if one of them happens
-// to also exist as a Parent record (e.g. an admin account), it must never be
-// treated as the matched parent for an inbound email.
 const SITE_OWNED_EMAILS = new Set(
   [
     'info@bothellselect.com',
     'bothellselect@proton.me',
+    'bothellselect@aecalihele.resend.app',
     process.env.VERIFIED_SENDER_EMAIL,
   ]
     .filter(Boolean)
@@ -56,7 +53,6 @@ const SITE_OWNED_EMAILS = new Set(
 // Pre-AI filtering rules
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Local-part fragments that indicate an automated sender, not a real person.
 const BLOCKED_SENDER_FRAGMENTS = [
   'mailer-daemon',
   'postmaster',
@@ -78,7 +74,6 @@ const BLOCKED_SENDER_FRAGMENTS = [
   'venmo',
 ];
 
-// Subject fragments that indicate an automated reply, bounce, or OOO.
 const BLOCKED_SUBJECT_FRAGMENTS = [
   'delivery status',
   'delivery failure',
@@ -95,14 +90,12 @@ const BLOCKED_SUBJECT_FRAGMENTS = [
   'away from my',
 ];
 
-// Body phrases that only appear in marketing / bulk mail.
 const MARKETING_PHRASES = [
   'unsubscribe',
   'manage preferences',
   'view in browser',
   'view this email in your browser',
   'update your email preferences',
-  'privacy policy',
   'you are receiving this email because',
   'this is a promotional',
 ];
@@ -150,14 +143,102 @@ function extractEmailAddress(rawFrom) {
 
 function extractEmailFromBody(body) {
   if (!body) return '';
-  const labeledMatch = String(body).match(
-    /email\s*:\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i,
+
+  const text = String(body);
+
+  // 1. "email: someone@example.com" style (contact forms)
+  const labeledMatch = text.match(
+    /email\s*[:\-]\s*([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/i,
   );
   if (labeledMatch) return labeledMatch[1].toLowerCase().trim();
-  const anyMatch = String(body).match(
-    /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/,
+
+  // 2. "From: Name <someone@example.com>" style (forwarded headers in body)
+  const fromHeaderMatch = text.match(
+    /^\s*From\s*:\s*(?:.*?<)?([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>?/im,
   );
-  return anyMatch ? anyMatch[0].toLowerCase().trim() : '';
+  if (fromHeaderMatch) return fromHeaderMatch[1].toLowerCase().trim();
+
+  // 3. "Reply-To: someone@example.com"
+  const replyToMatch = text.match(
+    /^\s*Reply-?To\s*:\s*(?:.*?<)?([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})>?/im,
+  );
+  if (replyToMatch) return replyToMatch[1].toLowerCase().trim();
+
+  // 4. Any email in the body that isn't a Bothell-owned address
+  const allMatches = [
+    ...text.matchAll(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g),
+  ];
+  for (const m of allMatches) {
+    const candidate = m[0].toLowerCase().trim();
+    if (!SITE_OWNED_EMAILS.has(candidate)) {
+      return candidate;
+    }
+  }
+
+  return '';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Forwarded-sender resolver (ProtonMail → Resend)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * When ProtonMail auto-forwards an email to Resend, the `from` field Resend
+ * sees is the forwarding mailbox, not the original parent. This function
+ * recovers the real sender by inspecting, in order:
+ *
+ *   1. The `replyTo` header (ProtonMail usually preserves this).
+ *   2. Common forwarded-from headers.
+ *   3. The email body — looking for `From:` / `Reply-To:` lines.
+ *
+ * Returns `{ originalFrom, source }` — the recovered address and where it
+ * came from, or `{ originalFrom: null }` if nothing usable was found.
+ */
+function resolveOriginalSender(fullEmail) {
+  if (!fullEmail) return { originalFrom: null, source: 'no-payload' };
+
+  // 1. replyTo header
+  const replyToRaw = Array.isArray(fullEmail.reply_to)
+    ? fullEmail.reply_to[0]
+    : fullEmail.replyTo || fullEmail.reply_to;
+
+  if (replyToRaw) {
+    const candidate = extractEmailAddress(replyToRaw);
+    if (candidate && !SITE_OWNED_EMAILS.has(candidate)) {
+      return { originalFrom: candidate, source: 'reply_to' };
+    }
+  }
+
+  // 2. Forwarded-from headers
+  const headers = fullEmail.headers || {};
+  const headerKeys = [
+    'x-original-from',
+    'x-forwarded-from',
+    'x-original-sender',
+    'return-path',
+    'sender',
+  ];
+
+  for (const key of headerKeys) {
+    const value = headers[key] || headers[key.toUpperCase()];
+    if (value) {
+      const candidate = extractEmailAddress(
+        Array.isArray(value) ? value[0] : value,
+      );
+      if (candidate && !SITE_OWNED_EMAILS.has(candidate)) {
+        return { originalFrom: candidate, source: `header:${key}` };
+      }
+    }
+  }
+
+  // 3. Body
+  const bodyText = fullEmail.text || fullEmail.html || '';
+  const bodyCandidate = extractEmailFromBody(bodyText);
+  if (bodyCandidate && !SITE_OWNED_EMAILS.has(bodyCandidate)) {
+    return { originalFrom: bodyCandidate, source: 'body' };
+  }
+
+  return { originalFrom: null, source: 'not-found' };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -167,15 +248,8 @@ function extractEmailFromBody(body) {
 /**
  * Decide whether an inbound email should be processed by the AI assistant.
  *
- * Runs BEFORE any OpenAI call, so filtered emails cost nothing.
- *
- * Pass/fail ladder:
- *   1. Must have a parseable sender address.
- *   2. Sender must not be a site-owned mailbox.
- *   3. Sender local-part must not match a known automated pattern.
- *   4. Subject must not look like a bounce / OOO / auto-reply.
- *   5. Body must not look like marketing or bulk mail.
- *   6. Sender must exist in the Parent collection.
+ * The `from` passed here should already be the resolved original sender
+ * (via resolveOriginalSender) — not the ProtonMail forward address.
  *
  * @param {{ from: string, subject?: string, body?: string }} emailData
  * @returns {Promise<{ process: boolean, reason: string, parentId?: string, parent?: object }>}
@@ -185,12 +259,13 @@ async function shouldProcessEmail(emailData = {}) {
   const subject = String(emailData.subject || '').toLowerCase();
   const body = String(emailData.body || '').toLowerCase();
 
-  // 1. Sender must parse.
   if (!email || !email.includes('@')) {
-    return { process: false, reason: 'Missing or unparseable sender address.' };
+    return {
+      process: false,
+      reason: 'Missing or unparseable sender address.',
+    };
   }
 
-  // 2. Never process our own mailboxes.
   if (SITE_OWNED_EMAILS.has(email)) {
     return {
       process: false,
@@ -198,7 +273,6 @@ async function shouldProcessEmail(emailData = {}) {
     };
   }
 
-  // 3. Automated local parts (noreply, mailer-daemon, notifications, etc.).
   const localPart = email.split('@')[0];
   const blockedSender = BLOCKED_SENDER_FRAGMENTS.find(
     (frag) => localPart.includes(frag) || email.includes(frag),
@@ -210,7 +284,6 @@ async function shouldProcessEmail(emailData = {}) {
     };
   }
 
-  // 4. Automated subject lines.
   const blockedSubject = BLOCKED_SUBJECT_FRAGMENTS.find((frag) =>
     subject.includes(frag),
   );
@@ -221,7 +294,6 @@ async function shouldProcessEmail(emailData = {}) {
     };
   }
 
-  // 5. Marketing / bulk mail.
   const blockedBody = MARKETING_PHRASES.find((phrase) => body.includes(phrase));
   if (blockedBody) {
     return {
@@ -230,17 +302,33 @@ async function shouldProcessEmail(emailData = {}) {
     };
   }
 
-  // 6. The only real gate: must be a registered parent.
-  const parent = await Parent.findOne({ email })
-    .select('_id fullName email')
+  // Registered parent — flexibly across email / emailAddress / contactEmail
+  const escaped = email.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const emailRegex = new RegExp(`^\\s*${escaped}\\s*$`, 'i');
+
+  const parent = await Parent.findOne({
+    $or: [
+      { email: emailRegex },
+      { emailAddress: emailRegex },
+      { contactEmail: emailRegex },
+    ],
+  })
+    .select('_id fullName email emailAddress contactEmail')
     .lean();
 
   if (!parent) {
+    console.log(
+      `[filter] REJECT — "${email}" is not in the Parent collection.`,
+    );
     return {
       process: false,
-      reason: 'Sender is not a registered Bothell Select parent.',
+      reason: `Sender "${email}" is not a registered Bothell Select parent.`,
     };
   }
+
+  console.log(
+    `[filter] ACCEPT — "${email}" matched parent ${parent._id} (${parent.fullName || 'unnamed'}).`,
+  );
 
   return {
     process: true,
@@ -356,6 +444,7 @@ async function createAiEmail(emailData) {
     messageId: emailData.messageId,
     threadId: emailData.threadId || null,
     from: emailData.from,
+    originalFrom: emailData.originalFrom || null,
     to: emailData.to || null,
     subject: emailData.subject || '',
     body: emailData.body,
@@ -522,7 +611,7 @@ async function buildParentContext(parent) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AI tool functions — called by the model via function-calling
+// AI tool functions
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function getParentByEmail(email) {
@@ -658,53 +747,38 @@ async function getCurrentTryoutInfo() {
 
   return {
     source,
-
     title:
       tryoutConfig?.displayName ||
       tryoutConfig?.tryoutName ||
       eventConfig?.title ||
       'Bothell Select Tryouts',
-
     description: tryoutConfig?.description || eventConfig?.description || '',
-
     startDate:
       details.startDate ||
       tryoutConfig?.registrationDeadline ||
       eventConfig?.startDate ||
       null,
-
     endDate: details.endDate || eventConfig?.endDate || null,
-
     startTime: eventConfig?.startTime || '',
     endTime: eventConfig?.endTime || '',
-
     sessions,
-
     location,
-
     gender: details.gender || eventConfig?.gender || '',
     grades: eventConfig?.grades || '',
-
     ageGroups:
       details.ageGroups ||
       tryoutConfig?.ageGroups ||
       eventConfig?.ageGroups ||
       [],
-
     price: tryoutConfig?.tryoutFee ?? eventConfig?.price ?? null,
-
     registrationOpen: eventConfig?.registrationOpen ?? true,
-
     registrationDeadline: tryoutConfig?.registrationDeadline || null,
     paymentDeadline: tryoutConfig?.paymentDeadline || null,
     refundPolicy: tryoutConfig?.refundPolicy || '',
-
     dropOffTime: details.dropOffTime || '',
     pickUpTime: details.pickUpTime || '',
     contactEmail: details.contactEmail || '',
-
     hasLimitedSpots: details.hasLimitedSpots ?? false,
-
     whatToBring: details.whatToBring || eventConfig?.whatToBring || [],
     whatToExpect: eventConfig?.whatToExpect || '',
     importantNotes: eventConfig?.importantNotes || details.notes || [],
@@ -940,7 +1014,7 @@ const ALLOWED_CATEGORIES = [
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AI draft generation (Chat Completions + tool calling)
+// AI draft generation
 // ─────────────────────────────────────────────────────────────────────────────
 
 const TOOL_DEFINITIONS = [
@@ -982,7 +1056,7 @@ const TOOL_DEFINITIONS = [
     function: {
       name: 'get_current_tryout_info',
       description:
-        'Get the authoritative date, time, location, price, eligible grades/ages, per-session schedule, and what-to-bring details for the current active tryout. Prefers TryoutConfig, falls back to EventConfig. Returns null if no active tryout is configured. This is the only reliable source for tryout logistics — never guess or infer these from registration/payment data.',
+        'Get the authoritative date, time, location, price, eligible grades/ages, per-session schedule, and what-to-bring details for the current active tryout. Prefers TryoutConfig, falls back to EventConfig. Returns null if no active tryout is configured.',
       parameters: {
         type: 'object',
         properties: {},
@@ -994,7 +1068,7 @@ const TOOL_DEFINITIONS = [
     function: {
       name: 'get_faqs',
       description:
-        'Search the Bothell Select FAQ database for answers to general, non-family-specific questions (e.g. how sessions run, policies, program logistics). Pass a keyword to filter, or omit it to see all FAQs.',
+        'Search the Bothell Select FAQ database for answers to general, non-family-specific questions.',
       parameters: {
         type: 'object',
         properties: {
@@ -1081,24 +1155,19 @@ NOT guess, and do NOT substitute an unrelated fact (like registration
 status) as if it answers the question.
 
 If the CURRENT TRYOUT DETAILS block contains a "TRYOUT SESSIONS" list, you
-MUST use the specific session that matches the parent's grade and gender
-(e.g. "Boys: grades 6th, 7th, & 8th — September 27th: 3:00 pm – 4:30 pm").
+MUST use the specific session that matches the parent's grade and gender.
 Do NOT answer with the general time window when session detail is available.
 
 You also have access to three tools backed by the live database, for cases
 the blocks above don't cover:
 - get_parent_by_email / get_family_data: only needed if the parent's
-  message refers to a DIFFERENT family than the sender's own (e.g. asking
-  on behalf of another guardian) — the sender's own family is already
-  provided above, don't call these for it.
+  message refers to a DIFFERENT family than the sender's own.
 - get_faqs: search general FAQ content for non-family-specific questions.
 - get_current_tryout_info: only needed if the parent is asking about a
-  different or past tryout than the one detailed above — the current one
-  is already provided, don't call this tool for it.
+  different or past tryout than the one detailed above.
 
 If the parent asks a general question that isn't about their own family's
-registration or payment (e.g. how sessions run, program policies, "how
-many kids per session"), call get_faqs with a relevant keyword before
+registration or payment, call get_faqs with a relevant keyword before
 answering. If no keyword comes to mind, call it with no query to see all
 FAQs.
 
@@ -1108,36 +1177,22 @@ IMPORTANT RULES
 
 1. Never invent facts. Only use what the blocks above or the tools return.
 2. Match children by fullName within the FAMILY CONTEXT block. Common
-   nicknames (Theo/Theodore, Alex/Alexander, etc.) may match — use context.
+   nicknames may match — use context.
 3. Greet the parent using EXACTLY the name in "ADDRESS THIS PARENT AS"
    above — e.g. "Hello Jane,". NEVER greet the parent using a child's
-   fullName from the "Children on file" list, even if it looks similar to
-   the sender's email address or a name mentioned in the message body —
-   parents and children are different people with different names, and
-   mixing them up is a real error, not a style choice. If the FAMILY
-   CONTEXT block says no parent account was found, use a neutral greeting
-   like "Hello," instead of guessing a name from the email address.
+   fullName. If no parent account was found, use a neutral greeting.
 4. To answer "is my child registered?", check that child's
-   registrationComplete field (both on the player and within their
-   registrations for the current season).
+   registrationComplete field.
 5. To answer "did I pay?", check paymentComplete / paymentStatus for that
    child's current-season registration, and include amountPaid,
    paymentDate, and cardLast4 when confirming.
-6. When the data unambiguously confirms what the parent asked (e.g.
-   registrationComplete: true AND the current-season registration has
-   paymentComplete: true for the exact child they mentioned), confirm it
-   directly and confidently. Do NOT hedge with "appears to be" or
-   "according to our records."
-7. If the FAMILY CONTEXT block shows no parent record, or the child the
-   parent asked about isn't listed there, say the administrator needs to
-   verify it manually — do NOT guess, and set confidence to 20 or lower.
-8. If the CURRENT TRYOUT DETAILS block above is missing the specific detail
-   the parent asked about, say plainly that you don't have that detail and
-   an administrator will confirm it — do NOT guess, and do NOT answer with
-   an unrelated fact (like registration status) instead. Set confidence to
-   20 or lower for that part of the question. When the block DOES have the
-   detail, answer it directly and confidently — don't hedge or defer to an
-   administrator for something you were already given.
+6. When the data unambiguously confirms what the parent asked, confirm it
+   directly and confidently. Do NOT hedge with "appears to be".
+7. If no parent record or the child isn't listed, say the administrator
+   needs to verify it manually — set confidence to 20 or lower.
+8. If a logistics detail is missing, say so plainly — don't guess, don't
+   substitute an unrelated fact. Set confidence to 20 or lower for that
+   part of the question.
 9. Do not expose passwords or internal MongoDB ids.
 10. Do not make team placement decisions or approve refunds.
 11. Sound like a helpful Bothell Select administrator. Be warm and concise.
@@ -1145,11 +1200,7 @@ IMPORTANT RULES
 
 CONFIDENCE
 "confidence" must reflect whether you actually had the data to answer the
-parent's question — not just whether you picked the right category. If no
-parent was found, the child asked about isn't in the family data, or a
-logistics question couldn't be answered from the CURRENT TRYOUT DETAILS
-block, confidence must be 20 or lower, regardless of how clear the
-category is.
+parent's question — not just whether you picked the right category.
 
 Once you have gathered whatever data is available (or confirmed none
 exists), respond with ONLY valid JSON, no markdown fences, no text before
@@ -1306,7 +1357,7 @@ async function generateAiDraft({ from, subject = '', body }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Auto-send eligibility + sending
+// Auto-send + sending
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function evaluateAutoSendEligibility(aiEmail) {
@@ -1382,37 +1433,20 @@ async function sendAiReply(aiEmail) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function processIncomingEmail(emailData) {
-  const normalizedFrom = extractEmailAddress(emailData.from);
-  let resolvedEmailData = emailData;
-
-  if (SITE_OWNED_EMAILS.has(normalizedFrom)) {
-    const bodyEmail = extractEmailFromBody(emailData.body);
-    if (bodyEmail && !SITE_OWNED_EMAILS.has(bodyEmail)) {
-      console.log(
-        `"from" was site-owned ("${normalizedFrom}"); replacing with body email "${bodyEmail}".`,
-      );
-      resolvedEmailData = { ...emailData, from: bodyEmail };
-    } else {
-      console.log(
-        `"from" was site-owned ("${normalizedFrom}") and no usable body email was found.`,
-      );
-    }
-  }
-
   console.log('=== PROCESSING EMAIL ===');
-  console.log('From:', resolvedEmailData.from);
-  console.log('Subject:', resolvedEmailData.subject);
-  console.log('Body length:', (resolvedEmailData.body || '').length);
+  console.log('From:', emailData.from);
+  console.log('Subject:', emailData.subject);
+  console.log('Body length:', (emailData.body || '').length);
 
-  const aiEmail = await createAiEmail(resolvedEmailData);
+  const aiEmail = await createAiEmail(emailData);
   console.log('Created AiEmail:', aiEmail._id.toString());
 
   try {
     console.log('Calling generateAiDraft...');
     const result = await generateAiDraft({
-      from: resolvedEmailData.from,
-      subject: resolvedEmailData.subject || '',
-      body: resolvedEmailData.body,
+      from: emailData.from,
+      subject: emailData.subject || '',
+      body: emailData.body,
     });
 
     console.log('AI result summary:', {
@@ -1432,7 +1466,7 @@ async function processIncomingEmail(emailData) {
     aiEmail.aiDraft = result.draft;
     aiEmail.aiReason = result.reason;
     aiEmail.dataUsed = result.dataUsed;
-    aiEmail.replyToEmail = result.effectiveEmail || resolvedEmailData.from;
+    aiEmail.replyToEmail = result.effectiveEmail || emailData.from;
 
     if (result.parent) {
       aiEmail.parentId = result.parent.id || result.parent._id || null;
@@ -1491,7 +1525,7 @@ async function processIncomingEmail(emailData) {
     aiEmail.reviewReason = `AI processing failed: ${error.message}`;
     aiEmail.aiDraft =
       aiEmail.aiDraft ||
-      `[AI draft failed] ${error.message}\n\nOriginal message:\n${resolvedEmailData.body}`;
+      `[AI draft failed] ${error.message}\n\nOriginal message:\n${emailData.body}`;
     aiEmail.category = aiEmail.category || 'other';
     aiEmail.confidence = aiEmail.confidence || 0;
 
@@ -1542,6 +1576,13 @@ module.exports = {
   findParentById,
   findPlayersByParent,
   findPlayer,
+  findRegistrationsByPlayer,
+  findRegistrationsByParent,
+  findPaymentsByParent,
+  findPaymentsByPlayer,
+  findPaymentsByTeam,
+  findTeam,
+  findTeamsByCoach,
 
   createAiEmail,
   getPendingAiEmails,
@@ -1552,11 +1593,12 @@ module.exports = {
   getFamilyData,
   getCurrentTryoutInfo,
   getFaqs,
-
+  buildParentContext,
   generateAiDraft,
   processIncomingEmail,
 
   shouldProcessEmail,
+  resolveOriginalSender,
 
   manualSendAiEmail,
   sendAiReply,

@@ -2,7 +2,6 @@ const mongoose = require('mongoose');
 
 const aiEmailSchema = new mongoose.Schema(
   {
-    // Source email
     messageId: {
       type: String,
       required: true,
@@ -19,6 +18,12 @@ const aiEmailSchema = new mongoose.Schema(
       required: true,
       lowercase: true,
       trim: true,
+    },
+    originalFrom: {
+      type: String,
+      lowercase: true,
+      trim: true,
+      default: null,
     },
     replyToEmail: {
       type: String,
@@ -45,7 +50,6 @@ const aiEmailSchema = new mongoose.Schema(
       required: true,
     },
 
-    // AI classification
     category: {
       type: String,
       enum: [
@@ -69,7 +73,6 @@ const aiEmailSchema = new mongoose.Schema(
       default: 0,
     },
 
-    // AI draft
     aiDraft: {
       type: String,
       default: '',
@@ -83,12 +86,23 @@ const aiEmailSchema = new mongoose.Schema(
       default: [],
     },
 
-    // Review and workflow
     status: {
       type: String,
-      enum: ['new', 'draft_ready', 'reviewed', 'sent', 'rejected'],
+      enum: [
+        'new',
+        'draft_ready',
+        'reviewed',
+        'sent',
+        'rejected',
+        'skipped',
+        'ignored',
+      ],
       default: 'new',
       index: true,
+    },
+    skipReason: {
+      type: String,
+      default: '',
     },
     requiresHumanReview: {
       type: Boolean,
@@ -100,7 +114,6 @@ const aiEmailSchema = new mongoose.Schema(
       default: '',
     },
 
-    // Human review / final response
     humanEditedDraft: {
       type: String,
       default: '',
