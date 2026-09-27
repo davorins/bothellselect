@@ -28,6 +28,11 @@ const sendEmailNotification = async (emails, message) => {
         <p style="margin-top: 20px; font-size: 14px; color: #6b7280;">
           This is an automated message. Please do not reply directly to this email.
         </p>
+        <p style="margin-top: 16px; font-size: 12px; color: #9ca3af; border-top: 1px solid #e5e7eb; padding-top: 12px;">
+          <a href="https://bothellselect.com/general-settings/notifications-settings" style="color: #9ca3af;">
+            Manage your notification email preferences
+          </a>
+        </p>
       </div>
     `;
 
@@ -97,14 +102,19 @@ exports.createNotification = async (req, res) => {
       ];
     }
 
-    // Get parent emails
+    // Get parent emails — only those who haven't opted out of notification emails
     if (targetType === 'all') {
-      parentsToEmail = await Parent.find({}).select('email').session(session);
+      parentsToEmail = await Parent.find({
+        'communicationPreferences.emailNotifications': { $ne: false },
+      })
+        .select('email communicationPreferences')
+        .session(session);
     } else if (resolvedParentIds.length > 0) {
       parentsToEmail = await Parent.find({
         _id: { $in: resolvedParentIds },
+        'communicationPreferences.emailNotifications': { $ne: false },
       })
-        .select('email')
+        .select('email communicationPreferences')
         .session(session);
     }
 

@@ -3881,14 +3881,20 @@ router.post('/notifications', authenticate, async (req, res) => {
       );
 
       if (targetType === 'all') {
-        const parents = await Parent.find({}, 'email fullName');
+        const parents = await Parent.find(
+          { 'communicationPreferences.emailNotifications': { $ne: false } },
+          'email fullName',
+        );
         emails = parents.map((p) => ({
           email: p.email,
           fullName: p.fullName,
         }));
       } else {
         const parents = await Parent.find(
-          { _id: { $in: resolvedParentIds } },
+          {
+            _id: { $in: resolvedParentIds },
+            'communicationPreferences.emailNotifications': { $ne: false },
+          },
           'email fullName',
         );
         emails = parents.map((p) => ({
