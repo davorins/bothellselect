@@ -1,29 +1,28 @@
 // routes/teams.js
 const router = require('express').Router();
 const Team = require('../models/Team');
+const Player = require('../models/Player'); // ← Uncomment when Player model exists
 const { authenticate } = require('../utils/auth');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// METADATA ENDPOINT (This fixes the "only 2025" issue)
+// METADATA ENDPOINT — Returns years, grades, tryout seasons
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/internal-teams/metadata', authenticate, async (req, res) => {
   try {
     const currentYear = new Date().getFullYear();
 
-    // Generate a rolling range of years (e.g., 2 years back to 2 years forward)
+    // Rolling range: 2 years back → 2 years forward
     const years = [];
     for (let i = -2; i <= 2; i++) {
       years.push(currentYear + i);
     }
 
-    // Define available tryout seasons. Adjust as needed.
     const tryoutSeasons = [
       'Basketball Select Tryout',
       'Spring Tryout',
       'Fall Tryout',
     ];
 
-    // Define available grades
     const grades = [
       '1',
       '2',
@@ -39,11 +38,7 @@ router.get('/internal-teams/metadata', authenticate, async (req, res) => {
       '12',
     ];
 
-    res.json({
-      years,
-      grades,
-      tryoutSeasons,
-    });
+    res.json({ years, grades, tryoutSeasons });
   } catch (error) {
     console.error('Error fetching metadata:', error);
     res.status(500).json({ error: 'Failed to fetch metadata' });
@@ -51,7 +46,7 @@ router.get('/internal-teams/metadata', authenticate, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AVAILABLE PLAYERS ENDPOINT (Used by the form to filter players)
+// AVAILABLE PLAYERS — Returns players who completed the given tryout
 // ─────────────────────────────────────────────────────────────────────────────
 router.get(
   '/internal-teams/available-players',
@@ -60,18 +55,31 @@ router.get(
     try {
       const { season, year, gender } = req.query;
 
-      // TODO: Replace this with actual logic to find players who completed tryouts.
-      // For now, we return an empty array to prevent the frontend from crashing.
-      // If you have a Player model with tryout data, query it here.
+      if (!season || !year) {
+        return res.json([]); // No filters → no players
+      }
 
-      // Example (pseudo-code):
-      // const filter = { tryoutSeason: season, tryoutYear: year };
-      // if (gender) filter.gender = gender;
-      // const players = await Player.find(filter).lean();
+      // If Player model exists, query it. Otherwise return empty array.
+      // Uncomment when Player model is ready:
+      /*
+      const filter = {
+        isActive: true,
+        'tryouts.season': season,
+        'tryouts.year': parseInt(year),
+        'tryouts.completed': true,
+      };
+      if (gender) filter.gender = gender;
 
-      const players = []; // Replace with actual query
+      const players = await Player.find(filter)
+        .select('fullName gender grade schoolName dob')
+        .sort({ grade: 1, fullName: 1 })
+        .lean();
 
-      res.json(players);
+      return res.json(players);
+      */
+
+      // Placeholder until Player model is wired up:
+      res.json([]);
     } catch (error) {
       console.error('Error fetching available players:', error);
       res.status(500).json({ error: 'Failed to fetch available players' });
@@ -100,17 +108,13 @@ router.get('/teams', authenticate, async (req, res) => {
     } = req.query;
 
     const filter = {};
-
     if (isActive !== undefined) filter.isActive = isActive === 'true';
     if (name) filter.name = { $regex: name, $options: 'i' };
     if (grade) filter.grade = grade;
     if (sex) filter.sex = sex;
     if (levelOfCompetition) filter.levelOfCompetition = levelOfCompetition;
     if (tournament) {
-      filter.$or = [
-        { tournament: tournament },
-        { 'tournaments.tournament': tournament },
-      ];
+      filter.$or = [{ tournament }, { 'tournaments.tournament': tournament }];
     }
     if (year) {
       const yearNum = parseInt(year);
@@ -180,7 +184,6 @@ router.get('/teams', authenticate, async (req, res) => {
 router.get('/teams/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-
     if (!id.match(/^[0-9a-fA-F]{24}$/)) {
       return res
         .status(400)
@@ -192,10 +195,8 @@ router.get('/teams/:id', authenticate, async (req, res) => {
       .populate('playerIds', 'fullName grade schoolName gender dob')
       .lean();
 
-    if (!team) {
+    if (!team)
       return res.status(404).json({ success: false, error: 'Team not found' });
-    }
-
     res.json({ success: true, data: team });
   } catch (error) {
     console.error('Error fetching team:', error);
@@ -209,7 +210,7 @@ router.get('/teams/:id', authenticate, async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CREATE NEW TEAM (Handles both standard and tryout-based creation)
+// CREATE NEW TEAM
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/teams', authenticate, async (req, res) => {
   try {
@@ -217,8 +218,8 @@ router.post('/teams', authenticate, async (req, res) => {
       name,
       year,
       grade,
-      gender, // Frontend sends 'gender'
-      sex, // Backend schema expects 'sex'
+      gender,
+      sex,
       tryoutSeason,
       tryoutYear,
       playerIds = [],
@@ -231,10 +232,7 @@ router.post('/teams', authenticate, async (req, res) => {
       isActive = true,
     } = req.body;
 
-    // Normalize gender/sex
     const teamSex = sex || gender;
-
-    // Validate required fields
     if (!name || !grade || !teamSex) {
       return res.status(400).json({
         success: false,
@@ -242,10 +240,11 @@ router.post('/teams', authenticate, async (req, res) => {
       });
     }
 
-    // Use 'year' for registrationYear if not explicitly provided
-    const teamYear = year || registrationYear || new Date().getFullYear();
+    // Coerce year fields to numbers
+    const teamYear =
+      Number(year) || Number(registrationYear) || new Date().getFullYear();
+    const tryoutYearNum = Number(tryoutYear) || teamYear;
 
-    // Check for duplicate
     const existingTeam = await Team.findOne({
       name: { $regex: new RegExp(`^${name.trim()}$`, 'i') },
       grade,
@@ -262,12 +261,11 @@ router.post('/teams', authenticate, async (req, res) => {
       });
     }
 
-    // Build tournament data only if provided (for non-tryout creation)
     let tournamentData = tournaments;
     if (tournamentData.length === 0 && tournament) {
       tournamentData = [
         {
-          tournament: tournament,
+          tournament,
           year: teamYear,
           levelOfCompetition: levelOfCompetition || '',
           paymentStatus: 'pending',
@@ -283,7 +281,7 @@ router.post('/teams', authenticate, async (req, res) => {
       grade,
       sex: teamSex,
       tryoutSeason: tryoutSeason || '',
-      tryoutYear: tryoutYear || teamYear,
+      tryoutYear: tryoutYearNum,
       playerIds,
       coachIds,
       notes: notes || '',
@@ -331,7 +329,6 @@ router.post('/teams', authenticate, async (req, res) => {
 router.put('/teams/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-
     if (!id.match(/^[0-9a-fA-F]{24}$/)) {
       return res
         .status(400)
@@ -339,18 +336,20 @@ router.put('/teams/:id', authenticate, async (req, res) => {
     }
 
     const team = await Team.findById(id);
-    if (!team) {
+    if (!team)
       return res.status(404).json({ success: false, error: 'Team not found' });
-    }
 
-    // Normalize gender -> sex if provided
     const updates = { ...req.body };
     if (updates.gender && !updates.sex) {
       updates.sex = updates.gender;
       delete updates.gender;
     }
+    // Coerce numeric fields
+    if (updates.year) updates.year = Number(updates.year);
+    if (updates.tryoutYear) updates.tryoutYear = Number(updates.tryoutYear);
+    if (updates.registrationYear)
+      updates.registrationYear = Number(updates.registrationYear);
 
-    // Check for duplicate name if updating
     if (updates.name && updates.name !== team.name) {
       const existingTeam = await Team.findOne({
         name: { $regex: new RegExp(`^${updates.name.trim()}$`, 'i') },
@@ -416,9 +415,8 @@ router.delete('/teams/:id', authenticate, async (req, res) => {
     }
 
     const team = await Team.findById(id);
-    if (!team) {
+    if (!team)
       return res.status(404).json({ success: false, error: 'Team not found' });
-    }
 
     team.isActive = false;
     team.deactivatedAt = new Date();
