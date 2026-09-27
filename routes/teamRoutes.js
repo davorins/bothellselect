@@ -99,7 +99,24 @@ router.get(
 router.get('/internal-teams/metadata', authenticate, async (req, res) => {
   try {
     // REMOVED seasons from metadata
-    const years = await InternalTeam.distinct('year');
+
+    // Years that already exist on saved teams (so old years still show up)
+    const existingYears = await InternalTeam.distinct('year');
+
+    // Always offer a sensible range around the current year, regardless of
+    // whether a team has been created for that year yet.
+    const currentYear = new Date().getFullYear();
+    const generatedYears = [
+      currentYear - 1,
+      currentYear,
+      currentYear + 1,
+      currentYear + 2,
+    ];
+
+    const years = Array.from(
+      new Set([...existingYears, ...generatedYears]),
+    ).sort((a, b) => b - a);
+
     const grades = await InternalTeam.distinct('grade');
     const tryoutSeasons = await Player.distinct('seasons.season', {
       'seasons.paymentComplete': true,
@@ -107,7 +124,7 @@ router.get('/internal-teams/metadata', authenticate, async (req, res) => {
     });
 
     res.json({
-      years: years.sort((a, b) => b - a),
+      years,
       grades: grades.sort(),
       tryoutSeasons: tryoutSeasons
         .filter((s) => s && s.includes('Tryout'))
