@@ -116,7 +116,25 @@ function getParentStatus(parent, activeEvents) {
 }
 
 async function getActiveSeasonEvents() {
-  return SeasonEvent.find({ registrationOpen: true }).lean();
+  const now = new Date();
+  return SeasonEvent.find({
+    isActiveOverride: { $ne: 'always-off' },
+    isActive: { $ne: false },
+    $or: [
+      { startDate: { $exists: false } },
+      { startDate: null },
+      { startDate: { $lte: now } },
+    ],
+    $and: [
+      {
+        $or: [
+          { endDate: { $exists: false } },
+          { endDate: null },
+          { endDate: { $gte: now } },
+        ],
+      },
+    ],
+  }).lean();
 }
 
 module.exports = {

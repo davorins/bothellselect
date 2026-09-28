@@ -9,10 +9,21 @@ const SeasonEventSchema = new mongoose.Schema(
     startDate: Date,
     endDate: Date,
     registrationOpen: { type: Boolean, default: true },
+    isActive: { type: Boolean, default: true },
+    isActiveOverride: {
+      type: String,
+      enum: ['auto', 'always-on', 'always-off'],
+      default: 'auto',
+    },
+
+    // Audit
+    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Parent' },
+    lastModifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Parent' },
+    lastModifiedAt: Date,
   },
   {
     timestamps: true,
-  }
+  },
 );
 
 module.exports = mongoose.model('SeasonEvent', SeasonEventSchema);

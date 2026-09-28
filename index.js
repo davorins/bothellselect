@@ -52,6 +52,7 @@ const AiEmail = require('./models/AiEmail');
 const AiSettings = require('./models/AiSettings');
 const aiEmailRoutes = require('./routes/aiEmailRoutes');
 const resendWebhookRoutes = require('./routes/resendWebhookRoutes');
+const adminSeasonEventsRoutes = require('./routes/adminSeasonEvents');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -167,6 +168,7 @@ app.use('/api/video-gallery', videoGalleryRoutes);
 app.use('/api/marketing', marketingRoutes);
 app.use('/api/event-config', eventConfigRoutes);
 app.use('/api/admin/ai-emails', aiEmailRoutes);
+app.use('/api/admin', adminSeasonEventsRoutes);
 app.get('/api/player/:playerId', async (req, res) => {
   try {
     const playerId = req.params.playerId;
