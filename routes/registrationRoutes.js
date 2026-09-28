@@ -1,10 +1,10 @@
 // backend/routes/registrationRoutes.js
 const express = require('express');
 const {
-  getSeasonEvents,
-  createSeasonEvent,
-  updateSeasonEvent,
-  deleteSeasonEvent,
+  // getSeasonEvents,
+  // createSeasonEvent,
+  // updateSeasonEvent,
+  // deleteSeasonEvent,
   getFormConfigs,
   getFormConfig,
   updateFormConfig,
@@ -31,15 +31,15 @@ const RegistrationFormConfig = require('../models/RegistrationFormConfig');
 const router = express.Router();
 
 // Season Events (for training only)
-router.get('/season-events', getSeasonEvents);
-router.post('/season-events', authenticate, isAdmin, createSeasonEvent);
-router.put('/season-events/:eventId', authenticate, isAdmin, updateSeasonEvent);
-router.delete(
-  '/season-events/:eventId',
-  authenticate,
-  isAdmin,
-  deleteSeasonEvent
-);
+// router.get('/season-events', getSeasonEvents);
+// router.post('/season-events', authenticate, isAdmin, createSeasonEvent);
+// router.put('/season-events/:eventId', authenticate, isAdmin, updateSeasonEvent);
+// router.delete(
+//   '/season-events/:eventId',
+//   authenticate,
+//   isAdmin,
+//   deleteSeasonEvent
+// );
 
 // Form Configurations (for training only)
 router.get('/form-configs', getFormConfigs);
@@ -52,14 +52,14 @@ router.put(
   '/tournament-configs',
   authenticate,
   isAdmin,
-  updateTournamentConfig
+  updateTournamentConfig,
 );
 router.get('/tournament-configs/:tournamentName', getTournamentConfig);
 router.delete(
   '/tournament-configs/:tournamentName',
   authenticate,
   isAdmin,
-  deleteTournamentConfig
+  deleteTournamentConfig,
 );
 
 // Tryout Configurations
@@ -70,7 +70,7 @@ router.delete(
   '/tryout-configs/:tryoutName',
   authenticate,
   isAdmin,
-  deleteTryoutConfig
+  deleteTryoutConfig,
 );
 
 // Active Forms (for training only)
