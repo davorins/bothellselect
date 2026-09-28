@@ -6,6 +6,10 @@ const Payment = require('../models/Payment');
 const Registration = require('../models/Registration');
 const InternalTeam = require('../models/InternalTeam');
 const { getDateRange } = require('../utils/dateRanges');
+const {
+  getPlayerStatus,
+  getActiveSeasonEvents,
+} = require('../utils/seasonStatus');
 
 async function getRecentPayments() {
   try {
@@ -17,7 +21,7 @@ async function getRecentPayments() {
       .lean();
 
     console.log(
-      `💳 Found ${recentPayments.length} recent payments for display`
+      `💳 Found ${recentPayments.length} recent payments for display`,
     );
 
     return recentPayments.map((payment) => ({
@@ -38,7 +42,7 @@ async function getRecentPayments() {
 async function getPendingPaymentsData() {
   try {
     console.log(
-      '🔍 Searching for pending payments in Registration collection...'
+      '🔍 Searching for pending payments in Registration collection...',
     );
 
     const pendingRegistrations = await Registration.find({
@@ -46,7 +50,7 @@ async function getPendingPaymentsData() {
     }).lean();
 
     console.log(
-      `📊 Found ${pendingRegistrations.length} pending registrations`
+      `📊 Found ${pendingRegistrations.length} pending registrations`,
     );
 
     const pendingPaymentsAmount = pendingRegistrations.reduce((sum, reg) => {
@@ -72,7 +76,7 @@ async function getPendingRefundsData() {
     }).lean();
 
     console.log(
-      `📋 Found ${paymentsWithPendingRefunds.length} payments with pending refunds`
+      `📋 Found ${paymentsWithPendingRefunds.length} payments with pending refunds`,
     );
 
     let pendingRefundsCount = 0;
@@ -81,7 +85,7 @@ async function getPendingRefundsData() {
 
     paymentsWithPendingRefunds.forEach((payment) => {
       const pendingRefunds = payment.refunds.filter(
-        (refund) => refund.status === 'pending'
+        (refund) => refund.status === 'pending',
       );
 
       pendingRefunds.forEach((refund) => {
@@ -100,7 +104,7 @@ async function getPendingRefundsData() {
     });
 
     console.log(
-      `🔄 Found ${pendingRefundsCount} pending refunds totaling $${pendingRefundsAmount}`
+      `🔄 Found ${pendingRefundsCount} pending refunds totaling $${pendingRefundsAmount}`,
     );
 
     return {
@@ -143,7 +147,7 @@ async function getRegistrationStats() {
       other: registrations.filter(
         (reg) =>
           !reg.paymentStatus ||
-          (reg.paymentStatus !== 'paid' && reg.paymentStatus !== 'pending')
+          (reg.paymentStatus !== 'paid' && reg.paymentStatus !== 'pending'),
       ).length,
       bySeason: {},
     };
@@ -160,7 +164,7 @@ async function getFinancialMetrics(timeRange = 'this-month') {
 
     console.log(`💰 Calculating financial metrics for ${timeRange}`);
     console.log(
-      `   Date range (UTC): ${start.toISOString()} to ${end.toISOString()}`
+      `   Date range (UTC): ${start.toISOString()} to ${end.toISOString()}`,
     );
 
     // ✅ Pacific timezone constant
@@ -173,7 +177,7 @@ async function getFinancialMetrics(timeRange = 'this-month') {
         year: 'numeric',
         month: '2-digit',
         day: '2-digit',
-      }).format(start)
+      }).format(start),
     );
 
     const pacificEnd = new Date(
@@ -182,7 +186,7 @@ async function getFinancialMetrics(timeRange = 'this-month') {
         year: 'numeric',
         month: '2-digit',
         day: '2-digit',
-      }).format(end)
+      }).format(end),
     );
 
     // Get payments within the requested date range
@@ -212,7 +216,7 @@ async function getFinancialMetrics(timeRange = 'this-month') {
           year: 'numeric',
           month: '2-digit',
           day: '2-digit',
-        }
+        },
       );
 
       // pacificDateString e.g. "10/05/2025"
@@ -351,7 +355,8 @@ router.get('/dashboard', async (req, res) => {
       refundsData,
       registrationStats,
       recentPayments,
-      financialMetrics, // ✅ Store the result here
+      financialMetrics,
+      activeEvents,
     ] = await Promise.all([
       Player.find({}).lean(),
       Parent.find({}).lean(),
@@ -360,8 +365,14 @@ router.get('/dashboard', async (req, res) => {
       getPendingRefundsData(),
       getRegistrationStats(),
       getRecentPayments(),
-      getFinancialMetrics('this-month'), // ✅ This returns the financial data
+      getFinancialMetrics('this-month'),
+      getActiveSeasonEvents(),
     ]);
+
+    console.log(`📅 Active SeasonEvents: ${activeEvents.length}`);
+    activeEvents.forEach((e) =>
+      console.log(`   - "${e.season}" ${e.year} (eventId: ${e.eventId})`),
+    );
 
     // Calculate total adults (parents + additional guardians)
     const totalParents = parents.length;
@@ -392,17 +403,17 @@ router.get('/dashboard', async (req, res) => {
       // Find coaches by their IDs from the coachIds array
       const teamCoaches = parents.filter((parent) =>
         teamCoachIds.some(
-          (coachId) => coachId.toString() === parent._id.toString()
-        )
+          (coachId) => coachId.toString() === parent._id.toString(),
+        ),
       );
 
       console.log(
-        `   Found ${teamCoaches.length} coaches for team ${team.name}`
+        `   Found ${teamCoaches.length} coaches for team ${team.name}`,
       );
       if (teamCoaches.length > 0) {
         console.log(
           `   Coaches:`,
-          teamCoaches.map((c) => c.fullName)
+          teamCoaches.map((c) => c.fullName),
         );
       }
 
@@ -439,16 +450,36 @@ router.get('/dashboard', async (req, res) => {
             : 0, // ✅ Now defined
       },
       financialOverview: financialMetrics, // ✅ Now defined
-      playerStats: {
-        total: players.length,
-        active: players.filter((p) => p.paymentStatus === 'paid').length,
-        inactive: players.filter((p) => p.paymentStatus !== 'paid').length,
-        byGender: {
-          male: players.filter((p) => p.gender === 'Male').length,
-          female: players.filter((p) => p.gender === 'Female').length,
-        },
-        byGrade: {},
-      },
+      playerStats: (() => {
+        let activeCount = 0;
+        let pendingCount = 0;
+        let inactiveCount = 0;
+
+        for (const p of players) {
+          const status = getPlayerStatus(p, activeEvents);
+          if (status === 'Active') activeCount++;
+          else if (status === 'Pending Payment') pendingCount++;
+          else inactiveCount++;
+        }
+
+        console.log('👦 PLAYER STATUS BREAKDOWN (SeasonEvent-based):');
+        console.log(`   Active: ${activeCount}`);
+        console.log(`   Pending Payment: ${pendingCount}`);
+        console.log(`   Inactive: ${inactiveCount}`);
+        console.log(`   Total: ${players.length}`);
+
+        return {
+          total: players.length,
+          active: activeCount,
+          pending: pendingCount,
+          inactive: inactiveCount,
+          byGender: {
+            male: players.filter((p) => p.gender === 'Male').length,
+            female: players.filter((p) => p.gender === 'Female').length,
+          },
+          byGrade: {},
+        };
+      })(),
       teamStats: {
         total: internalTeams.length,
         active: internalTeams.length,
@@ -478,7 +509,7 @@ router.get('/dashboard', async (req, res) => {
 
     console.log('✅ Dashboard ready!');
     console.log(
-      `📊 Total Adults: ${totalAdults} (${totalParents} parents + ${totalAdditionalGuardians} guardians)`
+      `📊 Total Adults: ${totalAdults} (${totalParents} parents + ${totalAdditionalGuardians} guardians)`,
     );
     console.log(`👨‍🏫 Coaches: ${totalCoaches}`);
     console.log(`💰 Current Month Revenue: $${financialMetrics.netRevenue}`);

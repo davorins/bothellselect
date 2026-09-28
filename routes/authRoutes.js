@@ -6840,7 +6840,7 @@ router.delete(
   },
 );
 
-// Get paginated players with filters (NEW ROUTE)
+// Get paginated players with filters
 router.get(
   '/players/paginated',
   authenticate,
@@ -6881,56 +6881,30 @@ router.get(
         sort = 'recent',
         dateFrom,
         dateTo,
-        loadAll, // Get loadAll parameter
+        loadAll,
       } = req.query;
 
-      // ── Season helpers (shared across status + transform) ──────────────────
-      const getSeasonInfo = () => {
-        const month = new Date().getMonth() + 1;
-        const currentSeason =
-          month >= 3 && month <= 5
-            ? 'Spring'
-            : month >= 6 && month <= 8
-              ? 'Summer'
-              : month >= 9 && month <= 11
-                ? 'Fall'
-                : 'Winter';
-        const currentYear = new Date().getFullYear();
-        const SEASON_ORDER = ['Winter', 'Spring', 'Summer', 'Fall'];
-        const nextSeason =
-          SEASON_ORDER[(SEASON_ORDER.indexOf(currentSeason) + 1) % 4];
-        const nextSeasonYear =
-          currentSeason === 'Fall' ? currentYear + 1 : currentYear;
-        return { currentSeason, currentYear, nextSeason, nextSeasonYear };
-      };
+      const {
+        getPlayerStatus,
+        getActiveSeasonEvents,
+      } = require('../utils/seasonStatus');
 
-      const extractBase = (name = '') => {
-        const l = name.toLowerCase();
-        if (l.includes('spring')) return 'Spring';
-        if (l.includes('summer')) return 'Summer';
-        if (l.includes('fall')) return 'Fall';
-        if (l.includes('winter')) return 'Winter';
-        return name;
-      };
+      // Fetch active SeasonEvents — the single source of truth
+      const activeEvents = await getActiveSeasonEvents();
 
-      const sr = (base) => new RegExp(base, 'i');
-
-      // ── Build filter clauses ───────────────────────────────────────────────
+      // ── Build filter clauses ─────────────────────────────────────────────
       const clauses = [];
 
-      // ── Search ─────────────────────────────────────────────────────────────
       if (search?.trim()) {
         clauses.push({ fullName: { $regex: search.trim(), $options: 'i' } });
       }
 
-      // ── Gender ─────────────────────────────────────────────────────────────
       if (gender) {
         clauses.push({ gender });
       }
 
-      // ── Grade ──────────────────────────────────────────────────────────────
       if (grade) {
-        const gradeNum = grade.replace(/\D/g, '');
+        const gradeNum = String(grade).replace(/\D/g, '');
         if (gradeNum) {
           clauses.push({
             $or: [
@@ -6944,7 +6918,6 @@ router.get(
         }
       }
 
-      // ── Age ────────────────────────────────────────────────────────────────
       if (age !== undefined && age !== null) {
         const ageNum = parseInt(age, 10);
         if (!isNaN(ageNum)) {
@@ -6963,124 +6936,27 @@ router.get(
         }
       }
 
-      // ── Status ─────────────────────────────────────────────────────────────
-      if (status) {
-        const { currentSeason, currentYear, nextSeason, nextSeasonYear } =
-          getSeasonInfo();
+      // NOTE: `status` filtering happens client-side (PlayerList/PlayerGrid).
+      // Do NOT translate it here — the labels are SeasonEvent-derived.
 
-        if (status === 'Active' || status === 'Pending Payment') {
-          const isPaid = status === 'Active';
-          const paymentCondition = isPaid ? true : { $ne: true };
-
-          clauses.push({
-            $or: [
-              // seasons array — current season
-              {
-                seasons: {
-                  $elemMatch: {
-                    season: sr(currentSeason),
-                    year: currentYear,
-                    paymentComplete: paymentCondition,
-                  },
-                },
-              },
-              // seasons array — next season
-              {
-                seasons: {
-                  $elemMatch: {
-                    season: sr(nextSeason),
-                    year: nextSeasonYear,
-                    paymentComplete: paymentCondition,
-                  },
-                },
-              },
-              // Legacy top-level — current season
-              {
-                $or: [
-                  { seasons: { $exists: false } },
-                  { seasons: { $size: 0 } },
-                ],
-                season: sr(currentSeason),
-                registrationYear: currentYear,
-                paymentComplete: paymentCondition,
-              },
-              // Legacy top-level — next season
-              {
-                $or: [
-                  { seasons: { $exists: false } },
-                  { seasons: { $size: 0 } },
-                ],
-                season: sr(nextSeason),
-                registrationYear: nextSeasonYear,
-                paymentComplete: paymentCondition,
-              },
-            ],
-          });
-        } else if (status === 'Inactive') {
-          // Collect all IDs that ARE registered for current or next season
-          const [seasonArrayIds, legacyIds] = await Promise.all([
-            Player.distinct('_id', {
-              $or: [
-                {
-                  seasons: {
-                    $elemMatch: {
-                      season: sr(currentSeason),
-                      year: currentYear,
-                    },
-                  },
-                },
-                {
-                  seasons: {
-                    $elemMatch: {
-                      season: sr(nextSeason),
-                      year: nextSeasonYear,
-                    },
-                  },
-                },
-              ],
-            }),
-            Player.distinct('_id', {
-              $or: [
-                { season: sr(currentSeason), registrationYear: currentYear },
-                { season: sr(nextSeason), registrationYear: nextSeasonYear },
-              ],
-            }),
-          ]);
-
-          const allRegisteredIds = [
-            ...new Set([
-              ...seasonArrayIds.map((id) => id.toString()),
-              ...legacyIds.map((id) => id.toString()),
-            ]),
-          ];
-
-          clauses.push({ _id: { $nin: allRegisteredIds } });
-        }
-      }
-
-      // ── School ─────────────────────────────────────────────────────────────
       if (school?.trim()) {
         clauses.push({
           schoolName: { $regex: school.trim(), $options: 'i' },
         });
       }
 
-      // ── Season / Year ──────────────────────────────────────────────────────
-      if (!status) {
-        if (season && year) {
-          clauses.push({
-            seasons: {
-              $elemMatch: { season, year: parseInt(year, 10) },
-            },
-          });
-        } else if (season) {
-          clauses.push({ 'seasons.season': season });
-        } else if (year) {
-          clauses.push({ 'seasons.year': parseInt(year, 10) });
-        }
+      if (season && year) {
+        clauses.push({
+          seasons: {
+            $elemMatch: { season, year: parseInt(year, 10) },
+          },
+        });
+      } else if (season) {
+        clauses.push({ 'seasons.season': season });
+      } else if (year) {
+        clauses.push({ 'seasons.year': parseInt(year, 10) });
       }
 
-      // ── Date range (createdAt) ─────────────────────────────────────────────
       if (dateFrom || dateTo) {
         const dateClause = {};
         if (dateFrom) {
@@ -7102,7 +6978,6 @@ router.get(
         }
       }
 
-      // ── Combine all clauses ────────────────────────────────────────────────
       const query =
         clauses.length === 0
           ? {}
@@ -7110,7 +6985,7 @@ router.get(
             ? clauses[0]
             : { $and: clauses };
 
-      // ── Sort ───────────────────────────────────────────────────────────────
+      // Sort
       let sortOptions = {};
       switch (sort) {
         case 'asc':
@@ -7131,14 +7006,12 @@ router.get(
           break;
       }
 
-      // ── Handle loadAll vs pagination ───────────────────────────────────────
       const total = await Player.countDocuments(query);
 
       let players;
       let responsePagination;
 
       if (loadAll === 'true') {
-        // Load all records without pagination
         players = await Player.find(query)
           .populate('parentId', 'fullName email phone')
           .sort(sortOptions)
@@ -7153,7 +7026,6 @@ router.get(
           hasPrevPage: false,
         };
       } else {
-        // Apply pagination
         const pageNum = Math.max(1, parseInt(page, 10));
         const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
         const skip = (pageNum - 1) * limitNum;
@@ -7175,43 +7047,9 @@ router.get(
         };
       }
 
-      // ── Transform ──────────────────────────────────────────────────────────
-      const {
-        currentSeason: cs,
-        currentYear: cy,
-        nextSeason: ns,
-        nextSeasonYear: nsy,
-      } = getSeasonInfo();
-
-      const deriveStatus = (player) => {
-        if (player.seasons && player.seasons.length > 0) {
-          const currentReg = player.seasons.find(
-            (s) => extractBase(s.season) === cs && s.year === cy,
-          );
-          if (currentReg) {
-            return currentReg.paymentComplete ? 'Active' : 'Pending Payment';
-          }
-          const nextReg = player.seasons.find(
-            (s) => extractBase(s.season) === ns && s.year === nsy,
-          );
-          if (nextReg) {
-            return nextReg.paymentComplete ? 'Active' : 'Pending Payment';
-          }
-          return 'Inactive';
-        }
-        // Legacy top-level fallback
-        const base = extractBase(player.season);
-        if (base === cs && player.registrationYear === cy) {
-          return player.paymentComplete ? 'Active' : 'Pending Payment';
-        }
-        if (base === ns && player.registrationYear === nsy) {
-          return player.paymentComplete ? 'Active' : 'Pending Payment';
-        }
-        return 'Inactive';
-      };
-
+      // Transform: derive status from active SeasonEvents
       const transformedPlayers = players.map((player) => {
-        const derivedStatus = deriveStatus(player);
+        const derivedStatus = getPlayerStatus(player, activeEvents);
         const calculatedAge = player.dob
           ? Math.floor(
               (Date.now() - new Date(player.dob).getTime()) /
