@@ -36,7 +36,7 @@ const internalTeamSchema = new mongoose.Schema(
     status: {
       type: String,
       enum: ['active', 'inactive'],
-      default: 'active',
+      default: 'inactive',
     },
     paymentReceived: {
       type: Boolean,
