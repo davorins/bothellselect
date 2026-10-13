@@ -19,6 +19,7 @@ const TournamentConfigSchema = new mongoose.Schema(
     tournamentDates: [{ type: String, validate: ymdValidator }],
     locations: [{ type: String }],
     divisions: [{ type: String }],
+    ageGroups: [{ type: String }],
     description: { type: String, default: '' },
 
     // Requirements
