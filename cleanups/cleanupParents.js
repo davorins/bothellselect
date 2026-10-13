@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 
 // Use your existing .env variable (recommended)
 const uri =
-  'mongodb+srv://bothellselect:nrMNUpNv7Zavgfak@bothellselect.9wh96.mongodb.net/bothellselect?retryWrites=true&w=majority&appName=bothellselect';
+  process.env.MONGO_URI;
 
 async function cleanParents() {
   try {

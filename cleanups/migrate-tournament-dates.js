@@ -15,8 +15,7 @@ const mongoose = require('mongoose');
 const TournamentConfig = require('../models/TournamentConfig');
 const TryoutConfig = require('../models/TryoutConfig');
 const uri =
-  process.env.MONGO_URI ||
-  'mongodb+srv://bothellselect:nrMNUpNv7Zavgfak@bothellselect.9wh96.mongodb.net/bothellselect?retryWrites=true&w=majority&appName=bothellselect';
+  process.env.MONGO_URI;
 if (!uri) {
   console.error('❌ MONGO_URI is not set in the environment.');
   process.exit(1);
