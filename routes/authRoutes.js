@@ -4498,6 +4498,7 @@ router.post(
       .isInt({ min: 2020, max: 2030 })
       .withMessage('Year must be between 2020 and 2030')
       .toInt(),
+    body('isAgent').optional().isBoolean(),
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -4584,9 +4585,10 @@ router.post(
             state: address.state.toUpperCase(),
             zip: address.zip,
           },
-          isCoach,
-          aauNumber: isCoach ? aauNumber?.trim() : undefined,
-          relationship: relationship || 'Parent',
+          isCoach: req.body.isAgent ? false : isCoach,
+          aauNumber:
+            isCoach && !req.body.isAgent ? aauNumber?.trim() : undefined,
+          relationship: req.body.isAgent ? 'Agent' : relationship || 'Parent',
           agreeToTerms,
           role: isAdmin ? 'admin' : isCoach ? 'coach' : 'user',
           registrationComplete: true,
@@ -5038,6 +5040,7 @@ router.post(
       .optional()
       .isMongoId()
       .withMessage('Invalid tournament ID format'),
+    body('isAgent').optional().isBoolean(),
   ],
   async (req, res) => {
     let tournamentId = req.body.tournamentId;
@@ -5128,9 +5131,10 @@ router.post(
             state: address.state.toUpperCase(),
             zip: address.zip,
           },
-          isCoach,
-          aauNumber: isCoach ? aauNumber?.trim() : undefined,
-          relationship: relationship || 'Parent',
+          isCoach: req.body.isAgent ? false : isCoach,
+          aauNumber:
+            isCoach && !req.body.isAgent ? aauNumber?.trim() : undefined,
+          relationship: req.body.isAgent ? 'Agent' : relationship || 'Parent',
           agreeToTerms,
           role: isAdmin ? 'admin' : isCoach ? 'coach' : 'user',
           registrationComplete: true,
