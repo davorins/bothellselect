@@ -2298,9 +2298,7 @@ router.get(
           avatar: player.avatar || null,
           imgSrc: player.avatar
             ? `${player.avatar}${player.avatar.includes('?') ? '&' : '?'}ts=${Date.now()}`
-            : player.gender === 'Female'
-              ? 'https://bothell-select.onrender.com/uploads/avatars/girl.png'
-              : 'https://bothell-select.onrender.com/uploads/avatars/boy.png',
+            : null,
         };
       });
 
@@ -2858,6 +2856,14 @@ router.get('/guardians', authenticate, async (req, res) => {
 router.put('/parent-full/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
+
+    // ⛔ 1. ADDED: Missing authorization check
+    if (req.user.role !== 'admin' && req.user.id !== id) {
+      return res
+        .status(403)
+        .json({ error: 'Not authorized to update this account' });
+    }
+
     const {
       fullName,
       phone,
@@ -2870,8 +2876,6 @@ router.put('/parent-full/:id', authenticate, async (req, res) => {
       avatarUrl,
       password,
     } = req.body;
-
-    console.log('Received guardian data:', additionalGuardians);
 
     const updateData = {
       fullName,
@@ -2899,8 +2903,23 @@ router.put('/parent-full/:id', authenticate, async (req, res) => {
         },
         ...(g._id && !g._id.toString().startsWith('temp_') && { _id: g._id }),
       })),
-      avatar: avatarUrl,
     };
+
+    // ⛔ 2. ADDED: Prevent saving defaults, and don't wipe avatar if not sent
+    if (avatarUrl !== undefined) {
+      const cleanUrl = String(avatarUrl || '').trim();
+
+      const DEFAULT_AVATAR_RX =
+        /\/(?:assets\/img\/)?avatars?\/(agent|boy|coach|dad|girl|guardian|mom)\.png$/i;
+
+      if (cleanUrl && DEFAULT_AVATAR_RX.test(cleanUrl)) {
+        return res.status(400).json({
+          error:
+            'Default avatars cannot be set directly. Upload a custom image instead.',
+        });
+      }
+      updateData.avatar = cleanUrl || null;
+    }
 
     if (password && password.trim().length >= 6) {
       updateData.password = await bcrypt.hash(password.trim(), 12);
@@ -2915,8 +2934,6 @@ router.put('/parent-full/:id', authenticate, async (req, res) => {
     if (!parent) {
       return res.status(404).json({ error: 'Parent not found' });
     }
-
-    console.log('Parent updated with guardians:', parent.additionalGuardians);
 
     res.json({
       message: 'Parent and guardians updated successfully',
@@ -3121,7 +3138,7 @@ router.put('/parent/:id/avatar', authenticate, async (req, res) => {
     }
 
     // Clean the URL if it's malformed
-    let cleanUrl = avatarUrl;
+    let cleanUrl = String(avatarUrl).trim();
     if (cleanUrl.includes('https//')) {
       cleanUrl = cleanUrl.replace('https//', 'https://');
     }
@@ -3132,6 +3149,18 @@ router.put('/parent/:id/avatar', authenticate, async (req, res) => {
     }
 
     console.log('🧹 Cleaned URL:', cleanUrl);
+
+    //    Covers both the new local paths (/assets/img/avatar/*.png) and
+    //    the legacy remote paths (.../uploads/avatars/*.png).
+    const DEFAULT_AVATAR_RX =
+      /\/(?:assets\/img\/)?avatars?\/(agent|boy|coach|dad|girl|guardian|mom)\.png$/i;
+
+    if (DEFAULT_AVATAR_RX.test(cleanUrl)) {
+      return res.status(400).json({
+        error:
+          'Default avatars cannot be set directly. Upload a custom image instead.',
+      });
+    }
 
     const parent = await Parent.findById(req.params.id);
     if (!parent) {
@@ -3152,7 +3181,6 @@ router.put('/parent/:id/avatar', authenticate, async (req, res) => {
         console.log('Old avatar deleted from R2:', parent.avatar);
       } catch (deleteError) {
         console.error('Error deleting old avatar:', deleteError);
-        // Continue with update even if delete fails
       }
     }
 
@@ -3223,15 +3251,38 @@ router.put('/player/:id/avatar', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'Avatar URL is required' });
     }
 
-    const player = await Player.findByIdAndUpdate(
-      req.params.id,
-      { avatar: avatarUrl },
-      { new: true },
-    );
-
+    // 1. Load the player first so we can authorize before mutating
+    const player = await Player.findById(req.params.id);
     if (!player) {
       return res.status(404).json({ error: 'Player not found' });
     }
+
+    // 2. Authorization — admin or the player's own parent
+    if (
+      req.user.role !== 'admin' &&
+      req.user.id !== player.parentId.toString()
+    ) {
+      return res.status(403).json({ error: 'Not authorized' });
+    }
+
+    // 3. Reject default avatar URLs — the frontend owns those.
+    //    This matches /assets/img/avatar/girl.png, boy.png, mom.png,
+    //    dad.png, guardian.png, coach.png, and the legacy parents.png.
+    const DEFAULT_AVATAR_RX =
+      /\/(?:assets\/img\/)?avatars?\/(agent|boy|coach|dad|girl|guardian|mom)\.png$/i;
+
+    const cleanUrl = String(avatarUrl).trim();
+
+    if (DEFAULT_AVATAR_RX.test(cleanUrl)) {
+      return res.status(400).json({
+        error:
+          'Default avatars cannot be set directly. Upload a custom image instead.',
+      });
+    }
+
+    // 4. Save
+    player.avatar = cleanUrl;
+    await player.save();
 
     res.json({
       success: true,
@@ -3262,37 +3313,24 @@ router.delete('/player/:id/avatar', authenticate, async (req, res) => {
     }
 
     const avatarUrl = player.avatar;
-
-    // Only delete from R2 if it's an R2 URL and not a default avatar
-    if (
-      avatarUrl &&
-      isR2Url(avatarUrl) &&
-      !avatarUrl.includes('girl.png') &&
-      !avatarUrl.includes('boy.png')
-    ) {
+    if (avatarUrl && isR2Url(avatarUrl)) {
       try {
         await deleteFromR2(avatarUrl);
         console.log('Player avatar deleted from R2');
       } catch (deleteError) {
         console.error('Error deleting from R2:', deleteError);
-        // Continue even if delete fails
       }
     }
 
-    // Set to default avatar based on gender
-    const defaultAvatar =
-      player.gender === 'Female'
-        ? 'https://bothell-select.onrender.com/uploads/avatars/girl.png'
-        : 'https://bothell-select.onrender.com/uploads/avatars/boy.png';
-
-    player.avatar = defaultAvatar;
+    // Clear the field — client resolves the default
+    player.avatar = null;
     await player.save();
 
     res.json({
       success: true,
       message: 'Player avatar deleted successfully',
       player,
-      defaultAvatar,
+      avatarUrl: null,
     });
   } catch (error) {
     console.error('Player avatar deletion error:', error);
@@ -6239,9 +6277,7 @@ router.get('/players/my-players', authenticate, async (req, res) => {
       avatar: player.avatar || null,
       imgSrc: player.avatar
         ? `${player.avatar}${player.avatar.includes('?') ? '&' : '?'}ts=${Date.now()}`
-        : player.gender === 'Female'
-          ? 'https://bothell-select.onrender.com/uploads/avatars/girl.png'
-          : 'https://bothell-select.onrender.com/uploads/avatars/boy.png',
+        : null,
     }));
 
     res.json(playersWithAvatars);
@@ -7070,9 +7106,7 @@ router.get(
                 : 'Incomplete',
           imgSrc: player.avatar
             ? `${player.avatar}${player.avatar.includes('?') ? '&' : '?'}ts=${Date.now()}`
-            : player.gender === 'Female'
-              ? 'https://bothell-select.onrender.com/uploads/avatars/girl.png'
-              : 'https://bothell-select.onrender.com/uploads/avatars/boy.png',
+            : null,
           formattedDob: player.dob
             ? new Date(player.dob).toLocaleDateString()
             : null,

@@ -430,6 +430,19 @@ router.get('/dashboard', async (req, res) => {
       };
     });
 
+    // ── Count moms and dads for the dashboard icon ──
+    const momCount = parents.filter(
+      (p) => (p.relationship || '').trim().toLowerCase() === 'mother',
+    ).length;
+
+    const dadCount = parents.filter(
+      (p) => (p.relationship || '').trim().toLowerCase() === 'father',
+    ).length;
+
+    console.log(
+      `👨‍👩‍👧 Relationship breakdown: ${momCount} moms, ${dadCount} dads`,
+    );
+
     const responseData = {
       players: players.slice(0, 6),
       coaches: parents.filter((p) => p.isCoach).slice(0, 6),
@@ -492,6 +505,8 @@ router.get('/dashboard', async (req, res) => {
         parents: totalParents,
         additionalGuardians: totalAdditionalGuardians,
         coaches: totalCoaches,
+        momCount,
+        dadCount,
       },
       summary: {
         totalPlayers: players.length,

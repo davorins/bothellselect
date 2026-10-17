@@ -1,3 +1,4 @@
+// AiEmail.js
 const mongoose = require('mongoose');
 
 const aiEmailSchema = new mongoose.Schema(

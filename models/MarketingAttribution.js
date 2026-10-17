@@ -1,3 +1,4 @@
+//MarketingAttribution.js
 const mongoose = require('mongoose');
 
 if (mongoose.models.MarketingAttribution) {

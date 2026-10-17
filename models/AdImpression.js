@@ -1,3 +1,4 @@
+// AdImpression.js
 const mongoose = require('mongoose');
 
 const adImpressionSchema = new mongoose.Schema({

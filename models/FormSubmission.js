@@ -1,3 +1,4 @@
+// FormSubmission.js
 const mongoose = require('mongoose');
 
 const FormSubmissionSchema = new mongoose.Schema(
@@ -120,7 +121,7 @@ const FormSubmissionSchema = new mongoose.Schema(
     timestamps: true,
     toJSON: { virtuals: true },
     toObject: { virtuals: true },
-  }
+  },
 );
 
 // Indexes
@@ -166,7 +167,7 @@ FormSubmissionSchema.methods.setTournamentInfo = function (
   formData,
   selectedPackage = null,
   quantity = 1,
-  selectedVenueIndex = null
+  selectedVenueIndex = null,
 ) {
   if (!formData.isTournamentForm || !formData.tournamentSettings) {
     return this;
@@ -240,7 +241,7 @@ FormSubmissionSchema.methods.setTournamentInfo = function (
 // Static method to find submissions by tournament date
 FormSubmissionSchema.statics.findByTournamentDate = function (
   startDate,
-  endDate
+  endDate,
 ) {
   return this.find({
     'tournamentInfo.tournamentDates.startDate': { $gte: startDate },

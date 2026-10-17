@@ -1,3 +1,4 @@
+// Standing.js
 const mongoose = require('mongoose');
 
 const standingSchema = new mongoose.Schema(
@@ -54,7 +55,7 @@ const standingSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-  }
+  },
 );
 
 standingSchema.index({ tournament: 1, team: 1 }, { unique: true });

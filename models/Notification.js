@@ -1,3 +1,4 @@
+// Notification.js
 const mongoose = require('mongoose');
 
 const notificationSchema = new mongoose.Schema(
@@ -44,7 +45,7 @@ const notificationSchema = new mongoose.Schema(
       type: String,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 notificationSchema.index({ parentIds: 1 });

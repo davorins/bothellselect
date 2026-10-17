@@ -165,6 +165,8 @@ router.delete('/parent/:id/avatar', authenticate, async (req, res) => {
         res.json({
           success: true,
           message: 'Avatar deleted successfully from R2',
+          // Client will render relationship-based default
+          avatarUrl: null,
         });
       } else {
         res.status(500).json({ error: 'Failed to delete avatar from R2' });
@@ -175,6 +177,7 @@ router.delete('/parent/:id/avatar', authenticate, async (req, res) => {
       res.json({
         success: true,
         message: 'Avatar reference removed from database',
+        avatarUrl: null,
       });
     }
   } catch (error) {
@@ -186,13 +189,6 @@ router.delete('/parent/:id/avatar', authenticate, async (req, res) => {
     });
   }
 });
-
-// ---------------------------------------------------------------------------
-// Guardian avatar endpoints
-// Route: /upload/guardian/:parentId/:guardianId/avatar
-// Guardians are embedded subdocuments inside the Parent model, so we look up
-// the parent and find the matching guardian by _id within additionalGuardians.
-// ---------------------------------------------------------------------------
 
 /**
  * Upload guardian avatar endpoint
@@ -321,6 +317,8 @@ router.delete(
       res.json({
         success: true,
         message: 'Guardian avatar deleted successfully',
+        // Client will render relationship-based default
+        avatarUrl: null,
       });
     } catch (error) {
       console.error('Guardian avatar deletion error:', error);
@@ -362,13 +360,9 @@ router.put(
           .json({ error: 'Not authorized to update this player avatar' });
       }
 
-      if (
-        player.avatar &&
-        isR2Url(player.avatar) &&
-        !player.avatar.includes('default') &&
-        !player.avatar.includes('girl.png') &&
-        !player.avatar.includes('boy.png')
-      ) {
+      // Delete old R2 upload (never touch defaults — they aren't in R2 anymore,
+      // but isR2Url already filters out local /assets paths)
+      if (player.avatar && isR2Url(player.avatar)) {
         try {
           await deleteFromR2(player.avatar);
           console.log('Old player avatar deleted from R2:', player.avatar);
@@ -434,18 +428,7 @@ router.delete('/player/:id/avatar', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'No avatar URL or key provided' });
     }
 
-    const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL;
-    const defaultAvatar =
-      player.gender === 'Female'
-        ? `${R2_PUBLIC_URL}/avatars/girl.png`
-        : `${R2_PUBLIC_URL}/avatars/boy.png`;
-
-    if (
-      isR2Url(urlToDelete) &&
-      !urlToDelete.includes('default') &&
-      !urlToDelete.includes('girl.png') &&
-      !urlToDelete.includes('boy.png')
-    ) {
+    if (isR2Url(urlToDelete)) {
       const deleteResult = await deleteFromR2(urlToDelete);
       if (deleteResult) {
         player.avatar = null;
@@ -453,18 +436,20 @@ router.delete('/player/:id/avatar', authenticate, async (req, res) => {
         res.json({
           success: true,
           message: 'Player avatar deleted from R2',
-          avatarUrl: defaultAvatar,
+          // Client renders girl.png / boy.png based on gender
+          avatarUrl: null,
         });
       } else {
         res.status(500).json({ error: 'Failed to delete avatar from R2' });
       }
     } else {
+      // Not an R2 URL — just clear the DB reference. Defaults are client-side.
       player.avatar = null;
       await player.save();
       res.json({
         success: true,
         message: 'Avatar reset to default',
-        avatarUrl: defaultAvatar,
+        avatarUrl: null,
       });
     }
   } catch (error) {
@@ -682,7 +667,7 @@ router.get('/test-r2-connection', authenticate, async (req, res) => {
 
 const Setting = require('../models/Setting');
 
-// Multer config for video uploads (80 MB limit, mp4/webm/ogg)
+// Multer config for video uploads (200 MB limit, mp4/webm/ogg/mov)
 const videoUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 200 * 1024 * 1024 }, // 200MB limit

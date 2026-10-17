@@ -1,3 +1,4 @@
+// AiSettings.js
 const mongoose = require('mongoose');
 
 const aiSettingsSchema = new mongoose.Schema(

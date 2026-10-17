@@ -6,39 +6,24 @@ const Payment = require('../models/Payment');
 const { authenticate, isAdmin } = require('../utils/auth');
 const mongoose = require('mongoose');
 
-// ✅ Default avatars served from Cloudflare R2
-const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL;
-
-if (!R2_PUBLIC_URL) {
-  console.warn(
-    'WARNING: R2_PUBLIC_URL is not set. Default avatars will not resolve correctly.',
-  );
-}
-
-const DEFAULT_PARENT_AVATAR = `${R2_PUBLIC_URL}/avatars/parents.png`;
-const DEFAULT_COACH_AVATAR = `${R2_PUBLIC_URL}/avatars/coach.png`;
-const DEFAULT_GIRL_AVATAR = `${R2_PUBLIC_URL}/avatars/girl.png`;
-const DEFAULT_BOY_AVATAR = `${R2_PUBLIC_URL}/avatars/boy.png`;
-
-// ✅ Returns the avatar URL — handles R2 absolute URLs and legacy relative paths
+// ── Avatar helper ────────────────────────────────────────────────────────────
+// We no longer define defaults here. The backend only passes along the raw
+// avatar URL (or null) and the frontend SearchBar resolves the fallback.
 const getPlayerAvatar = (player) => {
-  if (!player) return DEFAULT_BOY_AVATAR;
+  if (!player || !player.avatar) return null;
 
-  if (player.avatar) {
-    // Already an absolute URL (R2 or any https) — use directly
-    if (player.avatar.startsWith('http')) return player.avatar;
+  // Already an absolute URL (R2 or any https) — use directly
+  if (player.avatar.startsWith('http')) return player.avatar;
 
-    // Migrate legacy relative paths to R2
-    if (player.avatar.startsWith('/uploads/avatars/')) {
-      return `${R2_PUBLIC_URL}/avatars/${player.avatar.split('/').pop()}`;
-    }
-
-    return player.avatar;
+  // Migrate legacy relative paths to R2
+  if (player.avatar.startsWith('/uploads/avatars/')) {
+    const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL;
+    return R2_PUBLIC_URL
+      ? `${R2_PUBLIC_URL}/avatars/${player.avatar.split('/').pop()}`
+      : player.avatar;
   }
 
-  return player.gender?.toLowerCase() === 'female'
-    ? DEFAULT_GIRL_AVATAR
-    : DEFAULT_BOY_AVATAR;
+  return player.avatar;
 };
 
 // Helper to safely populate player references
@@ -158,7 +143,7 @@ router.get('/all', authenticate, async (req, res) => {
                 path: 'parentId',
                 model: 'Parent',
                 select:
-                  'fullName email phone avatar isCoach additionalGuardians',
+                  'fullName email phone avatar isCoach relationship additionalGuardians',
               })
               .limit(10)
               .lean();
@@ -185,7 +170,7 @@ router.get('/all', authenticate, async (req, res) => {
       status: player.status || '',
       season: player.season || '',
       registrationYear: player.registrationYear || null,
-      image: getPlayerAvatar(player),
+      image: getPlayerAvatar(player), // Will be null if no avatar
       additionalInfo: player.schoolName || '',
       createdAt: player.createdAt,
       phone: player.phone,
@@ -208,9 +193,8 @@ router.get('/all', authenticate, async (req, res) => {
           phone: parent.phone,
           address: parent.address,
           aauNumber: parent.aauNumber,
-          image:
-            parent.avatar ||
-            (parent.isCoach ? DEFAULT_COACH_AVATAR : DEFAULT_PARENT_AVATAR),
+          relationship: parent.relationship || 'Parent/Guardian',
+          image: parent.avatar || null, // Frontend resolves fallback
           isPrimary: true,
         });
       }
@@ -230,9 +214,9 @@ router.get('/all', authenticate, async (req, res) => {
             name: guardian.fullName,
             email: guardian.email,
             phone: guardian.phone,
-            image: guardian.avatar || DEFAULT_PARENT_AVATAR,
+            relationship: guardian.relationship || 'Guardian',
+            image: guardian.avatar || null, // Frontend resolves fallback
             isPrimary: false,
-            relationship: guardian.relationship,
             isCoach: guardian.isCoach || false,
             aauNumber: guardian.isCoach ? guardian.aauNumber : undefined,
           });
@@ -259,11 +243,8 @@ router.get('/all', authenticate, async (req, res) => {
           name: payment.parentId.fullName,
           email: payment.parentId.email,
           phone: payment.parentId.phone,
-          image:
-            payment.parentId.avatar ||
-            (payment.parentId.isCoach
-              ? DEFAULT_COACH_AVATAR
-              : DEFAULT_PARENT_AVATAR),
+          relationship: payment.parentId.relationship || 'Parent/Guardian',
+          image: payment.parentId.avatar || null, // Frontend resolves fallback
           isPaymentMatch: true,
           paymentDetails: {
             cardBrand: payment.cardBrand,
@@ -282,7 +263,8 @@ router.get('/all', authenticate, async (req, res) => {
             name: guardian.fullName,
             email: guardian.email,
             phone: guardian.phone,
-            image: guardian.avatar || DEFAULT_PARENT_AVATAR,
+            relationship: guardian.relationship || 'Guardian',
+            image: guardian.avatar || null, // Frontend resolves fallback
             isPaymentMatch: true,
             paymentDetails: {
               cardBrand: payment.cardBrand,

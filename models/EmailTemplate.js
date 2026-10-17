@@ -1,3 +1,4 @@
+//EmailTemplates.js
 const mongoose = require('mongoose');
 
 const emailTemplateSchema = new mongoose.Schema(

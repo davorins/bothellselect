@@ -1,3 +1,4 @@
+// index.js
 const mongoose = require('mongoose');
 
 const Tournament = require('./Tournament');

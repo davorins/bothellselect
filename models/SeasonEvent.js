@@ -1,3 +1,4 @@
+// SeasonEvent.js
 const mongoose = require('mongoose');
 
 const SeasonEventSchema = new mongoose.Schema(

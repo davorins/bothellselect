@@ -1,3 +1,4 @@
+// Tournament.js
 const mongoose = require('mongoose');
 
 const tournamentSchema = new mongoose.Schema(
@@ -110,7 +111,7 @@ const tournamentSchema = new mongoose.Schema(
     timestamps: true,
     toJSON: { virtuals: true },
     toObject: { virtuals: true },
-  }
+  },
 );
 
 // Virtual for formatted start date

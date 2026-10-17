@@ -1,3 +1,4 @@
+// Player.js
 const mongoose = require('mongoose');
 
 const seasonRegistrationSchema = new mongoose.Schema(
@@ -238,8 +239,8 @@ playerSchema.virtual('avatarUrl').get(function () {
     return `${this.avatar}${this.avatar.includes('?') ? '&' : '?'}ts=${Date.now()}`;
   }
   return this.gender === 'Female'
-    ? 'https://bothell-select.onrender.com/uploads/avatars/girl.png'
-    : 'https://bothell-select.onrender.com/uploads/avatars/boy.png';
+    ? '/assets/img/avatar/girl.png'
+    : '/assets/img/avatar/boy.png';
 });
 
 // ==================== INDEXES ====================

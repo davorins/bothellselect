@@ -1,3 +1,4 @@
+// MergeRequest.js
 const mongoose = require('mongoose');
 
 const mergeRequestSchema = new mongoose.Schema({

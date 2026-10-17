@@ -1,3 +1,4 @@
+//EventConfig.js
 const mongoose = require('mongoose');
 
 if (mongoose.models.EventConfig) {
