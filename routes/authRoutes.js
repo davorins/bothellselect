@@ -4452,7 +4452,7 @@ router.post(
       .withMessage('AAU number is required for coaches'),
     body('relationship')
       .optional()
-      .isIn(['Parent', 'Guardian', 'Coach', 'Other'])
+      .isIn(['Parent', 'Guardian', 'Coach', 'Other', 'Agent'])
       .withMessage('Invalid relationship value'),
     body('address.street')
       .if((value, { req }) => !req.user)
@@ -4984,7 +4984,7 @@ router.post(
       .withMessage('AAU number is required for coaches'),
     body('relationship')
       .optional()
-      .isIn(['Parent', 'Guardian', 'Coach', 'Other'])
+      .isIn(['Parent', 'Guardian', 'Coach', 'Other', 'Agent'])
       .withMessage('Invalid relationship value'),
     body('address.street')
       .if((value, { req }) => !req.user)
