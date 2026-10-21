@@ -2511,6 +2511,7 @@ router.get('/parents', authenticate, async (req, res) => {
       aauNumber,
       status,
       role,
+      isCoach,
       paymentStatus,
       dateFrom,
       dateTo,
@@ -2519,6 +2520,10 @@ router.get('/parents', authenticate, async (req, res) => {
     } = req.query;
 
     const query = {};
+
+    if (isCoach !== undefined) {
+      query.isCoach = isCoach === 'true';
+    }
 
     // ── Role filter ────────────────────────────────────────────────────────────
     if (role) {
