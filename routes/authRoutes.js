@@ -2499,7 +2499,6 @@ router.get('/players/by-parent/:parentId', authenticate, async (req, res) => {
 });
 
 // Get parents with optional query parameters
-// Get parents with optional query parameters
 router.get('/parents', authenticate, async (req, res) => {
   try {
     const {
@@ -2521,11 +2520,12 @@ router.get('/parents', authenticate, async (req, res) => {
 
     const query = {};
 
+    // 1. Your new filter
     if (isCoach !== undefined) {
       query.isCoach = isCoach === 'true';
     }
 
-    // ── Role filter ────────────────────────────────────────────────────────────
+    // 2. Role filter (runs AFTER and OVERWRITES)
     if (role) {
       if (role === 'coach') {
         query.isCoach = true;
