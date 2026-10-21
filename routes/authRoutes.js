@@ -2520,17 +2520,18 @@ router.get('/parents', authenticate, async (req, res) => {
 
     const query = {};
 
-    // 1. Your new filter
     if (isCoach !== undefined) {
       query.isCoach = isCoach === 'true';
     }
 
-    // 2. Role filter (runs AFTER and OVERWRITES)
+    // ── Role filter ────────────────────────────────────────────────────────────
     if (role) {
       if (role === 'coach') {
         query.isCoach = true;
       } else if (role === 'parent') {
-        query.isCoach = { $ne: true };
+        if (isCoach === undefined) {
+          query.isCoach = { $ne: true };
+        }
         query.role = { $ne: 'admin' };
       } else if (role === 'admin') {
         query.role = 'admin';
